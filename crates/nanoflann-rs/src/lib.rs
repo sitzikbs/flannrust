@@ -6,8 +6,11 @@ pub mod bbox;
 pub mod data_source;
 pub mod metric;
 pub mod result_set;
+pub mod filter;
+pub mod params;
 mod node;
 mod build;
+mod search;
 
 pub use scalar::{Scalar, DistanceValue};
 pub use dim::{Dim, ConstDim, DynDim};
@@ -15,6 +18,8 @@ pub use bbox::Interval;
 pub use data_source::{DataSource, FlatSlice};
 pub use metric::{Distance, L1, L2, L2Simple, SO2, SO3};
 pub use result_set::{ResultItem, ResultSet, TieBreak, KeepInsertionOrder, SmallestIndexWins, KnnResultSet, RknnResultSet, RadiusResultSet};
+pub use filter::{PointFilter, AcceptAll};
+pub use params::SearchParams;
 
 #[cfg(test)]
 mod tests {

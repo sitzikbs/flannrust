@@ -49,9 +49,8 @@ impl<T: Scalar> Node<T> {
 }
 
 /// Readers used to WALK an already-built tree (as opposed to the writers
-/// above, used to BUILD one). Not yet called from non-test code: task 6's
-/// builder only writes nodes; task 8's `search.rs` is what walks them.
-#[allow(dead_code)] // TODO(task-8): consumed by search.rs's tree walk
+/// above, used to BUILD one). Consumed by `search.rs`'s tree walk
+/// (`search_level`).
 impl<T: Scalar> Node<T> {
     #[inline(always)]
     pub(crate) fn is_leaf(&self) -> bool { self.divfeat == LEAF }
