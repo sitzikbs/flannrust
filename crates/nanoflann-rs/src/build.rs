@@ -278,6 +278,21 @@ where
         );
         debug_assert_eq!(bbox.len(), self.dim);
 
+        // Reused pool of `Vec<Interval<T>>` scratch buffers (audit SF-2):
+        // every bbox buffer this builder ever touches is exactly `self.dim`
+        // long, so once one is no longer needed its ALLOCATION can be
+        // handed to whichever site needs a fresh buffer next instead of
+        // being freed and a new one malloc'd. The two allocation sites this
+        // replaces (one `Vec::clone()` per interior split, for `left_bbox`;
+        // one `Vec::with_capacity` per interior finalize, for
+        // `parent_bbox`) are exactly balanced by the two release sites
+        // below (`right_bbox` returned to the pool at Finalize;
+        // `left_bbox`'s allocation reused IN PLACE as `parent_bbox`) — pool
+        // depth stays bounded by tree depth, never grows unbounded. Values
+        // are identical either way; only which heap allocation backs a
+        // given bbox buffer changes.
+        let mut bbox_pool: Vec<Vec<Interval<T>>> = Vec::new();
+
         let mut work: Vec<Work<T>> = vec![Work::Build {
             left: 0,
             right: self.vind.len(),
@@ -333,7 +348,21 @@ where
                         // both children are known.
                         self.arena.push(Node::split(cutfeat as u32, T::default(), T::default()));
 
-                        let mut left_bbox = sub_bbox.clone();
+                        // Take a pooled buffer for `left_bbox` when one is
+                        // available (overwriting its stale contents with
+                        // `sub_bbox`'s CURRENT values — identical to what
+                        // `sub_bbox.clone()` would produce), else fall back
+                        // to allocating; `right_bbox` reuses `sub_bbox`'s
+                        // own allocation directly (moved, never cloned,
+                        // exactly as before).
+                        let mut left_bbox = match bbox_pool.pop() {
+                            Some(mut buf) => {
+                                buf.clear();
+                                buf.extend_from_slice(&sub_bbox);
+                                buf
+                            }
+                            None => sub_bbox.clone(),
+                        };
                         left_bbox[cutfeat].high = cutval;
                         let mut right_bbox = sub_bbox;
                         right_bbox[cutfeat].low = cutval;
@@ -363,7 +392,7 @@ where
                 }
                 Work::Finalize { node, cutfeat } => {
                     let (right_node, right_bbox) = results.pop().expect("right result missing");
-                    let (left_node, left_bbox) = results.pop().expect("left result missing");
+                    let (left_node, mut left_bbox) = results.pop().expect("left result missing");
 
                     self.arena[node as usize].set_children(left_node, right_node);
                     // nanoflann.hpp:1374-1375.
@@ -371,15 +400,22 @@ where
                         .set_div_bounds(left_bbox[cutfeat].high, right_bbox[cutfeat].low);
 
                     // nanoflann.hpp:1377-1382: union via std::min/std::max
-                    // (argument order: left first, right second).
-                    let mut parent_bbox = Vec::with_capacity(self.dim);
+                    // (argument order: left first, right second). Written
+                    // IN PLACE into `left_bbox`'s own allocation (values
+                    // identical to the `parent_bbox: Vec::with_capacity`
+                    // this replaces) — `left_bbox[d]` on the right-hand
+                    // side is read before that same slot is overwritten, so
+                    // this is a safe elementwise transform, not a
+                    // read-after-write hazard. `right_bbox`'s now-unneeded
+                    // allocation returns to the pool for reuse.
                     for d in 0..self.dim {
-                        parent_bbox.push(Interval {
+                        left_bbox[d] = Interval {
                             low: cpp_min(left_bbox[d].low, right_bbox[d].low),
                             high: cpp_max(left_bbox[d].high, right_bbox[d].high),
-                        });
+                        };
                     }
-                    results.push((node, parent_bbox));
+                    bbox_pool.push(right_bbox);
+                    results.push((node, left_bbox));
                 }
             }
         }
