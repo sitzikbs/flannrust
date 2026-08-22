@@ -258,6 +258,14 @@ Dependencies: T0 → T1 → T2 → {T3, T5} → T4 → T6 → T8 → T9 → T10 
 - **Tie-break as type param** (`TieBreak`), mirroring the compile-time `NANOFLANN_FIRST_MATCH`.
 - **Fidelity strategy:** replicate arithmetic order (unroll pairs, descending remainder, mindist update) so easy data matches bit-for-bit, but assert with ULP tolerance + tie-group multisets; no fast-math on either side.
 
+## 5b. Success criteria (binding)
+
+M1 is complete only when all four hold:
+1. **Parity:** full xval suite green at bit-exact defaults (max_ulps=0): tree-permutation (vind) equality, knn/rknn/radius/box equality across the config matrix, boundary conventions locked.
+2. **Speed:** automated perf gate (`xval/tests/perf_gate.rs`): median Rust <= 1.25x median C++ on fixed build/knn/radius workloads (hard gate); headline criterion numbers show Rust >= C++ or T14 documents the gap with analysis (goal).
+3. **Robustness:** heavy degenerate builds (dim-1 depth ~2115, dim-8 depth ~16.8k) pass in release; empty/k>n/duplicate cases covered.
+4. **Hygiene:** workspace tests green with zero warnings (forced rebuild), `--no-default-features` builds, doctests pass.
+
 ## 6. Verification (end-to-end)
 
 1. `cargo test --workspace` — unit + behavior + xval suites green.
