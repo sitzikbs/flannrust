@@ -139,6 +139,97 @@ where
             _marker: PhantomData,
         }
     }
+
+    /// Sequential build, ALWAYS available regardless of the "parallel"
+    /// feature and regardless of whether `DS: Sync` — unlike [`Self::build`]
+    /// (see that method's doc comment), this impl block carries only the
+    /// plain `DS: DataSource<T>` bound, so a non-`Sync` `DataSource` (e.g.
+    /// `Rc`-backed interior mutability) can still build an index, as long as
+    /// `threads` is left at the default `BuildThreads::Sequential`.
+    ///
+    /// Panics if `threads` was set to `Auto`/`Threads(_)` — those variants
+    /// inherently require `DS: Sync` (the parallel build shares `&DS` across
+    /// real worker threads), which this method's bound does not guarantee;
+    /// use [`Self::build`] instead for those, which has the `DS: Sync` bound
+    /// needed to actually service them. Also panics if `point_count() >
+    /// u32::MAX as usize` (leaf offsets are `u32`), same as `build()`.
+    pub fn build_sequential(self) -> KdTree<T, D, DS, M, Idx, TB> {
+        let KdTreeBuilder {
+            dim,
+            dataset,
+            metric,
+            leaf_max_size,
+            threads,
+            ..
+        } = self;
+
+        assert!(
+            matches!(threads, BuildThreads::Sequential),
+            "build_sequential() requires BuildThreads::Sequential; non-Sync datasets cannot build in parallel"
+        );
+
+        let (vind, root_bbox, nodes, n) = build_sequential_core(dim, &dataset, leaf_max_size);
+
+        KdTree {
+            dataset,
+            metric,
+            dim,
+            vind,
+            nodes,
+            root_bbox,
+            leaf_max_size,
+            size: n,
+            _marker: PhantomData,
+        }
+    }
+}
+
+/// Shared sequential-build core used by [`KdTreeBuilder::build_sequential`]
+/// and both feature-gated [`KdTreeBuilder::build`] impls' `Sequential` path
+/// — kept as a free function (rather than duplicated inline three times) so
+/// the one true sequential-build sequence has one implementation. Bounded
+/// only by plain `DataSource<T>` (no `Sync`), matching `build_sequential`'s
+/// contract. Returns `(vind, root_bbox, nodes, n)`; `n == 0` short-circuits
+/// to empty everything without touching `SubtreeBuilder` at all (mirrors the
+/// original inline `if n == 0` early-return in every one of the three call
+/// sites this replaces).
+fn build_sequential_core<T, D, DS, Idx>(
+    dim: D,
+    dataset: &DS,
+    leaf_max_size: usize,
+) -> (Vec<Idx>, D::Array<Interval<T>>, Vec<Node<T>>, usize)
+where
+    T: Scalar,
+    D: Dim,
+    DS: DataSource<T> + ?Sized,
+    Idx: IndexType,
+{
+    let n = dataset.point_count();
+
+    if n == 0 {
+        return (Vec::new(), dim.filled(Interval::default()), Vec::new(), 0);
+    }
+
+    let dim_n = dim.dim();
+    let mut vind: Vec<Idx> = init_vind(n);
+    let mut root_bbox = dim.filled(Interval::default());
+    compute_bounding_box(dataset, dim_n, root_bbox.as_mut());
+
+    let mut nodes: Vec<Node<T>> = Vec::new();
+    let root = {
+        let mut builder = SubtreeBuilder {
+            ds: dataset,
+            dim: dim_n,
+            leaf_max_size,
+            base: 0,
+            vind: &mut vind,
+            arena: &mut nodes,
+        };
+        builder.build(root_bbox.as_mut())
+    };
+    debug_assert_eq!(root, 0, "root is expected to always be arena index 0");
+
+    (vind, root_bbox, nodes, n)
 }
 
 /// `build()`, feature `"parallel"` ON: `DS: Sync` is required here (and only
@@ -292,40 +383,7 @@ where
             );
         }
 
-        let n = dataset.point_count();
-
-        if n == 0 {
-            return KdTree {
-                dataset,
-                metric,
-                dim,
-                vind: Vec::new(),
-                nodes: Vec::new(),
-                root_bbox: dim.filled(Interval::default()),
-                leaf_max_size,
-                size: 0,
-                _marker: PhantomData,
-            };
-        }
-
-        let dim_n = dim.dim();
-        let mut vind: Vec<Idx> = init_vind(n);
-        let mut root_bbox = dim.filled(Interval::default());
-        compute_bounding_box(&dataset, dim_n, root_bbox.as_mut());
-
-        let mut nodes: Vec<Node<T>> = Vec::new();
-        let root = {
-            let mut builder = SubtreeBuilder {
-                ds: &dataset,
-                dim: dim_n,
-                leaf_max_size,
-                base: 0,
-                vind: &mut vind,
-                arena: &mut nodes,
-            };
-            builder.build(root_bbox.as_mut())
-        };
-        debug_assert_eq!(root, 0, "root is expected to always be arena index 0");
+        let (vind, root_bbox, nodes, n) = build_sequential_core(dim, &dataset, leaf_max_size);
 
         KdTree {
             dataset,
@@ -979,30 +1037,31 @@ mod tests {
     // Test 12 (A8): stale-growth snapshot
     // ---------------------------------------------------------------
 
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use std::cell::Cell;
+    use std::rc::Rc;
 
-    /// A `DataSource` with interior mutability: `point_count()` reports an
-    /// `AtomicUsize` that can be grown AFTER the tree is built, over a fixed
-    /// backing array. (`Arc<AtomicUsize>` rather than `Rc<Cell<usize>>`:
-    /// `KdTreeBuilder::build` requires `DS: Sync` whenever the "parallel"
-    /// feature is on, so the interior-mutability cell itself must be `Sync`
-    /// — `Ordering::Relaxed` is fine, this test is single-threaded and only
-    /// needs the `Sync` marker, not any cross-thread ordering guarantee.)
-    /// The FIRST `count` slots (visible at build time) are deliberately
-    /// placed FAR from the test query; slots that only become visible after
-    /// growth are placed NEAR the query — so if the implementation ever
+    /// A `DataSource` with interior mutability: `point_count()` reports a
+    /// `Cell<usize>` that can be grown AFTER the tree is built, over a fixed
+    /// backing array. `Rc<Cell<usize>>` is deliberately NOT `Sync` — this is
+    /// the regression-proof (task 12 fix round 1) that non-`Sync`
+    /// `DataSource`s can still build an index via
+    /// `KdTreeBuilder::build_sequential()`, which carries no `Sync` bound
+    /// (unlike `build()`, which requires `DS: Sync` whenever the "parallel"
+    /// feature is on — see `params.rs`'s `BuildThreads` doc comment). The
+    /// FIRST `count` slots (visible at build time) are deliberately placed
+    /// FAR from the test query; slots that only become visible after growth
+    /// are placed NEAR the query — so if the implementation ever
     /// (incorrectly) re-derived tree state from `dataset.point_count()` at
     /// query time, this test would catch it by observing a changed nearest
     /// neighbor after growth.
     struct GrowableDataSource {
         data: [[f64; 2]; 8],
-        count: Arc<AtomicUsize>,
+        count: Rc<Cell<usize>>,
     }
 
     impl DataSource<f64> for GrowableDataSource {
         fn point_count(&self) -> usize {
-            self.count.load(Ordering::Relaxed)
+            self.count.get()
         }
         fn point_component(&self, idx: usize, dim: usize) -> f64 {
             self.data[idx][dim]
@@ -1011,7 +1070,7 @@ mod tests {
 
     #[test]
     fn stale_growth_after_build_is_ignored() {
-        let count = Arc::new(AtomicUsize::new(3));
+        let count = Rc::new(Cell::new(3));
         let ds = GrowableDataSource {
             data: [
                 [10.0, 10.0],
@@ -1028,7 +1087,10 @@ mod tests {
             count: count.clone(),
         };
 
-        let tree = KdTreeBuilder::new(ConstDim::<2>, ds).build();
+        // build_sequential(), NOT build(): `Rc<Cell<usize>>` is not `Sync`,
+        // so `build()` would fail to compile under the "parallel" feature —
+        // this is exactly the case `build_sequential()` exists for.
+        let tree = KdTreeBuilder::new(ConstDim::<2>, ds).build_sequential();
         assert_eq!(tree.size(), 3);
 
         let query = [0.0, 0.0];
@@ -1038,7 +1100,7 @@ mod tests {
         let found_before = tree.knn_search(&query, &mut idx_before, &mut dist_before);
 
         // Grow the dataset AFTER build.
-        count.store(8, Ordering::Relaxed);
+        count.set(8);
 
         assert_eq!(tree.size(), 3, "size() must stay snapshotted at build time");
 
@@ -1110,6 +1172,44 @@ mod tests {
             assert_eq!(si, ti);
             assert_eq!(sd, td);
         }
+    }
+
+    // ---------------------------------------------------------------
+    // Test 14 (task 12 fix round 1): build_sequential() — always available
+    // regardless of "parallel"/`DS: Sync`. The positive non-Sync case is
+    // `stale_growth_after_build_is_ignored` above (uses
+    // `Rc<Cell<usize>>::build_sequential()` directly — that test IS the
+    // regression proof); the positive Sync-dataset-via-plain-`build()`-plus-
+    // -Sequential case is already covered by
+    // `defaults_leaf_max_size_10_and_knn_matches_brute_force` (default
+    // `threads` is `Sequential`, dataset is `&[[f64; N]]`, which is `Sync`)
+    // and, under the "parallel" feature, by
+    // `threads_auto_and_threads2_end_to_end_knn_matches_sequential` above
+    // (`.threads(BuildThreads::Sequential).build()`). This test covers the
+    // one behavior not exercised elsewhere: `build_sequential()` panics on
+    // non-`Sequential` `threads`.
+    // ---------------------------------------------------------------
+
+    #[test]
+    #[should_panic(expected = "build_sequential() requires BuildThreads::Sequential")]
+    fn build_sequential_panics_on_non_sequential_threads() {
+        use crate::params::BuildThreads;
+
+        let pts: Vec<[f64; 2]> = vec![[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]];
+        let _ = KdTreeBuilder::new(ConstDim::<2>, pts.as_slice())
+            .threads(BuildThreads::Auto)
+            .build_sequential();
+    }
+
+    #[test]
+    fn build_sequential_matches_plain_build_on_a_sync_dataset() {
+        let pts = seeded_points::<3>(0x5EA1, 300, 40.0);
+
+        let via_build = KdTreeBuilder::new(ConstDim::<3>, pts.as_slice()).build();
+        let via_build_sequential = KdTreeBuilder::new(ConstDim::<3>, pts.as_slice()).build_sequential();
+
+        assert_eq!(via_build.point_indices(), via_build_sequential.point_indices());
+        assert_eq!(via_build.size(), via_build_sequential.size());
     }
 }
 

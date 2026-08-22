@@ -26,6 +26,18 @@ impl Default for SearchParams {
 /// `KdTreeBuilder::build()` panics on `Auto`/`Threads(_)` with a message
 /// mirroring C++ `NANOFLANN_NO_THREADS`'s throw ("Multithreading is
 /// disabled").
+///
+/// A second, narrower gate exists even WITH the feature on: `build()`'s
+/// signature additionally requires `DS: Sync` whenever "parallel" is
+/// enabled (the parallel path shares `&DS` across real rayon worker
+/// threads, which requires `Sync`) — so a non-`Sync` `DataSource` (e.g.
+/// `Rc`-backed interior mutability) cannot call `build()` at all under the
+/// default feature set, even to request a plain `Sequential` build. This is
+/// a BOUND on `build()`, not a behavior gate on this enum, and it is what
+/// `KdTreeBuilder::build_sequential()` exists to route around: that method
+/// carries no `Sync` bound, always compiles, and always builds
+/// (`Sequential` only — it panics on `Auto`/`Threads(_)`, since those
+/// genuinely cannot run without `Sync`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuildThreads {
     Sequential,
