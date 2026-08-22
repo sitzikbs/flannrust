@@ -96,6 +96,14 @@ flannrust/
 
 Unit tests live inline per module plus `crates/nanoflann-rs/tests/behavior.rs` for contract tests that don't need the C++ oracle.
 
+> Footnote (added at T15, gap-audit N-8): in the delivered M1 code, the
+> contract tests this diagram assigned to a standalone
+> `crates/nanoflann-rs/tests/behavior.rs` ended up as inline `#[cfg(test)]`
+> modules within each source file (`tree.rs`, `metric.rs`, `bbox.rs`, etc.)
+> instead — no `tests/behavior.rs` file exists. Keeping this note here so the
+> diagram above stays an accurate historical record of what was planned
+> rather than silently going stale relative to what was built.
+
 ## 2. Public API (exact sketch)
 
 ```rust

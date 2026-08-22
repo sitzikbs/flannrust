@@ -91,3 +91,73 @@ overwritten on load (1616-1638). Our index-based nodes cannot be byte-compatible
 - Static ctor forwards variadic args to the metric (1892) — stateful metrics; only the
   static adaptor does this.
 - leaf_max_size default 10; README recommends 10–50.
+
+## Implementation-fidelity notes (gap-audit N-3, N-9)
+
+Two subtle line-for-line parity details worth knowing before touching
+`search.rs` or `bbox.rs` again:
+
+- **`worst_dist()` is called live, not hoisted** (`search.rs`'s leaf loop,
+  mirrors nanoflann.hpp ~1259): the C++ source re-evaluates
+  `result_set.worstDist()` inline in the loop condition on every leaf-point
+  iteration, rather than caching it in a local before the loop starts. This
+  port mirrors that exact call site rather than hoisting it, even though the
+  two are functionally equivalent (`worst_dist` only changes via
+  `add_point`, so hoisting would be a legal optimization) — kept as
+  written-to-match rather than "improved", so future line-by-line parity
+  audits against the C++ source don't have to reconcile a structural
+  difference that isn't actually a behavior difference.
+- **`compute_bounding_box`'s scan uses two independent one-sided
+  comparisons per axis**, not a combined min/max: `if v < bbox[i].low {
+  bbox[i].low = v; } if v > bbox[i].high { bbox[i].high = v; }` (`bbox.rs`),
+  matching nanoflann's own bbox-scan comparison order exactly. This matters
+  for bit-parity because `min`/`max`-style implementations can differ from
+  this two-independent-`if` form on NaN inputs (which are out of this
+  crate's domain anyway — see the README's "Input domain" section) or under
+  aggressive fast-math reassociation (not used on either side here, but the
+  explicit form leaves nothing for a future optimization pass to
+  accidentally reassociate into a divergent comparison order).
+
+## M1 outcome (2026-08-22)
+
+M1 (the static kd-tree, `KDTreeSingleIndexAdaptor` only) is complete. Summary
+for M2+ planning; the repo root `README.md` has the full user-facing story.
+
+- **Parity:** full cross-validation suite (`crates/xval`) passes bit-exact
+  (positional, `max_ulps = 0`) across the matrix — {f32,f64} × dims
+  {2,3,8,16,32} runtime + `ConstDim<3>` × metrics {L1,L2,L2Simple,SO3}
+  (+SO2 dim-2) × datasets {uniform, clustered, 30% duplicates, all-identical,
+  exponential-spacing} × leaf {1,10,64}, including `vind` (tree-permutation)
+  equality, not just query-result equality. Tie latitude was relaxed only
+  within exactly-tied (bit-equal) distance groups, never across a real
+  divergence — the one legitimate source of tie-order ambiguity is C++'s
+  `std::sort` being unstable (this port's radius-result sort is stable
+  instead, a documented deviation).
+- **Vestigial C++ spots confirmed in practice** (matching this file's
+  earlier "Stale / questionable spots" section, now empirically verified
+  rather than just read off the source): `size_at_index_build_` really is
+  dead and the query-time snapshot behavior really does come from
+  `vAcc_`/`size_` alone (the A8 stale-growth test in `tree.rs` exercises
+  this); `BoxResultSet::sort()` really is unreachable from the box-search
+  path in both implementations (neither side calls it), so this port
+  omitted it entirely rather than porting dead code.
+- **The inf-input finding** (originally surfaced while building xval's
+  exponential-spacing f32 test data, Task 11): feeding near-all-`+inf` point
+  coordinates to either implementation's builder is out of the algorithm's
+  domain, not a bug in either. An all-`+inf` bounding box has
+  `span = inf - inf = NaN`, and NaN fails every `<` comparison used in
+  split-axis/cutval selection, so partitioning can never shrink the
+  candidate set. Verified independently on both sides on identical data: the
+  C++ oracle **segfaults** (unbounded native recursion overflows the stack);
+  the Rust builder **exhausts memory** (observed past 18 GB RSS before being
+  killed, since its iterative builder has no stack-depth limit to hit
+  first). Neither is a regression to fix in M1 — coordinates are assumed
+  finite — but M2's dynamic adaptor (or a shared validation layer) is a
+  reasonable place to add an explicit finite-coordinate check if silent
+  non-termination on bad input ever becomes a real concern.
+- **Speed:** all four perf gates pass with wide margin; build reached
+  parity (ratio 1.018) and `knn_fixed3` closed to a ~4% asm-analyzed residual
+  gap (recursive `search_level`/`searchLevel` call overhead, present on both
+  sides — see `docs/benchmarks-m1.md`). A pre-existing dim-32 knn gap
+  (~1.3-1.45x) was found and is out of M1's scope (dim-3/dim-8 only);
+  flagged for M2.

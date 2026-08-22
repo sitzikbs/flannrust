@@ -1,5 +1,25 @@
 //! Rust port of nanoflann's static kd-tree; behavioral parity with nanoflann 1.12.1
 //!
+//! # Contracts (see the README for the full list, deviations, and input domain)
+//!
+//! - `L2`/`L2Simple` distances and radii are SQUARED (`L1` is summed absolute
+//!   value); `SO2` is an UNsquared wrapped angle of only the LAST dimension
+//!   (single-shot wrap, inputs assumed already in `[-pi, pi]`).
+//! - Radius search is strictly `dist < radius` (boundary excluded); box
+//!   search is inclusive on all faces, unsorted, traversal order, no params.
+//! - kNN ties keep traversal order by default ([`result_set::KeepInsertionOrder`]);
+//!   opt into [`result_set::SmallestIndexWins`] for `NANOFLANN_FIRST_MATCH`.
+//! - `eps`: a node is visited iff `mindist * (1 + eps) <= worst_dist`, `eps`
+//!   widened to the distance type BEFORE the multiply-add.
+//! - Queries snapshot the dataset at `build()`; growth afterward is invisible
+//!   until a rebuild.
+//! - [`ResultItem`] is `#[repr(C)] { index, distance }`.
+//! - Coordinates must be finite: NaN/±inf inputs are outside this crate's
+//!   domain (see the README's "Input domain" section).
+//! - Under the default `parallel` feature, `KdTreeBuilder::build()` requires
+//!   `DataSource: Sync`; non-`Sync` data sources use
+//!   [`tree::KdTreeBuilder::build_sequential`] instead.
+//!
 //! # Example
 //!
 //! ```
