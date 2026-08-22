@@ -22,6 +22,7 @@ pub(crate) struct Node<T> {
     divhigh: T,
 }
 
+#[allow(dead_code)] // TODO(task-6): consumed by the builder
 pub(crate) const LEAF: u32 = u32::MAX;
 
 #[allow(dead_code)] // TODO(task-6): consumed by the builder
@@ -86,12 +87,16 @@ mod tests {
 
     #[test]
     fn test_node_f32_size_and_alignment() {
+        // Intentional layout lock — vs C++'s ~48-byte alignas(16) node;
+        // a future task may A/B test align(16).
         assert_eq!(size_of::<Node<f32>>(), 20);
         assert_eq!(align_of::<Node<f32>>(), 4);
     }
 
     #[test]
     fn test_node_f64_size_and_alignment() {
+        // Intentional layout lock — vs C++'s ~48-byte alignas(16) node;
+        // a future task may A/B test align(16).
         assert_eq!(size_of::<Node<f64>>(), 32);
         assert_eq!(align_of::<Node<f64>>(), 8);
     }
