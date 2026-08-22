@@ -1,3 +1,18 @@
 [workspace]
 resolver = "2"
 members = ["crates/nanoflann-rs", "crates/nanoflann-ref", "crates/xval"]
+
+# The C++ oracle (nanoflann-ref) is always compiled as one translation unit at
+# -O3 (see crates/nanoflann-ref/build.rs). Rust's default 16 codegen units
+# would be an unforced handicap against that single-TU baseline and make any
+# speed comparison disputable -- codegen-units = 1 removes that variable.
+# `lto = "thin"` buys back cross-function inlining a single codegen unit
+# already gets for free within itself, at a fraction of "fat" LTO's build
+# cost. `[profile.bench]` inherits so `cargo bench` gets the exact same
+# codegen as `cargo build --release` / `cargo run --release`.
+[profile.release]
+codegen-units = 1
+lto = "thin"
+
+[profile.bench]
+inherits = "release"

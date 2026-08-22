@@ -6,6 +6,17 @@
 //! crate is the judge, not a library: deterministic data generators, ULP-tier
 //! comparators, and thin build helpers so `tests/*.rs` read cleanly. See
 //! `tests/xval_knn.rs`, `tests/xval_radius_box.rs`, `tests/xval_build.rs`.
+//!
+//! This crate also hosts the project's speed story: `benches/bench_build.rs`,
+//! `benches/bench_knn.rs`, `benches/bench_radius.rs` (criterion, `harness =
+//! false`), the automated pass/fail perf gate (`tests/perf_gate.rs`), the
+//! native-codegen bit-parity canary (`tests/native_parity.rs`), and the
+//! report-data collector (`examples/report_data.rs`). Run the benches with
+//! `RUSTFLAGS="-C target-cpu=native" cargo bench -p xval` for a fair fight --
+//! the C++ oracle is always built `-O3 -march=native -ffp-contract=off`
+//! (see `crates/nanoflann-ref/build.rs`), so without `target-cpu=native` the
+//! Rust side would be handicapped to a generic-x86-64 baseline instruction
+//! set while the C++ side already gets the host's full ISA.
 
 use nanoflann_rs::{
     BuildThreads as RustBuildThreads, DynDim, FlatSlice, Interval, KdTree, KdTreeBuilder,
@@ -159,6 +170,47 @@ pub fn queries(seed: u64, data: &[f64], dim: usize, n_queries: usize) -> Vec<f64
 /// disadvantaged by an independent f64->f32 rounding).
 pub fn to_f32(v: &[f64]) -> Vec<f32> {
     v.iter().map(|&x| x as f32).collect()
+}
+
+/// Reshapes a row-major flat buffer (`n*3` elements) into `n` fixed-size
+/// `[T; 3]` points, for the `ConstDim::<3>` benchmark/report arms (the
+/// `&[[T; 3]]` `DataSource` impl in `nanoflann_rs::data_source`). Panics if
+/// `flat.len()` is not a multiple of 3.
+pub fn to_array3<T: Copy>(flat: &[T]) -> Vec<[T; 3]> {
+    assert_eq!(flat.len() % 3, 0, "to_array3: flat.len() ({}) must be a multiple of 3", flat.len());
+    flat.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect()
+}
+
+/// Round-robin iterator over a pre-generated row-major query set (`n*dim`
+/// elements), used by `benches/*.rs`, `tests/perf_gate.rs`, and
+/// `examples/report_data.rs` so every timed/scored query loop walks the SAME
+/// "index counter mod len" pattern instead of each call site reimplementing
+/// it slightly differently. Panics (via the `dim == 0` / non-multiple check
+/// in `next`'s slicing) only if constructed with `data.len()` not a multiple
+/// of `dim`, or `dim == 0`.
+pub struct RoundRobin<'a, T> {
+    data: &'a [T],
+    dim: usize,
+    n: usize,
+    i: usize,
+}
+
+impl<'a, T> RoundRobin<'a, T> {
+    pub fn new(data: &'a [T], dim: usize) -> Self {
+        assert!(dim > 0, "RoundRobin: dim must be > 0");
+        assert_eq!(data.len() % dim, 0, "RoundRobin: data.len() ({}) must be a multiple of dim ({})", data.len(), dim);
+        let n = data.len() / dim;
+        assert!(n > 0, "RoundRobin: data must contain at least one point");
+        Self { data, dim, n, i: 0 }
+    }
+
+    /// The next query slice (length `dim`), advancing the internal counter
+    /// modulo `n` (wraps back to index 0 after the last query).
+    pub fn next(&mut self) -> &'a [T] {
+        let q = &self.data[self.i * self.dim..(self.i + 1) * self.dim];
+        self.i = (self.i + 1) % self.n;
+        q
+    }
 }
 
 // ============================================================================
@@ -610,6 +662,143 @@ macro_rules! define_rust_index {
 define_rust_index!(RustIndexF64, build_rust_f64, f64);
 define_rust_index!(RustIndexF32, build_rust_f32, f32);
 
+// ============================================================================
+// Brute-force ground truth + accuracy scoring -- used by
+// `examples/report_data.rs` to score both implementations' *approximate*
+// (eps > 0) and exact (eps == 0) k-NN results against a tree-independent
+// reference. O(n_queries * n); intentionally the slow, dumb, trivially-
+// correct baseline -- see each function's doc comment for the exact tie
+// rule and error definition (both hand-checked by the unit tests below).
+// ============================================================================
+
+macro_rules! impl_brute_force_knn {
+    ($name:ident, $t:ty) => {
+        /// Linear-scan k-NN ground truth under squared L2 (matching this
+        /// crate's convention everywhere else: L2-family distances are
+        /// SQUARED, never square-rooted). Tie-broken by ASCENDING INDEX --
+        /// a total, deterministic order that does not depend on any tree's
+        /// build/traversal order, chosen so the ground truth itself is
+        /// reproducible independent of which implementation (or which
+        /// insertion-order tie rule) produced a candidate result being
+        /// scored against it. Returns up to `k` `(index, squared_distance)`
+        /// pairs (fewer iff `data` holds fewer than `k` points), sorted
+        /// ascending primarily by distance, secondarily by index.
+        ///
+        /// Panics if `dim == 0`, `query.len() != dim`, or `data.len()` is
+        /// not a multiple of `dim`.
+        pub fn $name(data: &[$t], dim: usize, query: &[$t], k: usize) -> Vec<(u32, $t)> {
+            assert!(dim > 0, "{}: dim must be > 0", stringify!($name));
+            assert_eq!(query.len(), dim, "{}: query.len() must equal dim", stringify!($name));
+            assert_eq!(data.len() % dim, 0, "{}: data.len() must be a multiple of dim", stringify!($name));
+            let n = data.len() / dim;
+            let mut all: Vec<(u32, $t)> = (0..n)
+                .map(|i| {
+                    let pt = &data[i * dim..(i + 1) * dim];
+                    let d: $t = pt.iter().zip(query.iter()).map(|(&a, &b)| (a - b) * (a - b)).sum();
+                    (i as u32, d)
+                })
+                .collect();
+            all.sort_by(|a, b| a.1.partial_cmp(&b.1).expect("brute_force_knn: NaN distance").then(a.0.cmp(&b.0)));
+            all.truncate(k.min(n));
+            all
+        }
+    };
+}
+
+impl_brute_force_knn!(brute_force_knn_l2_f32, f32);
+impl_brute_force_knn!(brute_force_knn_l2_f64, f64);
+
+/// One query's accuracy score against a ground-truth result list.
+#[derive(Debug, Clone, PartialEq)]
+pub struct QueryScore {
+    /// `true` iff the candidate's INDEX SET equals the ground truth's index
+    /// SET exactly (order-independent -- deliberately not positional, since
+    /// a candidate may legitimately return the same k points in a different
+    /// order under a different tie rule and still be "exact").
+    pub exact: bool,
+    /// Per-rank relative distance error, ONLY populated when
+    /// `gt.len() == got.len()` (a length mismatch is itself evidence of an
+    /// incomplete/approximate result, not something to paper over with a
+    /// partial rank-wise comparison -- left empty in that case). Rank `i`'s
+    /// entry is `|got[i].1 - gt[i].1| / gt[i].1`, or `0.0` if
+    /// `gt[i].1 == 0.0` and `got[i].1 == 0.0` too (both exactly at the query
+    /// point), or `|got[i].1|` (an absolute, not relative, fallback) if
+    /// `gt[i].1 == 0.0` but `got[i].1 != 0.0` (a relative error against a
+    /// zero denominator is undefined; falling back to the raw magnitude
+    /// keeps the number finite and still informative instead of `inf`/`NaN`
+    /// poisoning the aggregate mean/max downstream).
+    pub rel_dist_errors: Vec<f64>,
+}
+
+macro_rules! impl_score_query {
+    ($name:ident, $t:ty) => {
+        /// Scores one candidate k-NN result (`got`) against ground truth
+        /// (`gt`) -- see `QueryScore`'s doc comment for exactly what `exact`
+        /// and `rel_dist_errors` mean.
+        pub fn $name(gt: &[(u32, $t)], got: &[(u32, $t)]) -> QueryScore {
+            let gt_set: std::collections::BTreeSet<u32> = gt.iter().map(|x| x.0).collect();
+            let got_set: std::collections::BTreeSet<u32> = got.iter().map(|x| x.0).collect();
+            let exact = gt_set == got_set;
+            let mut rel_dist_errors = Vec::new();
+            if gt.len() == got.len() {
+                for i in 0..gt.len() {
+                    let g = gt[i].1 as f64;
+                    let c = got[i].1 as f64;
+                    let err = if g == 0.0 {
+                        if c == 0.0 {
+                            0.0
+                        } else {
+                            c.abs()
+                        }
+                    } else {
+                        (c - g).abs() / g
+                    };
+                    rel_dist_errors.push(err);
+                }
+            }
+            QueryScore { exact, rel_dist_errors }
+        }
+    };
+}
+
+impl_score_query!(score_query_f32, f32);
+impl_score_query!(score_query_f64, f64);
+
+// ============================================================================
+// Median-of-N timing -- shared by `tests/perf_gate.rs` and
+// `examples/report_data.rs` (both use the SAME "median of 7 timed runs,
+// after one untimed warmup" methodology, per the brief).
+// ============================================================================
+
+/// Median of a non-empty sample. Odd length -> middle element after
+/// sorting; even length -> average of the two middle elements (this crate
+/// always calls it with an odd `runs` count, but the even-length branch
+/// keeps the function total rather than partial).
+pub fn median_of(mut v: Vec<f64>) -> f64 {
+    assert!(!v.is_empty(), "median_of: empty sample");
+    v.sort_by(|a, b| a.partial_cmp(b).expect("median_of: NaN sample"));
+    let n = v.len();
+    if n % 2 == 1 {
+        v[n / 2]
+    } else {
+        (v[n / 2 - 1] + v[n / 2]) / 2.0
+    }
+}
+
+/// Runs `f` once untimed (warmup), then `runs` times timed via
+/// `std::time::Instant`; returns the median wall time in milliseconds.
+pub fn timed_median_ms<F: FnMut()>(runs: usize, mut f: F) -> f64 {
+    assert!(runs > 0, "timed_median_ms: runs must be > 0");
+    f();
+    let mut samples_ms = Vec::with_capacity(runs);
+    for _ in 0..runs {
+        let start = std::time::Instant::now();
+        f();
+        samples_ms.push(start.elapsed().as_secs_f64() * 1000.0);
+    }
+    median_of(samples_ms)
+}
+
 /// Deterministic, order-sensitive mixing hash over `tag` and `parts` (an
 /// FNV-1a variant) -- used by `tests/xval_*.rs` to derive a `u64` seed from
 /// loop indices for each config, so every config gets its own reproducible
@@ -1002,6 +1191,178 @@ mod tests {
         let v = vec![1.5f64, -2.25, 0.0];
         let got = to_f32(&v);
         assert_eq!(got, vec![1.5f32, -2.25, 0.0]);
+    }
+
+    #[test]
+    fn to_array3_reshapes_row_major_triples() {
+        let flat = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let got = to_array3(&flat);
+        assert_eq!(got, vec![[1.0f32, 2.0, 3.0], [4.0, 5.0, 6.0]]);
+    }
+
+    #[test]
+    #[should_panic]
+    fn to_array3_non_multiple_of_3_panics() {
+        let flat = vec![1.0f32, 2.0];
+        let _ = to_array3(&flat);
+    }
+
+    #[test]
+    fn round_robin_wraps_after_last_query() {
+        let data = [0.0f32, 0.0, 1.0, 1.0, 2.0, 2.0]; // 3 points, dim 2
+        let mut rr = RoundRobin::new(&data, 2);
+        assert_eq!(rr.next(), &[0.0, 0.0]);
+        assert_eq!(rr.next(), &[1.0, 1.0]);
+        assert_eq!(rr.next(), &[2.0, 2.0]);
+        assert_eq!(rr.next(), &[0.0, 0.0], "must wrap back to index 0");
+        assert_eq!(rr.next(), &[1.0, 1.0]);
+    }
+
+    #[test]
+    #[should_panic]
+    fn round_robin_zero_dim_panics() {
+        let data = [1.0f32];
+        let _ = RoundRobin::new(&data, 0);
+    }
+
+    // ------------------------------------------------------------------
+    // brute_force_knn_l2_* / score_query_* -- tiny hand-checked cases
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn brute_force_knn_returns_nearest_k_sorted_ascending() {
+        // dim 1: points at 0, 1, 2, 3. Query at 0.0 -> squared distances
+        // 0, 1, 4, 9 for indices 0, 1, 2, 3 respectively. k=2 -> [(0,0),(1,1)].
+        let data = [0.0f32, 1.0, 2.0, 3.0];
+        let got = brute_force_knn_l2_f32(&data, 1, &[0.0], 2);
+        assert_eq!(got, vec![(0u32, 0.0f32), (1u32, 1.0f32)]);
+    }
+
+    #[test]
+    fn brute_force_knn_ties_broken_by_ascending_index() {
+        // dim 1: points at -1 and 1. Query at 0.0 -> both squared distance
+        // 1.0 -- a genuine tie, must resolve to index order 0 then 1.
+        let data = [-1.0f32, 1.0];
+        let got = brute_force_knn_l2_f32(&data, 1, &[0.0], 2);
+        assert_eq!(got, vec![(0u32, 1.0f32), (1u32, 1.0f32)]);
+    }
+
+    #[test]
+    fn brute_force_knn_k_greater_than_n_truncates() {
+        let data = [0.0f32, 5.0];
+        let got = brute_force_knn_l2_f32(&data, 1, &[0.0], 10);
+        assert_eq!(got.len(), 2);
+    }
+
+    #[test]
+    fn brute_force_knn_f64_matches_hand_calc_dim2() {
+        // Two points at (0,0) and (3,4) (a 3-4-5 triangle), query at
+        // (0,0) -> squared distances 0 and 25.
+        let data = [0.0f64, 0.0, 3.0, 4.0];
+        let got = brute_force_knn_l2_f64(&data, 2, &[0.0, 0.0], 2);
+        assert_eq!(got, vec![(0u32, 0.0f64), (1u32, 25.0f64)]);
+    }
+
+    #[test]
+    fn score_query_exact_match_same_order_zero_error() {
+        let gt = [(0u32, 1.0f32), (1u32, 4.0)];
+        let got = [(0u32, 1.0f32), (1u32, 4.0)];
+        let s = score_query_f32(&gt, &got);
+        assert!(s.exact);
+        assert_eq!(s.rel_dist_errors, vec![0.0, 0.0]);
+    }
+
+    #[test]
+    fn score_query_exact_match_different_order_still_exact() {
+        // Same index SET, different order (e.g. a different tie rule) --
+        // `exact` is order-independent by design.
+        let gt = [(0u32, 1.0f32), (1u32, 1.0)];
+        let got = [(1u32, 1.0f32), (0u32, 1.0)];
+        let s = score_query_f32(&gt, &got);
+        assert!(s.exact);
+    }
+
+    #[test]
+    fn score_query_different_index_set_is_not_exact() {
+        let gt = [(0u32, 1.0f32)];
+        let got = [(2u32, 1.0f32)];
+        let s = score_query_f32(&gt, &got);
+        assert!(!s.exact);
+    }
+
+    #[test]
+    fn score_query_rel_dist_error_hand_calc() {
+        // gt distance 4.0, got distance 5.0 -> |5-4|/4 = 0.25 exactly.
+        let gt = [(0u32, 4.0f32)];
+        let got = [(0u32, 5.0f32)];
+        let s = score_query_f32(&gt, &got);
+        assert_eq!(s.rel_dist_errors, vec![0.25]);
+    }
+
+    #[test]
+    fn score_query_length_mismatch_leaves_rel_dist_errors_empty() {
+        let gt = [(0u32, 1.0f32), (1u32, 2.0)];
+        let got = [(0u32, 1.0f32)];
+        let s = score_query_f32(&gt, &got);
+        assert!(s.rel_dist_errors.is_empty());
+    }
+
+    #[test]
+    fn score_query_zero_gt_distance_falls_back_to_absolute_error() {
+        // gt distance 0.0 (exact dataset-point query), got distance 0.5 --
+        // relative error against a zero denominator is undefined, so the
+        // fallback is the raw magnitude (0.5), not inf/NaN.
+        let gt = [(0u32, 0.0f32)];
+        let got = [(0u32, 0.5f32)];
+        let s = score_query_f32(&gt, &got);
+        assert_eq!(s.rel_dist_errors, vec![0.5]);
+    }
+
+    #[test]
+    fn score_query_zero_gt_and_zero_got_distance_is_zero_error() {
+        let gt = [(0u32, 0.0f32)];
+        let got = [(0u32, 0.0f32)];
+        let s = score_query_f32(&gt, &got);
+        assert_eq!(s.rel_dist_errors, vec![0.0]);
+    }
+
+    // ------------------------------------------------------------------
+    // median_of / timed_median_ms
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn median_of_odd_length_is_middle_element() {
+        assert_eq!(median_of(vec![7.0, 1.0, 5.0, 3.0, 9.0, 2.0, 4.0]), 4.0);
+    }
+
+    #[test]
+    fn median_of_single_element_is_itself() {
+        assert_eq!(median_of(vec![42.0]), 42.0);
+    }
+
+    #[test]
+    fn median_of_even_length_averages_middle_two() {
+        assert_eq!(median_of(vec![1.0, 2.0, 3.0, 4.0]), 2.5);
+    }
+
+    #[test]
+    fn median_of_is_robust_to_one_outlier() {
+        // 7 samples, one wild outlier -- median must ignore it (this is
+        // exactly why the perf gate/report collector use median-of-7, not
+        // mean, over real timed runs on a possibly-noisy machine).
+        let v = vec![1.0, 1.1, 1.05, 1.2, 1.15, 1.1, 1000.0];
+        assert_eq!(median_of(v), 1.1);
+    }
+
+    #[test]
+    fn timed_median_ms_runs_warmup_plus_n_and_returns_nonnegative() {
+        use std::cell::Cell;
+        let calls = Cell::new(0u32);
+        let ms = timed_median_ms(5, || {
+            calls.set(calls.get() + 1);
+        });
+        assert_eq!(calls.get(), 6, "expected 1 warmup + 5 timed calls");
+        assert!(ms >= 0.0);
     }
 
     // ------------------------------------------------------------------
