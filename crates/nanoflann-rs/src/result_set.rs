@@ -218,6 +218,7 @@ pub(crate) struct BoxResultSet<'a, Idx> {
     pub(crate) indices: &'a mut Vec<Idx>,
 }
 
+#[allow(dead_code)] // TODO(task-9): used by find_within_box
 impl<'a, Idx: Copy> BoxResultSet<'a, Idx> {
     pub(crate) fn new(indices: &'a mut Vec<Idx>) -> Self {
         indices.clear();
