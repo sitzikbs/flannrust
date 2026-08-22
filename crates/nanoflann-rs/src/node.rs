@@ -22,10 +22,8 @@ pub(crate) struct Node<T> {
     divhigh: T,
 }
 
-#[allow(dead_code)] // TODO(task-6): consumed by the builder
 pub(crate) const LEAF: u32 = u32::MAX;
 
-#[allow(dead_code)] // TODO(task-6): consumed by the builder
 impl<T: Scalar> Node<T> {
     pub(crate) fn leaf(left: u32, right: u32) -> Self {
         Self { a: left, b: right, divfeat: LEAF, divlow: T::default(), divhigh: T::default() }
@@ -42,6 +40,19 @@ impl<T: Scalar> Node<T> {
         self.b = child2;
     }
 
+    /// Interior only: update the gap bounds (set by `finalize_split` after
+    /// both children's bboxes are known).
+    pub(crate) fn set_div_bounds(&mut self, divlow: T, divhigh: T) {
+        self.divlow = divlow;
+        self.divhigh = divhigh;
+    }
+}
+
+/// Readers used to WALK an already-built tree (as opposed to the writers
+/// above, used to BUILD one). Not yet called from non-test code: task 6's
+/// builder only writes nodes; task 8's `search.rs` is what walks them.
+#[allow(dead_code)] // TODO(task-8): consumed by search.rs's tree walk
+impl<T: Scalar> Node<T> {
     #[inline(always)]
     pub(crate) fn is_leaf(&self) -> bool { self.divfeat == LEAF }
 
@@ -71,13 +82,6 @@ impl<T: Scalar> Node<T> {
 
     #[inline(always)]
     pub(crate) fn div_high(&self) -> T { self.divhigh }
-
-    /// Interior only: update the gap bounds (set by `finalize_split` after
-    /// both children's bboxes are known).
-    pub(crate) fn set_div_bounds(&mut self, divlow: T, divhigh: T) {
-        self.divlow = divlow;
-        self.divhigh = divhigh;
-    }
 }
 
 #[cfg(test)]

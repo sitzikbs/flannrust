@@ -7,6 +7,7 @@ pub mod data_source;
 pub mod metric;
 pub mod result_set;
 mod node;
+mod build;
 
 pub use scalar::{Scalar, DistanceValue};
 pub use dim::{Dim, ConstDim, DynDim};

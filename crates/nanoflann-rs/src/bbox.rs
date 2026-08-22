@@ -20,7 +20,7 @@ impl<T: Scalar> Interval<T> {
 /// Fill `bbox` (length = dim) with the dataset's bounds: the dataset's own
 /// `fill_bbox` if it provides one, else a full scan. Same comparison order
 /// as C++ (`< low` then `> high`, two independent ifs).
-#[allow(dead_code)] // TODO(task-6): consumed by the builder
+#[allow(dead_code)] // TODO(task-10): called by the tree façade before SubtreeBuilder::build
 pub(crate) fn compute_bounding_box<T: Scalar, DS: DataSource<T> + ?Sized>(
     ds: &DS,
     dim: usize,
