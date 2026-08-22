@@ -1,6 +1,8 @@
 //! Cross-validation suite: same data, same queries, Rust `nanoflann-rs`
 //! `KdTree` vs the in-process C++ nanoflann 1.12.1 oracle (`nanoflann-ref`),
-//! compared BIT-EXACTLY (`max_ulps = 0` is the default everywhere). This
+//! compared BIT-EXACTLY (`ties = false`, positional, is the default
+//! everywhere; `ties = true` relaxes ONLY index order within EXACT
+//! (bit-equal) tie groups -- see `assert_knn_equal_f64`'s doc comment). This
 //! crate is the judge, not a library: deterministic data generators, ULP-tier
 //! comparators, and thin build helpers so `tests/*.rs` read cleanly. See
 //! `tests/xval_knn.rs`, `tests/xval_radius_box.rs`, `tests/xval_build.rs`.
@@ -194,23 +196,39 @@ impl_ulp_diff!(ulp_diff_f32, f32);
 
 macro_rules! impl_knn_comparator {
     ($assert_fn:ident, $ulp_fn:ident, $t:ty) => {
-        /// At `max_ulps == 0` (the default everywhere): POSITIONAL equality
-        /// -- indices must match exactly at every rank and distances must be
-        /// bit-equal. This is what locks cross-language tie ORDER
-        /// (`KeepInsertionOrder` vs the C++ default): a tie-group multiset
-        /// comparison would silently never test it on duplicate-heavy data.
+        /// `ties == false` (the default everywhere): POSITIONAL equality --
+        /// indices must match exactly at every rank AND distances must be
+        /// bit-equal at every rank. This is what locks cross-language tie
+        /// ORDER (`KeepInsertionOrder` vs the C++ default): an index-only
+        /// multiset comparison would silently never test it on
+        /// duplicate-heavy data.
         ///
-        /// Only when `max_ulps > 0`: consecutive entries whose distance is
-        /// within `max_ulps` of the group's HEAD distance, on BOTH sides
-        /// independently, are grouped; the group boundaries themselves must
-        /// still match (a length mismatch there is reported as a group
-        /// mismatch, not silently absorbed), and within a matching group the
-        /// index sequences are compared as MULTISETS. Outside groups
-        /// (singleton groups), this degenerates to the positional check.
+        /// `ties == true` ("exact-tie-group" mode, for the one place C++'s
+        /// OWN contract leaves order unspecified -- radius search's final
+        /// `std::sort`, nanoflann.hpp:463, which is UNSTABLE): the ONLY
+        /// thing relaxed is INDEX ORDER, and ONLY within a maximal run of
+        /// entries whose distance is EXACTLY equal (`ulp_diff == 0`) to
+        /// every other entry in that run -- computed independently on each
+        /// side via each side's OWN self-comparison. Two things are still
+        /// checked unconditionally, at every rank, exactly as strictly as
+        /// the positional mode:
+        /// - the exact-tie run boundaries themselves must match between
+        ///   rust and cpp (a length mismatch there is a distinct "group
+        ///   BOUNDARY mismatch", not silently absorbed into anything else);
+        /// - EVERY rank's distance must still be bit-equal cross-side
+        ///   (`ulp_diff(r_dist[k], c_dist[k]) == 0` for every `k` in the
+        ///   matched run, not just checked once per group) -- this is what
+        ///   makes a singleton run (no tie at all) degenerate EXACTLY to the
+        ///   positional check, and what catches a same-index,
+        ///   different-distance divergence that an index-only multiset
+        ///   comparison would silently pass.
+        ///
+        /// Only the INDEX SEQUENCE within a matched run is compared as a
+        /// multiset instead of positionally.
         ///
         /// Panics (`assert!`/`panic!`) with a full dump of both lists on any
         /// mismatch.
-        pub fn $assert_fn(rust: (&[u32], &[$t]), cpp: (&[u32], &[$t]), max_ulps: u64) {
+        pub fn $assert_fn(rust: (&[u32], &[$t]), cpp: (&[u32], &[$t]), ties: bool) {
             let (r_idx, r_dist) = rust;
             let (c_idx, c_dist) = cpp;
             assert_eq!(
@@ -239,7 +257,7 @@ macro_rules! impl_knn_comparator {
                 c_dist
             );
             let n = r_idx.len();
-            if max_ulps == 0 {
+            if !ties {
                 for i in 0..n {
                     let ud = $ulp_fn(r_dist[i], c_dist[i]);
                     if r_idx[i] != c_idx[i] || ud != 0 {
@@ -252,12 +270,15 @@ macro_rules! impl_knn_comparator {
             } else {
                 let mut i = 0;
                 while i < n {
+                    // Exact-tie run end on EACH side, independently, via
+                    // that side's OWN self-comparison (ulp_diff == 0, not
+                    // "within some tolerance").
                     let mut end_r = i;
-                    while end_r + 1 < n && $ulp_fn(r_dist[end_r + 1], r_dist[i]) <= max_ulps {
+                    while end_r + 1 < n && $ulp_fn(r_dist[end_r + 1], r_dist[i]) == 0 {
                         end_r += 1;
                     }
                     let mut end_c = i;
-                    while end_c + 1 < n && $ulp_fn(c_dist[end_c + 1], c_dist[i]) <= max_ulps {
+                    while end_c + 1 < n && $ulp_fn(c_dist[end_c + 1], c_dist[i]) == 0 {
                         end_c += 1;
                     }
                     if end_r != end_c {
@@ -267,6 +288,19 @@ macro_rules! impl_knn_comparator {
                         );
                     }
                     let end = end_r;
+                    // Distances must be BIT-EQUAL cross-side at EVERY rank
+                    // in the matched run, not just once per group -- this is
+                    // what a pure index-multiset check would miss entirely
+                    // (see mutation_canary_distance_perturbation).
+                    for k in i..=end {
+                        let ud = $ulp_fn(r_dist[k], c_dist[k]);
+                        if ud != 0 {
+                            panic!(
+                                "knn tie-group DISTANCE mismatch at rank {k} (within run [{i},{end}]): rust=({}, {:?}) cpp=({}, {:?}) ulp_diff={ud}\nfull rust idx={:?} dist={:?}\nfull cpp idx={:?} dist={:?}",
+                                r_idx[k], r_dist[k], c_idx[k], c_dist[k], r_idx, r_dist, c_idx, c_dist
+                            );
+                        }
+                    }
                     let mut r_ms: Vec<u32> = r_idx[i..=end].to_vec();
                     let mut c_ms: Vec<u32> = c_idx[i..=end].to_vec();
                     r_ms.sort_unstable();
@@ -289,13 +323,21 @@ impl_knn_comparator!(assert_knn_equal_f32, ulp_diff_f32, f32);
 
 macro_rules! impl_radius_comparator {
     ($assert_fn:ident, $knn_fn:ident, $ulp_fn:ident, $t:ty) => {
-        /// `sorted == true`: same walk as `$knn_fn` (ascending order is a
-        /// contract on both sides, so positional/grouped comparison applies
-        /// identically). `sorted == false`: compares as multisets of
-        /// `(index, dist-within-ulps)` -- indices are unique per point, so
-        /// sorting both sides by index and then checking each pair's
-        /// distance is within `max_ulps` is exactly a multiset comparison.
-        pub fn $assert_fn(rust: &[(u32, $t)], cpp: &[(u32, $t)], sorted: bool, max_ulps: u64) {
+        /// `sorted == true`: same walk as `$knn_fn` -- `ties` is forwarded
+        /// unchanged (ascending order is a contract on both sides, so
+        /// positional/exact-tie-group comparison applies identically; see
+        /// `$knn_fn`'s doc comment for exactly what `ties` does and does
+        /// not relax).
+        ///
+        /// `sorted == false`: `ties` is UNUSED -- raw traversal order is
+        /// compared as a multiset of `(index, distance)` pairs by sorting
+        /// BOTH sides by index (indices are unique per point) and then
+        /// requiring each matched pair's distance to be BIT-EQUAL
+        /// (`ulp_diff == 0`); index order is already irrelevant here by
+        /// construction (both sides are re-sorted by index before
+        /// comparing), so there is no separate "tie order" concept to
+        /// relax in this branch.
+        pub fn $assert_fn(rust: &[(u32, $t)], cpp: &[(u32, $t)], sorted: bool, ties: bool) {
             assert_eq!(
                 rust.len(),
                 cpp.len(),
@@ -310,7 +352,7 @@ macro_rules! impl_radius_comparator {
                 let r_dist: Vec<$t> = rust.iter().map(|x| x.1).collect();
                 let c_idx: Vec<u32> = cpp.iter().map(|x| x.0).collect();
                 let c_dist: Vec<$t> = cpp.iter().map(|x| x.1).collect();
-                $knn_fn((&r_idx, &r_dist), (&c_idx, &c_dist), max_ulps);
+                $knn_fn((&r_idx, &r_dist), (&c_idx, &c_dist), ties);
             } else {
                 let mut r_sorted = rust.to_vec();
                 let mut c_sorted = cpp.to_vec();
@@ -324,9 +366,9 @@ macro_rules! impl_radius_comparator {
                         );
                     }
                     let ud = $ulp_fn(r_sorted[i].1, c_sorted[i].1);
-                    if ud > max_ulps {
+                    if ud != 0 {
                         panic!(
-                            "radius DISTANCE mismatch for index {}: rust={:?} cpp={:?} ulp_diff={ud} (max_ulps={max_ulps})\nfull rust={:?}\nfull cpp={:?}",
+                            "radius DISTANCE mismatch for index {}: rust={:?} cpp={:?} ulp_diff={ud} (bit-exact required)\nfull rust={:?}\nfull cpp={:?}",
                             r_sorted[i].0, r_sorted[i].1, c_sorted[i].1, rust, cpp
                         );
                     }
@@ -660,14 +702,14 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // assert_knn_equal_f64 — max_ulps == 0 (positional, bit-exact)
+    // assert_knn_equal_f64 — ties == false (positional, bit-exact)
     // ------------------------------------------------------------------
 
     #[test]
     fn knn_equal_passes_on_identical_input() {
         let idx = [1u32, 0, 2];
         let dist = [0.5f64, 1.5, 3.0];
-        assert_knn_equal_f64((&idx, &dist), (&idx, &dist), 0);
+        assert_knn_equal_f64((&idx, &dist), (&idx, &dist), false);
     }
 
     #[test]
@@ -677,7 +719,7 @@ mod tests {
         let c_idx = [1u32, 2, 0]; // rank 1/2 swapped
         let c_dist = [0.5f64, 1.5, 3.0];
         assert_panics(
-            || assert_knn_equal_f64((&r_idx, &r_dist), (&c_idx, &c_dist), 0),
+            || assert_knn_equal_f64((&r_idx, &r_dist), (&c_idx, &c_dist), false),
             "index mismatch at same rank must panic",
         );
     }
@@ -688,8 +730,8 @@ mod tests {
         let r_dist = [0.5f64, 1.5];
         let c_dist = [0.5f64, f64::from_bits(1.5f64.to_bits() + 1)]; // 1 ULP off
         assert_panics(
-            || assert_knn_equal_f64((&idx, &r_dist), (&idx, &c_dist), 0),
-            "1-ULP distance mismatch at max_ulps=0 must panic",
+            || assert_knn_equal_f64((&idx, &r_dist), (&idx, &c_dist), false),
+            "1-ULP distance mismatch at ties=false must panic",
         );
     }
 
@@ -700,36 +742,108 @@ mod tests {
         let c_idx = [1u32];
         let c_dist = [0.5f64];
         assert_panics(
-            || assert_knn_equal_f64((&r_idx, &r_dist), (&c_idx, &c_dist), 0),
+            || assert_knn_equal_f64((&r_idx, &r_dist), (&c_idx, &c_dist), false),
             "found-count mismatch must panic",
         );
     }
 
+    #[test]
+    fn knn_equal_panics_on_cpp_extra_entry() {
+        // The reverse direction of the count-mismatch check above: cpp has
+        // MORE entries than rust.
+        let r_idx = [1u32];
+        let r_dist = [0.5f64];
+        let c_idx = [1u32, 0];
+        let c_dist = [0.5f64, 1.5];
+        assert_panics(
+            || assert_knn_equal_f64((&r_idx, &r_dist), (&c_idx, &c_dist), false),
+            "cpp-extra-entry count mismatch must panic",
+        );
+    }
+
     // ------------------------------------------------------------------
-    // assert_knn_equal_f64 — max_ulps > 0 (grouped multiset)
+    // assert_knn_equal_f64 — ties == true (exact-tie-group mode)
     // ------------------------------------------------------------------
 
     #[test]
-    fn knn_equal_grouped_passes_when_tie_group_order_differs_but_multiset_matches() {
-        // Two entries tied at distance 1.0 (ULP-equal to each other), swapped
+    fn knn_equal_ties_passes_when_exact_tie_group_order_differs_but_multiset_matches() {
+        // Two entries tied at distance 1.0 (BIT-EQUAL to each other), swapped
         // between rust/cpp order within the group -- must pass under
-        // max_ulps=1 (positional at max_ulps=0 would fail this).
+        // ties=true (positional at ties=false would fail this).
         let r_idx = [0u32, 1, 2];
         let r_dist = [1.0f64, 1.0, 5.0];
         let c_idx = [1u32, 0, 2];
         let c_dist = [1.0f64, 1.0, 5.0];
-        assert_knn_equal_f64((&r_idx, &r_dist), (&c_idx, &c_dist), 1);
+        assert_knn_equal_f64((&r_idx, &r_dist), (&c_idx, &c_dist), true);
     }
 
     #[test]
-    fn knn_equal_grouped_panics_when_multiset_disagrees() {
+    fn knn_equal_ties_panics_when_multiset_disagrees() {
         let r_idx = [0u32, 1, 2];
         let r_dist = [1.0f64, 1.0, 5.0];
         let c_idx = [0u32, 3, 2]; // 3 not in rust's tie group at all
         let c_dist = [1.0f64, 1.0, 5.0];
         assert_panics(
-            || assert_knn_equal_f64((&r_idx, &r_dist), (&c_idx, &c_dist), 1),
+            || assert_knn_equal_f64((&r_idx, &r_dist), (&c_idx, &c_dist), true),
             "tie-group index multiset disagreement must panic",
+        );
+    }
+
+    /// Regression test for the exact bug flagged in code review round 1:
+    /// the original `ties=true` implementation compared ONLY index
+    /// multisets within a matched group and NEVER compared distances
+    /// cross-side at all, so two entries with the SAME index (even in the
+    /// SAME order) but DIFFERENT distances would silently pass. This is
+    /// precisely the scenario `mutation_canary_distance_perturbation`
+    /// (tests/xval_radius_box.rs) also exercises end-to-end against the
+    /// real trees.
+    #[test]
+    fn knn_equal_ties_panics_on_matching_indices_diverging_distances() {
+        // Both sides see indices [0, 1] in the SAME order, each internally
+        // tied (rust: 5.0/5.0; cpp: 6.0/6.0) -- group BOUNDARIES match
+        // (both are one 2-element run), and the INDEX multiset matches
+        // exactly, but the two sides' shared tie VALUE differs (5.0 vs
+        // 6.0). A pure index-multiset check would wrongly PASS this; the
+        // fixed comparator must panic on the cross-side distance mismatch.
+        let r_idx = [0u32, 1];
+        let r_dist = [5.0f64, 5.0];
+        let c_idx = [0u32, 1];
+        let c_dist = [6.0f64, 6.0];
+        assert_panics(
+            || assert_knn_equal_f64((&r_idx, &r_dist), (&c_idx, &c_dist), true),
+            "matching indices with diverging cross-side distances must panic under ties=true",
+        );
+    }
+
+    #[test]
+    fn knn_equal_ties_panics_on_group_boundary_mismatch_rust_longer() {
+        // rust: all 3 entries exactly tied at 1.0 (one 3-element run). cpp:
+        // only the first two are tied; the third is a different value (a
+        // shorter run). Same overall distance VALUES appear on each side at
+        // each rank pairwise except this shape difference is what should be
+        // caught as a group-boundary mismatch (rust's run is longer).
+        let r_idx = [0u32, 1, 2];
+        let r_dist = [1.0f64, 1.0, 1.0];
+        let c_idx = [0u32, 1, 2];
+        let c_dist = [1.0f64, 1.0, 2.0];
+        assert_panics(
+            || assert_knn_equal_f64((&r_idx, &r_dist), (&c_idx, &c_dist), true),
+            "group-boundary mismatch (rust's exact-tie run longer than cpp's) must panic",
+        );
+    }
+
+    #[test]
+    fn knn_equal_ties_panics_on_group_boundary_mismatch_cpp_longer() {
+        // The reverse direction: rust's first two entries are distinct (no
+        // tie at rank 0), cpp's first two entries ARE tied -- so rust's run
+        // starting at rank 0 is length 1, cpp's is length 2.
+        let r_idx = [0u32, 1, 2];
+        let r_dist = [1.0f64, 2.0, 2.0];
+        let c_idx = [0u32, 1, 2];
+        let c_dist = [1.0f64, 1.0, 2.0];
+        assert_panics(
+            || assert_knn_equal_f64((&r_idx, &r_dist), (&c_idx, &c_dist), true),
+            "group-boundary mismatch (cpp's exact-tie run longer than rust's) must panic",
         );
     }
 
@@ -740,7 +854,7 @@ mod tests {
     #[test]
     fn radius_equal_sorted_passes_on_identical_input() {
         let r = [(1u32, 0.5f64), (0u32, 1.5)];
-        assert_radius_equal_f64(&r, &r, true, 0);
+        assert_radius_equal_f64(&r, &r, true, false);
     }
 
     #[test]
@@ -748,8 +862,21 @@ mod tests {
         let rust = [(1u32, 0.5f64), (0u32, 1.5)];
         let cpp = [(0u32, 1.5f64), (1u32, 0.5)];
         assert_panics(
-            || assert_radius_equal_f64(&rust, &cpp, true, 0),
+            || assert_radius_equal_f64(&rust, &cpp, true, false),
             "sorted radius order mismatch must panic",
+        );
+    }
+
+    #[test]
+    fn radius_equal_sorted_ties_panics_on_matching_indices_diverging_distances() {
+        // Same regression shape as knn_equal_ties_panics_on_matching_indices_diverging_distances,
+        // routed through the radius comparator's sorted=true path (which
+        // delegates to assert_knn_equal_f64 with `ties` forwarded).
+        let rust = [(0u32, 5.0f64), (1u32, 5.0)];
+        let cpp = [(0u32, 6.0f64), (1u32, 6.0)];
+        assert_panics(
+            || assert_radius_equal_f64(&rust, &cpp, true, true),
+            "radius sorted=true ties=true must still catch a cross-side distance divergence",
         );
     }
 
@@ -757,7 +884,7 @@ mod tests {
     fn radius_equal_unsorted_passes_regardless_of_order() {
         let rust = [(1u32, 0.5f64), (0u32, 1.5)];
         let cpp = [(0u32, 1.5f64), (1u32, 0.5)];
-        assert_radius_equal_f64(&rust, &cpp, false, 0);
+        assert_radius_equal_f64(&rust, &cpp, false, false);
     }
 
     #[test]
@@ -765,21 +892,26 @@ mod tests {
         let rust = [(1u32, 0.5f64), (0u32, 1.5)];
         let cpp = [(1u32, 0.5f64), (2u32, 1.5)]; // index 0 vs 2
         assert_panics(
-            || assert_radius_equal_f64(&rust, &cpp, false, 0),
+            || assert_radius_equal_f64(&rust, &cpp, false, false),
             "unsorted radius index-set mismatch must panic",
         );
     }
 
     #[test]
-    fn radius_equal_unsorted_panics_on_distance_beyond_ulps() {
+    fn radius_equal_unsorted_panics_on_any_distance_divergence() {
+        // The unsorted branch requires distances BIT-EQUAL per matched
+        // index unconditionally (no numeric tolerance surface at all --
+        // `ties` is not consulted in this branch, see the doc comment).
         let rust = [(0u32, 1.0f64)];
-        let cpp = [(0u32, f64::from_bits(1.0f64.to_bits() + 5))];
+        let cpp = [(0u32, f64::from_bits(1.0f64.to_bits() + 1))]; // 1 ULP off
         assert_panics(
-            || assert_radius_equal_f64(&rust, &cpp, false, 0),
-            "unsorted radius distance beyond max_ulps must panic",
+            || assert_radius_equal_f64(&rust, &cpp, false, false),
+            "unsorted radius distance divergence (even 1 ULP) must panic",
         );
-        // But passes when max_ulps covers the gap.
-        assert_radius_equal_f64(&rust, &cpp, false, 5);
+        assert_panics(
+            || assert_radius_equal_f64(&rust, &cpp, false, true),
+            "unsorted radius distance divergence must panic regardless of `ties`",
+        );
     }
 
     // ------------------------------------------------------------------

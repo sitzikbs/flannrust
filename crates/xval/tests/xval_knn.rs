@@ -1,7 +1,7 @@
 //! Cross-validation: knn / rknn parity between the Rust `KdTree` and the C++
-//! nanoflann 1.12.1 oracle. Every assertion is bit-exact (`max_ulps = 0`)
-//! unless a section says otherwise. See the task-11 brief for the exact
-//! config matrix this file implements.
+//! nanoflann 1.12.1 oracle. Every assertion is bit-exact positional
+//! (`ties = false`) unless a section says otherwise. See the task-11 brief
+//! for the exact config matrix this file implements.
 
 use nanoflann_rs::ConstDim;
 use nanoflann_ref::{RefIndexF32, RefIndexF64};
@@ -102,7 +102,7 @@ macro_rules! knn_matrix_test {
                                         metric, dsk
                                     );
                                     with_ctx(ctx, || {
-                                        xval::$assert_knn((&r_idx, &r_dist), (&c_idx, &c_dist), 0);
+                                        xval::$assert_knn((&r_idx, &r_dist), (&c_idx, &c_dist), false);
                                     });
                                 }
                             }
@@ -143,7 +143,7 @@ fn knn_k_greater_than_n_f64() {
             assert_eq!(r_idx.len(), n, "expected exactly n={n} results when k>n");
         });
         with_ctx(ctx, || {
-            xval::assert_knn_equal_f64((&r_idx, &r_dist), (&c_idx, &c_dist), 0);
+            xval::assert_knn_equal_f64((&r_idx, &r_dist), (&c_idx, &c_dist), false);
         });
     }
 }
@@ -172,7 +172,7 @@ fn knn_k_greater_than_n_f32() {
             assert_eq!(r_idx.len(), n, "expected exactly n={n} results when k>n");
         });
         with_ctx(ctx, || {
-            xval::assert_knn_equal_f32((&r_idx, &r_dist), (&c_idx, &c_dist), 0);
+            xval::assert_knn_equal_f32((&r_idx, &r_dist), (&c_idx, &c_dist), false);
         });
     }
 }
@@ -213,7 +213,7 @@ macro_rules! knn_eps_test {
                             "knn_eps config: dim={dim} eps={eps} qi={qi} data_seed={seed} query_seed={qseed}"
                         );
                         with_ctx(ctx, || {
-                            xval::$assert_knn((&r_idx, &r_dist), (&c_idx, &c_dist), 0);
+                            xval::$assert_knn((&r_idx, &r_dist), (&c_idx, &c_dist), false);
                         });
                     }
                 }
@@ -259,7 +259,7 @@ macro_rules! knn_so2_test {
                             "knn_so2 config: leaf={leaf} k={k} qi={qi} data_seed={seed} query_seed={qseed}"
                         );
                         with_ctx(ctx, || {
-                            xval::$assert_knn((&r_idx, &r_dist), (&c_idx, &c_dist), 0);
+                            xval::$assert_knn((&r_idx, &r_dist), (&c_idx, &c_dist), false);
                         });
                     }
                 }
@@ -312,7 +312,7 @@ macro_rules! rknn_test {
                         assert_eq!(r_idx.len(), c_idx.len(), "rknn found-count mismatch");
                     });
                     with_ctx(ctx, || {
-                        xval::$assert_knn((&r_idx, &r_dist), (&c_idx, &c_dist), 0);
+                        xval::$assert_knn((&r_idx, &r_dist), (&c_idx, &c_dist), false);
                     });
                 }
             }
@@ -352,7 +352,7 @@ fn const_dim_3_spot_check_f64() {
         let (c_idx, c_dist) = cpp_idx.knn(&query, k, 0.0);
         let ctx = format!("const_dim_3_spot_check_f64: qi={qi} data_seed={seed} query_seed={qseed}");
         with_ctx(ctx, || {
-            xval::assert_knn_equal_f64((&r_idx, &r_dist), (&c_idx, &c_dist), 0);
+            xval::assert_knn_equal_f64((&r_idx, &r_dist), (&c_idx, &c_dist), false);
         });
     }
 }
@@ -372,7 +372,7 @@ fn empty_tree_knn_returns_zero_both_sides_f64() {
     let (c_idx, c_dist) = cpp_idx.knn(&[0.0, 0.0, 0.0], 5, 0.0);
     assert_eq!(r_idx.len(), 0);
     assert_eq!(c_idx.len(), 0);
-    xval::assert_knn_equal_f64((&r_idx, &r_dist), (&c_idx, &c_dist), 0);
+    xval::assert_knn_equal_f64((&r_idx, &r_dist), (&c_idx, &c_dist), false);
 }
 
 #[test]
@@ -386,7 +386,7 @@ fn empty_tree_knn_returns_zero_both_sides_f32() {
     let (c_idx, c_dist) = cpp_idx.knn(&[0.0, 0.0, 0.0], 5, 0.0);
     assert_eq!(r_idx.len(), 0);
     assert_eq!(c_idx.len(), 0);
-    xval::assert_knn_equal_f32((&r_idx, &r_dist), (&c_idx, &c_dist), 0);
+    xval::assert_knn_equal_f32((&r_idx, &r_dist), (&c_idx, &c_dist), false);
 }
 
 // ---------------------------------------------------------------------
@@ -436,7 +436,7 @@ fn mutation_canary_tie_rule() {
         let (c_idx, c_dist) = cpp_idx.knn(query, k, 0.0);
 
         let result = std::panic::catch_unwind(|| {
-            xval::assert_knn_equal_f64((&r_idx, &r_dist), (&c_idx, &c_dist), 0);
+            xval::assert_knn_equal_f64((&r_idx, &r_dist), (&c_idx, &c_dist), false);
         });
         if result.is_err() {
             saw_mismatch = true;

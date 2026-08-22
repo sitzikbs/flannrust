@@ -1,6 +1,10 @@
 //! Cross-validation: radius search / box search parity between the Rust
-//! `KdTree` and the C++ nanoflann 1.12.1 oracle. Bit-exact (`max_ulps = 0`)
-//! throughout. See the task-11 brief for the exact config matrix.
+//! `KdTree` and the C++ nanoflann 1.12.1 oracle. Bit-exact positional
+//! (`ties = false`) throughout, except radius `sorted=true` on
+//! duplicate/all-identical data, which uses `ties = true` (exact-tie-group
+//! mode -- see `xval::assert_knn_equal_f64`'s doc comment) to absorb C++'s
+//! own `std::sort`-tie-order latitude WITHOUT relaxing distance bit-equality
+//! at all. See the task-11 brief for the exact config matrix.
 
 use nanoflann_ref::{RefIndexF32, RefIndexF64};
 use rand::Rng;
@@ -89,7 +93,7 @@ macro_rules! radius_sorted_true_test {
                                     "radius_sorted_true config: dim={dim} dataset={:?} leaf={leaf} radius={radius:?} qi={qi} data_seed={seed} query_seed={qseed}",
                                     dsk
                                 );
-                                // max_ulps=1 (NOT 0) here, deliberately: C++'s
+                                // ties=true (NOT false) here, deliberately: C++'s
                                 // RadiusResultSet::sort() (nanoflann.hpp:463)
                                 // is a plain `std::sort` over (index,dist)
                                 // pairs -- UNSTABLE, so exact-distance ties get
@@ -101,10 +105,12 @@ macro_rules! radius_sorted_true_test {
                                 // choice within it" -- so positional comparison
                                 // of TIED entries here would fail on a
                                 // documented, intentional, non-bug divergence.
-                                // max_ulps=1 activates assert_radius_equal's
-                                // grouped-multiset mode for bit-identical ties
-                                // (ulp_diff=0 <= 1) while staying positional
-                                // everywhere else -- this is the mechanism the
+                                // ties=true activates assert_radius_equal's
+                                // exact-tie-group mode: index order is relaxed
+                                // ONLY within a maximal run of BIT-IDENTICAL
+                                // distances (ulp_diff==0), and even then every
+                                // rank's distance is still required bit-equal
+                                // cross-side -- this is the mechanism the
                                 // comparator was designed for, not a tolerance
                                 // weakening (verified: on `WithDuplicates`/
                                 // `AllIdentical` data the only observed
@@ -112,7 +118,7 @@ macro_rules! radius_sorted_true_test {
                                 // BIT-IDENTICAL distances, never a genuine
                                 // distance divergence).
                                 with_ctx(ctx, || {
-                                    xval::$assert_radius(&r, &c, true, 1);
+                                    xval::$assert_radius(&r, &c, true, true);
                                 });
                             }
                         }
@@ -178,7 +184,7 @@ macro_rules! radius_sorted_false_test {
                                     dsk
                                 );
                                 with_ctx(ctx.clone(), || {
-                                    xval::$assert_radius(&r, &c, false, 0);
+                                    xval::$assert_radius(&r, &c, false, false);
                                 });
                                 // Multiset equality alone doesn't test traversal
                                 // ORDER -- assert the raw (unsorted) index
@@ -266,7 +272,7 @@ fn radius_exact_boundary_excludes_on_both_sides_f64() {
             );
         });
         with_ctx(ctx, || {
-            xval::assert_radius_equal_f64(&r, &c, true, 0);
+            xval::assert_radius_equal_f64(&r, &c, true, false);
         });
     }
 }
@@ -312,7 +318,7 @@ fn radius_exact_boundary_excludes_on_both_sides_f32() {
             );
         });
         with_ctx(ctx, || {
-            xval::assert_radius_equal_f32(&r, &c, true, 0);
+            xval::assert_radius_equal_f32(&r, &c, true, false);
         });
     }
 }
@@ -454,7 +460,7 @@ fn radius_metric_breadth_l1_f64() {
         let c = cpp_idx.radius(query, radius, true, 0.0);
         let ctx = format!("radius_metric_breadth_l1_f64: qi={qi} data_seed={seed} query_seed={qseed}");
         with_ctx(ctx, || {
-            xval::assert_radius_equal_f64(&r, &c, true, 0);
+            xval::assert_radius_equal_f64(&r, &c, true, false);
         });
     }
 }
@@ -505,7 +511,7 @@ fn radius_metric_breadth_so2_dim3_f64() {
             "radius_metric_breadth_so2_dim3_f64: qi={qi} data_seed={seed} query_seed={qseed}"
         );
         with_ctx(ctx, || {
-            xval::assert_radius_equal_f64(&r, &c, true, 0);
+            xval::assert_radius_equal_f64(&r, &c, true, false);
         });
     }
 }
@@ -530,18 +536,73 @@ fn radius_metric_breadth_all_identical_f64() {
         let r = rust_idx.radius(query, *radius, true, 0.0);
         let c = cpp_idx.radius(query, *radius, true, 0.0);
         let ctx = format!("radius_metric_breadth_all_identical_f64: qi={qi} radius={radius}");
-        // max_ulps=1, not 0 -- same reasoning as radius_sorted_true_test!:
+        // ties=true, not false -- same reasoning as radius_sorted_true_test!:
         // C++'s RadiusResultSet::sort() is unstable std::sort, so for
         // all-identical data (EVERY distance bit-identical at 0.0, i.e. one
-        // giant tie group) tie order is unspecified on the C++ side; grouped
-        // multiset comparison is the correct invariant here, not strict
-        // position.
+        // giant exact-tie group) tie ORDER is unspecified on the C++ side;
+        // exact-tie-group comparison relaxes ONLY that index order, while
+        // still requiring every rank's distance bit-equal cross-side.
         with_ctx(ctx, || {
-            xval::assert_radius_equal_f64(&r, &c, true, 1);
+            xval::assert_radius_equal_f64(&r, &c, true, true);
         });
     }
     // Sanity: the positive-radius query really does hit everything, so this
     // test isn't vacuously comparing two empty lists.
     let (all_r, _) = &(rust_idx.radius(&queries[0].0, queries[0].1, true, 0.0), ());
     assert_eq!(all_r.len(), n, "expected the positive-radius query to include every point");
+}
+
+// ---------------------------------------------------------------------
+// Suite self-test (mutation sanity), grouped-mode canary: the exact-tie-group
+// comparator's `ties=true` path must still catch a genuine cross-side
+// DISTANCE divergence, not just an index-order mismatch (this is what
+// `mutation_canary_tie_rule` in xval_knn.rs does NOT cover -- that canary
+// exercises a real tie-ORDER divergence via SmallestIndexWins, not a
+// distance divergence). Perturbs one C++ result's distance by exactly 1 ULP
+// before comparison and asserts `assert_radius_equal_f64(..., ties=true)`
+// FAILS. Proves the fix from code review round 1 (grouped mode used to
+// perform NO cross-side distance comparison at all) actually holds.
+// ---------------------------------------------------------------------
+
+#[test]
+#[ignore]
+fn mutation_canary_distance_perturbation() {
+    let n = 200usize;
+    let dim = 3usize;
+    let leaf = 10usize;
+    let data = all_identical(n, dim);
+    let query = [1.25f64, 1.25, 1.25];
+    let radius = 1.0f64; // positive radius over all-identical data -> every point is a bit-identical (0.0) exact tie.
+
+    let rust_idx = build_rust_f64(&data, dim, XMetric::L2, leaf, BuildThreads::Sequential);
+    let cpp_idx = RefIndexF64::build(&data, dim, XMetric::L2.to_ref(), leaf, 1);
+
+    let r = rust_idx.radius(&query, radius, true, 0.0);
+    let mut c = cpp_idx.radius(&query, radius, true, 0.0);
+    assert_eq!(r.len(), n, "expected every point to be included (sanity, not the canary itself)");
+    assert_eq!(c.len(), n, "expected every point to be included (sanity, not the canary itself)");
+
+    // Sanity: BEFORE perturbation, this must PASS (it's real cross-validated
+    // data) -- otherwise the canary below would be meaningless (it could
+    // "fail" for an unrelated reason).
+    xval::assert_radius_equal_f64(&r, &c, true, true);
+
+    // Perturb exactly one C++ distance by 1 ULP -- still well within any
+    // "these are basically the same tie" intuition, but no longer BIT-EQUAL,
+    // which is what the fixed comparator requires unconditionally at every
+    // rank even inside an exact-tie group.
+    let bits = c[0].1.to_bits();
+    c[0].1 = f64::from_bits(bits + 1);
+
+    let result = std::panic::catch_unwind(|| {
+        xval::assert_radius_equal_f64(&r, &c, true, true);
+    });
+
+    assert!(
+        result.is_err(),
+        "mutation_canary_distance_perturbation: expected assert_radius_equal_f64(..., ties=true) \
+         to FAIL after perturbing one cpp distance by 1 ULP -- if this never fails, the \
+         exact-tie-group comparator is not actually comparing distances cross-side (the exact \
+         review-round-1 bug)"
+    );
 }
