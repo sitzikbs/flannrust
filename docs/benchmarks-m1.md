@@ -4,10 +4,17 @@ Machine: WSL2 (Linux 6.6.87.2-microsoft-standard-WSL2), AMD Ryzen 7 9800X3D,
 8 threads visible, `rustc 1.98.0`. All numbers `RUSTFLAGS="-C
 target-cpu=native"`, release profile. C++ oracle built `-O3 -march=native
 -ffp-contract=off` (`crates/nanoflann-ref/build.rs`). WSL2 introduces real
-run-to-run scheduler/thermal jitter (~±5-10% on individual runs) — every
-ratio below is a **median of 7 timed runs** (perf-gate methodology:
-`PERF_GATE=1`, `--test-threads=1`, warmup pass + median-of-7) unless marked
-"single run" or "criterion (spot check)".
+run-to-run scheduler/thermal jitter (~±5-10% on individual runs). The perf
+gate table below mixes sample sizes across its columns (see the column
+headers): the "Before Task 14" column is Step 0's baseline, a **median of
+3** timed runs; every "After Task 14" column is a **median of 7** timed runs
+(perf-gate methodology throughout: `PERF_GATE=1`, `--test-threads=1`, warmup
+pass + median-of-N). The larger post-change sample size doesn't change the
+before/after deltas' direction, but the two columns are not directly
+apples-to-apples on sample count — flagged explicitly rather than
+re-measuring the baseline at N=7, since the pre-change code no longer needs
+re-building for this report. Numbers elsewhere are marked "single run" or
+"criterion (spot check)" where neither median-of-N methodology applies.
 
 Ratio = rust_ms / cpp_ms; lower is better for Rust; **the milestone success
 criterion (dim-3 knn/build) is ratio ≤ 1.0 (Rust ≥ C++), perf-gate pass is
@@ -15,7 +22,7 @@ ratio ≤ 1.25.**
 
 ## Perf gate (four gated workloads)
 
-| Workload | Before Task 14 (median×7) | After Task 14 (median×7) | Final single run |
+| Workload | Before Task 14 (median×3, Step 0 baseline) | After Task 14 (median×7) | Final single run |
 |---|---|---|---|
 | `build_100k_dim3_f32_seq` | 1.040 | 1.018 | 0.995 |
 | `knn_fixed3_dim3_f32_k10` | 1.051 | 1.042 | 1.047 |
@@ -115,11 +122,37 @@ the hot kernel:
 1. **Recursive `search_level` call overhead.** Both Rust and C++ implement
    the tree walk as native recursion (`search_level`/`searchLevel`), ~14
    levels deep for a balanced tree over 100k points at leaf_max_size=10
-   (`log2(100000/10) ≈ 13.3`). The asm shows `search_level` still makes a
-   real `callq` to itself at each interior node (not inlined — LLVM does not
-   inline direct recursion beyond a shallow unroll), so each level pays a
-   full function-call ABI cost (register spill/reload, stack frame). This is
-   structurally present in the C++ source too (`searchLevel` is native
+   (`log2(100000/10) ≈ 13.3`). Directly observed (not inferred) in the same
+   post-Candidate-1 asm dump used above: the monomorphized `search_level`
+   body contains two `callq` instructions targeting its OWN mangled symbol
+   (one for the "best child" recursive descent, one for the "other child"
+   pruned-branch descent) —
+
+   ```
+   callq   _RINvNtCs4tP4CM7yoJ7_12nanoflann_rs6search12search_leveldINtNtB4_...
+   cmpl    $3, %ebp
+   jae     .LBB1_44
+   ...
+   .LBB1_40:
+       movq    %r12, %rdi
+       movq    %r14, %rsi
+       movq    %rbx, %rdx
+       movl    %r13d, %r8d
+       movq    %r15, %r9
+       vmovss  %xmm2, 8(%rsp)
+       callq   _RINvNtCs4tP4CM7yoJ7_12nanoflann_rs6search12search_leveldINtNtB4_...
+   ```
+
+   (symbol truncated for width; full mangled name matches the function's own
+   `.type` line). Both call sites set up a fresh argument list in registers
+   (`movq`/`movl`/`vmovss` into `%rdi`/`%rsi`/`%rdx`/`%r8`/`%r9`) and a real
+   `callq` rather than being inlined — confirming LLVM did not inline this
+   direct recursion (as expected; LLVM generally declines to inline
+   self-recursive calls beyond a shallow, statically-bounded unroll, and tree
+   depth here is a runtime value). So each of the ~14 levels pays a full
+   function-call ABI cost (argument marshalling, `call`/`ret`, any
+   caller-saved register spill/reload) on top of the leaf-kernel work. This
+   is structurally present in the C++ source too (`searchLevel` is native
    recursion in nanoflann.hpp as well); any remaining difference is down to
    each compiler's/ABI's call-overhead characteristics, not an algorithmic
    gap. Converting this to an explicit-stack iterative walk (like the
