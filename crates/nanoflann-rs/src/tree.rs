@@ -29,7 +29,7 @@ use crate::dim::Dim;
 use crate::filter::AcceptAll;
 use crate::metric::{Distance, L2};
 use crate::node::Node;
-use crate::params::SearchParams;
+use crate::params::{BuildThreads, SearchParams};
 use crate::result_set::{
     KeepInsertionOrder, KnnResultSet, RadiusResultSet, ResultItem, ResultSet, RknnResultSet,
     TieBreak,
@@ -54,6 +54,7 @@ where
     dataset: DS,
     metric: M,
     leaf_max_size: usize,
+    threads: BuildThreads,
     // T doesn't otherwise appear in a field (only in where-bounds on D/DS/M),
     // so it needs a phantom slot too, alongside Idx/TB.
     _marker: PhantomData<(T, Idx, TB)>,
@@ -64,13 +65,15 @@ where
     L2: Distance<T>,
 {
     /// Defaults: `L2` metric, `u32` indices, insertion-order ties,
-    /// `leaf_max_size` 10 (nanoflann's default).
+    /// `leaf_max_size` 10 (nanoflann's default), `threads`
+    /// `BuildThreads::Sequential` (nanoflann's default `n_thread_build` 1).
     pub fn new(dim: D, dataset: DS) -> Self {
         Self {
             dim,
             dataset,
             metric: L2,
             leaf_max_size: 10,
+            threads: BuildThreads::default(),
             _marker: PhantomData,
         }
     }
@@ -94,6 +97,7 @@ where
             dataset: self.dataset,
             metric,
             leaf_max_size: self.leaf_max_size,
+            threads: self.threads,
             _marker: PhantomData,
         }
     }
@@ -105,12 +109,22 @@ where
         self
     }
 
+    /// Build-thread policy — see [`BuildThreads`]. Default `Sequential`.
+    /// `Auto`/`Threads(_)` require the "parallel" cargo feature (default
+    /// on); without it, [`Self::build`] panics — see `BuildThreads`'s doc
+    /// comment for the exact C++ mapping.
+    pub fn threads(mut self, t: BuildThreads) -> Self {
+        self.threads = t;
+        self
+    }
+
     pub fn index_type<Idx2: IndexType>(self) -> KdTreeBuilder<T, D, DS, M, Idx2, TB> {
         KdTreeBuilder {
             dim: self.dim,
             dataset: self.dataset,
             metric: self.metric,
             leaf_max_size: self.leaf_max_size,
+            threads: self.threads,
             _marker: PhantomData,
         }
     }
@@ -121,22 +135,162 @@ where
             dataset: self.dataset,
             metric: self.metric,
             leaf_max_size: self.leaf_max_size,
+            threads: self.threads,
             _marker: PhantomData,
         }
     }
+}
 
-    /// Sequential build (parallel arrives in a later task). Infallible: an
-    /// empty dataset yields an empty index whose searches return 0/false.
-    /// Panics if `point_count() > u32::MAX as usize` (leaf offsets are
-    /// `u32`).
+/// `build()`, feature `"parallel"` ON: `DS: Sync` is required here (and only
+/// here — every other builder method stays available for non-`Sync` data
+/// sources) because the parallel path shares `&DS` across `rayon::join`'s
+/// two closures, which run on separate worker threads; a shared reference
+/// crossing threads is `Send` only when the referent is `Sync`. `Sequential`
+/// never needs this — see the `#[cfg(not(feature = "parallel"))]` impl below
+/// for the non-`Sync`-friendly build available without the feature.
+#[cfg(feature = "parallel")]
+impl<T, D, DS, M, Idx, TB> KdTreeBuilder<T, D, DS, M, Idx, TB>
+where
+    T: Scalar,
+    D: Dim,
+    DS: DataSource<T> + Sync,
+    M: Distance<T>,
+    Idx: IndexType,
+    TB: TieBreak,
+{
+    /// Builds per `threads` (default `Sequential`). Infallible: an empty
+    /// dataset yields an empty index whose searches return 0/false. Panics
+    /// if `point_count() > u32::MAX as usize` (leaf offsets are `u32`).
+    ///
+    /// `Sequential` uses the existing iterative `SubtreeBuilder` path.
+    /// `Auto` builds on rayon's ambient/global thread pool. `Threads(n)`
+    /// builds inside a scoped `n`-thread rayon pool — DEVIATION
+    /// (documented on [`BuildThreads`]): this guarantees "at most `n` rayon
+    /// workers", not C++'s exact async-gating behavior. Both non-sequential
+    /// paths produce a tree BIT-IDENTICAL to `Sequential` — see
+    /// `build_parallel.rs`'s module doc for the determinism argument.
     pub fn build(self) -> KdTree<T, D, DS, M, Idx, TB> {
         let KdTreeBuilder {
             dim,
             dataset,
             metric,
             leaf_max_size,
+            threads,
             ..
         } = self;
+
+        let n = dataset.point_count();
+
+        if n == 0 {
+            return KdTree {
+                dataset,
+                metric,
+                dim,
+                vind: Vec::new(),
+                nodes: Vec::new(),
+                root_bbox: dim.filled(Interval::default()),
+                leaf_max_size,
+                size: 0,
+                _marker: PhantomData,
+            };
+        }
+
+        let dim_n = dim.dim();
+        let mut vind: Vec<Idx> = init_vind(n);
+        let mut root_bbox = dim.filled(Interval::default());
+        compute_bounding_box(&dataset, dim_n, root_bbox.as_mut());
+
+        let nodes: Vec<Node<T>> = match threads {
+            BuildThreads::Sequential => {
+                let mut nodes: Vec<Node<T>> = Vec::new();
+                let root = {
+                    let mut builder = SubtreeBuilder {
+                        ds: &dataset,
+                        dim: dim_n,
+                        leaf_max_size,
+                        base: 0,
+                        vind: &mut vind,
+                        arena: &mut nodes,
+                    };
+                    builder.build(root_bbox.as_mut())
+                };
+                debug_assert_eq!(root, 0, "root is expected to always be arena index 0");
+                nodes
+            }
+            BuildThreads::Auto => crate::build_parallel::build_tree_parallel(
+                &dataset,
+                dim_n,
+                leaf_max_size,
+                &mut vind,
+                root_bbox.as_mut(),
+            ),
+            BuildThreads::Threads(n_threads) => {
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(n_threads.get() as usize)
+                    .build()
+                    .expect("rayon pool");
+                pool.install(|| {
+                    crate::build_parallel::build_tree_parallel(
+                        &dataset,
+                        dim_n,
+                        leaf_max_size,
+                        &mut vind,
+                        root_bbox.as_mut(),
+                    )
+                })
+            }
+        };
+
+        KdTree {
+            dataset,
+            metric,
+            dim,
+            vind,
+            nodes,
+            root_bbox,
+            leaf_max_size,
+            size: n,
+            _marker: PhantomData,
+        }
+    }
+}
+
+/// `build()`, feature `"parallel"` OFF: only `Sequential` is possible (there
+/// is no rayon dependency to build with), so this impl does not need `DS:
+/// Sync` at all — a non-`Sync` `DataSource` (e.g. `Rc`-backed) works fine
+/// here. `Auto`/`Threads(_)` panic — the moral equivalent of C++
+/// `NANOFLANN_NO_THREADS`'s throw ("Multithreading is disabled"), per
+/// [`BuildThreads`]'s doc comment.
+#[cfg(not(feature = "parallel"))]
+impl<T, D, DS, M, Idx, TB> KdTreeBuilder<T, D, DS, M, Idx, TB>
+where
+    T: Scalar,
+    D: Dim,
+    DS: DataSource<T>,
+    M: Distance<T>,
+    Idx: IndexType,
+    TB: TieBreak,
+{
+    /// Sequential build. Infallible: an empty dataset yields an empty index
+    /// whose searches return 0/false. Panics if `point_count() >
+    /// u32::MAX as usize` (leaf offsets are `u32`), or if `threads` is
+    /// anything other than `BuildThreads::Sequential` (see this impl's doc
+    /// comment).
+    pub fn build(self) -> KdTree<T, D, DS, M, Idx, TB> {
+        let KdTreeBuilder {
+            dim,
+            dataset,
+            metric,
+            leaf_max_size,
+            threads,
+            ..
+        } = self;
+
+        if !matches!(threads, BuildThreads::Sequential) {
+            panic!(
+                "nanoflann-rs was compiled without the 'parallel' feature; BuildThreads::Auto/Threads need it"
+            );
+        }
 
         let n = dataset.point_count();
 
@@ -825,25 +979,30 @@ mod tests {
     // Test 12 (A8): stale-growth snapshot
     // ---------------------------------------------------------------
 
-    use std::cell::Cell;
-    use std::rc::Rc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
-    /// A `DataSource` with interior mutability: `point_count()` reports a
-    /// `Cell<usize>` that can be grown AFTER the tree is built, over a fixed
-    /// backing array. The FIRST `count` slots (visible at build time) are
-    /// deliberately placed FAR from the test query; slots that only become
-    /// visible after growth are placed NEAR the query — so if the
-    /// implementation ever (incorrectly) re-derived tree state from
-    /// `dataset.point_count()` at query time, this test would catch it by
-    /// observing a changed nearest neighbor after growth.
+    /// A `DataSource` with interior mutability: `point_count()` reports an
+    /// `AtomicUsize` that can be grown AFTER the tree is built, over a fixed
+    /// backing array. (`Arc<AtomicUsize>` rather than `Rc<Cell<usize>>`:
+    /// `KdTreeBuilder::build` requires `DS: Sync` whenever the "parallel"
+    /// feature is on, so the interior-mutability cell itself must be `Sync`
+    /// — `Ordering::Relaxed` is fine, this test is single-threaded and only
+    /// needs the `Sync` marker, not any cross-thread ordering guarantee.)
+    /// The FIRST `count` slots (visible at build time) are deliberately
+    /// placed FAR from the test query; slots that only become visible after
+    /// growth are placed NEAR the query — so if the implementation ever
+    /// (incorrectly) re-derived tree state from `dataset.point_count()` at
+    /// query time, this test would catch it by observing a changed nearest
+    /// neighbor after growth.
     struct GrowableDataSource {
         data: [[f64; 2]; 8],
-        count: Rc<Cell<usize>>,
+        count: Arc<AtomicUsize>,
     }
 
     impl DataSource<f64> for GrowableDataSource {
         fn point_count(&self) -> usize {
-            self.count.get()
+            self.count.load(Ordering::Relaxed)
         }
         fn point_component(&self, idx: usize, dim: usize) -> f64 {
             self.data[idx][dim]
@@ -852,7 +1011,7 @@ mod tests {
 
     #[test]
     fn stale_growth_after_build_is_ignored() {
-        let count = Rc::new(Cell::new(3));
+        let count = Arc::new(AtomicUsize::new(3));
         let ds = GrowableDataSource {
             data: [
                 [10.0, 10.0],
@@ -879,7 +1038,7 @@ mod tests {
         let found_before = tree.knn_search(&query, &mut idx_before, &mut dist_before);
 
         // Grow the dataset AFTER build.
-        count.set(8);
+        count.store(8, Ordering::Relaxed);
 
         assert_eq!(tree.size(), 3, "size() must stay snapshotted at build time");
 
@@ -895,5 +1054,92 @@ mod tests {
         // newly-visible near ones — proves the tree really ignored growth
         // rather than coincidentally matching.
         assert_eq!(idx_before, [0, 1]);
+    }
+
+    // ---------------------------------------------------------------
+    // Test 13 (task 12): threads() end-to-end via the public builder API —
+    // belt-and-braces alongside build_parallel.rs's lower-level tests 1-4,
+    // exercised here through the SAME surface real callers use
+    // (`KdTreeBuilder::threads(..).build()` + `knn_search`).
+    // ---------------------------------------------------------------
+
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn threads_auto_and_threads2_end_to_end_knn_matches_sequential() {
+        use crate::params::BuildThreads;
+
+        let pts = seeded_points::<3>(0x7EED, 5000, 200.0);
+
+        let seq_tree = KdTreeBuilder::new(ConstDim::<3>, pts.as_slice())
+            .leaf_max_size(10)
+            .threads(BuildThreads::Sequential)
+            .build();
+        let auto_tree = KdTreeBuilder::new(ConstDim::<3>, pts.as_slice())
+            .leaf_max_size(10)
+            .threads(BuildThreads::Auto)
+            .build();
+        let threads2_tree = KdTreeBuilder::new(ConstDim::<3>, pts.as_slice())
+            .leaf_max_size(10)
+            .threads(BuildThreads::Threads(core::num::NonZeroU32::new(2).unwrap()))
+            .build();
+
+        assert_eq!(seq_tree.point_indices(), auto_tree.point_indices());
+        assert_eq!(seq_tree.point_indices(), threads2_tree.point_indices());
+
+        let mut rng = Lcg(0x51DE);
+        for _ in 0..50 {
+            let q = [rng.next_f64() * 200.0, rng.next_f64() * 200.0, rng.next_f64() * 200.0];
+            let k = 8;
+
+            let mut si = vec![0u32; k];
+            let mut sd = vec![0.0f64; k];
+            let sf = seq_tree.knn_search(&q, &mut si, &mut sd);
+
+            let mut ai = vec![0u32; k];
+            let mut ad = vec![0.0f64; k];
+            let af = auto_tree.knn_search(&q, &mut ai, &mut ad);
+
+            let mut ti = vec![0u32; k];
+            let mut td = vec![0.0f64; k];
+            let tf = threads2_tree.knn_search(&q, &mut ti, &mut td);
+
+            assert_eq!(sf, af);
+            assert_eq!(si, ai);
+            assert_eq!(sd, ad);
+            assert_eq!(sf, tf);
+            assert_eq!(si, ti);
+            assert_eq!(sd, td);
+        }
+    }
+}
+
+/// Feature-gating (brief test 6): without the "parallel" feature,
+/// `BuildThreads::Auto`/`Threads(_)` must panic with the documented message
+/// instead of silently building sequentially or failing to compile. A
+/// separate module (rather than a `#[cfg]`'d test inside `mod tests` above)
+/// because it needs to exist ONLY when "parallel" is off — `mod tests` above
+/// is unconditional.
+#[cfg(all(test, not(feature = "parallel")))]
+mod no_parallel_tests {
+    use super::*;
+    use crate::dim::ConstDim;
+    use crate::params::BuildThreads;
+
+    #[test]
+    #[should_panic(expected = "nanoflann-rs was compiled without the 'parallel' feature")]
+    fn build_with_auto_threads_panics_without_parallel_feature() {
+        let pts: Vec<[f64; 2]> = vec![[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]];
+        let _ = KdTreeBuilder::new(ConstDim::<2>, pts.as_slice())
+            .threads(BuildThreads::Auto)
+            .build();
+    }
+
+    #[test]
+    fn build_with_sequential_threads_still_works_without_parallel_feature() {
+        let pts: Vec<[f64; 2]> = vec![[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]];
+        let tree = KdTreeBuilder::new(ConstDim::<2>, pts.as_slice())
+            .threads(BuildThreads::Sequential)
+            .build();
+        assert_eq!(tree.size(), 3);
     }
 }

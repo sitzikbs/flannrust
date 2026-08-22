@@ -34,8 +34,10 @@ pub(crate) fn init_vind<Idx: IndexType>(n: usize) -> Vec<Idx> {
 
 /// `std::min(a, b)` semantics exactly (nanoflann.hpp:1380 uses `std::min`,
 /// not a raw `<` compare): `(b < a) ? b : a` — returns `a` on a tie.
+/// `pub(crate)`: also used by `build_parallel.rs`'s bbox-union merge step,
+/// which must match this sequential union bit-for-bit.
 #[inline]
-fn cpp_min<T: Scalar>(a: T, b: T) -> T {
+pub(crate) fn cpp_min<T: Scalar>(a: T, b: T) -> T {
     if b < a {
         b
     } else {
@@ -44,9 +46,9 @@ fn cpp_min<T: Scalar>(a: T, b: T) -> T {
 }
 
 /// `std::max(a, b)` semantics exactly (nanoflann.hpp:1381): `(a < b) ? b : a`
-/// — returns `a` on a tie.
+/// — returns `a` on a tie. `pub(crate)`: see `cpp_min`.
 #[inline]
-fn cpp_max<T: Scalar>(a: T, b: T) -> T {
+pub(crate) fn cpp_max<T: Scalar>(a: T, b: T) -> T {
     if a < b {
         b
     } else {

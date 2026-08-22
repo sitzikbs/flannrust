@@ -8,8 +8,8 @@
 //! `tests/xval_knn.rs`, `tests/xval_radius_box.rs`, `tests/xval_build.rs`.
 
 use nanoflann_rs::{
-    DynDim, FlatSlice, Interval, KdTree, KdTreeBuilder, ResultItem, SearchParams, L1, L2,
-    L2Simple, SO2, SO3,
+    BuildThreads as RustBuildThreads, DynDim, FlatSlice, Interval, KdTree, KdTreeBuilder,
+    ResultItem, SearchParams, L1, L2, L2Simple, SO2, SO3,
 };
 use rand::Rng;
 use rand::SeedableRng;
@@ -410,17 +410,26 @@ impl XMetric {
     }
 }
 
-/// Build-thread policy for `build_rust_*`. Forward-compat placeholder for
-/// `nanoflann_rs::BuildThreads`, which task 12 (the parallel-build task) adds
-/// to `params.rs` -- it does not exist yet in this crate. Only `Sequential`
-/// is wired here: `KdTreeBuilder` has no `threads()` option until task 12
-/// lands, so `build_rust_f32`/`build_rust_f64` panic on any other variant.
+/// Build-thread policy for `build_rust_*`. Mirrors `nanoflann_rs::BuildThreads`
+/// 1:1 (kept as xval's own type rather than a re-export so `tests/*.rs` don't
+/// need to depend on `nanoflann-rs`'s feature flags to name a variant) --
+/// `to_rust` maps it onto the real thing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BuildThreads {
     #[default]
     Sequential,
     Auto,
     Threads(core::num::NonZeroU32),
+}
+
+impl BuildThreads {
+    fn to_rust(self) -> RustBuildThreads {
+        match self {
+            BuildThreads::Sequential => RustBuildThreads::Sequential,
+            BuildThreads::Auto => RustBuildThreads::Auto,
+            BuildThreads::Threads(n) => RustBuildThreads::Threads(n),
+        }
+    }
 }
 
 /// Defines the `$Name<'a>` opaque Rust index wrapper (an enum over the 5
@@ -562,10 +571,8 @@ macro_rules! define_rust_index {
         }
 
         /// Builds a `$Name` over flat row-major `data` (`n*dim` elements)
-        /// via `DynDim` + `FlatSlice`, the given `metric`/`leaf`. `threads`
-        /// is accepted for forward-compat with the bench task (task 13);
-        /// only `BuildThreads::Sequential` is wired -- see the `BuildThreads`
-        /// doc comment.
+        /// via `DynDim` + `FlatSlice`, the given `metric`/`leaf`/`threads`
+        /// (mapped onto `nanoflann_rs::BuildThreads` via `to_rust`).
         pub fn $build_fn<'a>(
             data: &'a [$t],
             dim: usize,
@@ -573,29 +580,28 @@ macro_rules! define_rust_index {
             leaf: usize,
             threads: BuildThreads,
         ) -> $Name<'a> {
-            assert_eq!(
-                threads,
-                BuildThreads::Sequential,
-                "TODO(task-12): {} only wires BuildThreads::Sequential until KdTreeBuilder gains a threads() option",
-                stringify!($build_fn)
-            );
             let ds = FlatSlice::new(data, dim);
+            let threads = threads.to_rust();
             match metric {
-                XMetric::L1 => {
-                    $Name::L1(KdTreeBuilder::new(DynDim(dim), ds).with_metric(L1).leaf_max_size(leaf).build())
-                }
-                XMetric::L2 => {
-                    $Name::L2(KdTreeBuilder::new(DynDim(dim), ds).with_metric(L2).leaf_max_size(leaf).build())
-                }
-                XMetric::L2Simple => $Name::L2Simple(
-                    KdTreeBuilder::new(DynDim(dim), ds).with_metric(L2Simple).leaf_max_size(leaf).build(),
+                XMetric::L1 => $Name::L1(
+                    KdTreeBuilder::new(DynDim(dim), ds).with_metric(L1).leaf_max_size(leaf).threads(threads).build(),
                 ),
-                XMetric::SO2 => {
-                    $Name::SO2(KdTreeBuilder::new(DynDim(dim), ds).with_metric(SO2).leaf_max_size(leaf).build())
-                }
-                XMetric::SO3 => {
-                    $Name::SO3(KdTreeBuilder::new(DynDim(dim), ds).with_metric(SO3).leaf_max_size(leaf).build())
-                }
+                XMetric::L2 => $Name::L2(
+                    KdTreeBuilder::new(DynDim(dim), ds).with_metric(L2).leaf_max_size(leaf).threads(threads).build(),
+                ),
+                XMetric::L2Simple => $Name::L2Simple(
+                    KdTreeBuilder::new(DynDim(dim), ds)
+                        .with_metric(L2Simple)
+                        .leaf_max_size(leaf)
+                        .threads(threads)
+                        .build(),
+                ),
+                XMetric::SO2 => $Name::SO2(
+                    KdTreeBuilder::new(DynDim(dim), ds).with_metric(SO2).leaf_max_size(leaf).threads(threads).build(),
+                ),
+                XMetric::SO3 => $Name::SO3(
+                    KdTreeBuilder::new(DynDim(dim), ds).with_metric(SO3).leaf_max_size(leaf).threads(threads).build(),
+                ),
             }
         }
     };
@@ -1016,9 +1022,14 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "TODO(task-12)")]
-    fn build_rust_f64_panics_on_non_sequential_threads() {
-        let data = vec![0.0, 0.0, 1.0, 0.0];
-        let _ = build_rust_f64(&data, 2, XMetric::L2, 10, BuildThreads::Auto);
+    fn build_rust_f64_auto_and_threads2_wire_through_and_match_sequential_vind() {
+        let data = vec![0.0, 0.0, 1.0, 0.0, 2.0, 2.0, -1.0, -1.0, 5.0, 5.0];
+        let seq = build_rust_f64(&data, 2, XMetric::L2, 2, BuildThreads::Sequential);
+        let auto = build_rust_f64(&data, 2, XMetric::L2, 2, BuildThreads::Auto);
+        let threads2 =
+            build_rust_f64(&data, 2, XMetric::L2, 2, BuildThreads::Threads(core::num::NonZeroU32::new(2).unwrap()));
+
+        assert_eq!(seq.vind(), auto.vind(), "Auto vind must match Sequential");
+        assert_eq!(seq.vind(), threads2.vind(), "Threads(2) vind must match Sequential");
     }
 }

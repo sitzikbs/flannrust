@@ -205,6 +205,35 @@ fn build_exponential_spacing_n1000_both_scalars() {
     });
 }
 
+// ---------------------------------------------------------------------
+// Parallel build cross-language parity (task 12): Rust `BuildThreads::Auto`
+// vs C++ `n_thread_build=4` -- C++'s `divideTreeConcurrent` also partitions
+// the whole range BEFORE spawning worker threads (confirmed in
+// `crates/nanoflann-rs/src/build.rs`'s `SubtreeBuilder::build` doc comment,
+// which cites having read `divideTreeConcurrent`, nanoflann.hpp ~1422-1479),
+// so its `vAcc_` is identical to what its OWN sequential build produces --
+// meaning this closes the loop cross-language: Rust's `Auto` build must
+// match C++'s single-threaded `vind`, which in turn is what `n_thread_build=4`
+// must ALSO produce.
+// ---------------------------------------------------------------------
+
+#[test]
+fn build_parallel_auto_matches_cpp_n_thread_build_4_uniform_n5000_dim3_f64() {
+    let n = 5000usize;
+    let dim = 3usize;
+    let leaf = 10usize;
+    let seed = cfg_seed("build_parallel_auto_vs_cpp_threads", &[n, dim, leaf]);
+    let data = uniform(seed, n, dim);
+
+    let rust_idx = build_rust_f64(&data, dim, XMetric::L2, leaf, BuildThreads::Auto);
+    let cpp_idx = RefIndexF64::build(&data, dim, XMetric::L2.to_ref(), leaf, 4);
+
+    let ctx = format!("build_parallel_auto_vs_cpp config: n={n} dim={dim} leaf={leaf} seed={seed}");
+    assert_vind_eq(&rust_idx.vind(), &cpp_idx.vind(), &ctx);
+    assert!(rust_idx.used_memory_bytes() > 0, "{ctx}\nrust used_memory_bytes() must be > 0");
+    assert!(cpp_idx.used_memory() > 0, "{ctx}\ncpp used_memory() must be > 0");
+}
+
 #[test]
 fn build_exponential_spacing_n10000_leaf10_f64() {
     run_on_big_stack(|| {

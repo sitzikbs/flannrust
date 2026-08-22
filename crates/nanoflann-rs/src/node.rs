@@ -5,7 +5,7 @@ use crate::scalar::Scalar;
 /// exactly like nanoflann; leaves store a `[left, right)` range into the
 /// permuted point-index vector.
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Node<T> {
     /// Leaf: range start into `vind`. Interior: arena index of child 1.
     a: u32,
@@ -45,6 +45,25 @@ impl<T: Scalar> Node<T> {
     pub(crate) fn set_div_bounds(&mut self, divlow: T, divhigh: T) {
         self.divlow = divlow;
         self.divhigh = divhigh;
+    }
+
+    /// Interior only (`debug_assert!(!self.is_leaf())`): shift both child
+    /// arena indices by `off`, used when splicing a subtree's local arena
+    /// into a larger one at a nonzero offset (the parallel builder's merge
+    /// step). Leaf ranges (`a`/`b` on a leaf) are `[left, right)` offsets
+    /// into `vind` that are already GLOBAL (base-relative, see
+    /// `SubtreeBuilder`/`build_subtree_parallel`'s `base` parameter) and
+    /// must NEVER be offset here — only interior child ARENA indices shift
+    /// when an arena is relocated.
+    ///
+    /// Only used by `build_parallel.rs`, which is compiled solely under the
+    /// "parallel" feature — `allow(dead_code)` avoids a spurious warning on
+    /// `--no-default-features` builds.
+    #[cfg_attr(not(feature = "parallel"), allow(dead_code))]
+    pub(crate) fn offset_children(&mut self, off: u32) {
+        debug_assert!(!self.is_leaf());
+        self.a += off;
+        self.b += off;
     }
 }
 
@@ -131,5 +150,34 @@ mod tests {
     fn test_leaf_sentinel_headroom() {
         let node = Node::<f32>::split(u32::MAX - 1, 0.0, 1.0);
         assert!(!node.is_leaf());
+    }
+
+    #[test]
+    fn test_offset_children_shifts_interior_only() {
+        let mut node = Node::<f64>::split(2, 1.5, 2.5);
+        node.set_children(4, 7);
+        node.offset_children(10);
+        assert_eq!(node.children(), (14, 17));
+    }
+
+    #[test]
+    fn test_node_equality() {
+        let mut a = Node::<f64>::split(1, 1.0, 2.0);
+        a.set_children(3, 5);
+        let mut b = Node::<f64>::split(1, 1.0, 2.0);
+        b.set_children(3, 5);
+        assert_eq!(a, b);
+
+        let leaf_a = Node::<f64>::leaf(0, 3);
+        let leaf_b = Node::<f64>::leaf(0, 3);
+        assert_eq!(leaf_a, leaf_b);
+        assert_ne!(leaf_a, Node::<f64>::leaf(0, 4));
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_offset_children_panics_on_leaf_in_debug() {
+        let mut node = Node::<f64>::leaf(0, 3);
+        node.offset_children(1);
     }
 }

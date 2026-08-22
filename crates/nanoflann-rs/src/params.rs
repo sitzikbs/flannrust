@@ -15,6 +15,30 @@ impl Default for SearchParams {
     }
 }
 
+/// Build-thread policy. C++ mapping: Sequential = n_thread_build 1 (the
+/// default), Auto = 0 (hardware concurrency via rayon's global pool),
+/// Threads(n) = a scoped rayon pool of n threads. DEVIATION (documented):
+/// Threads(n) guarantees "at most n rayon workers", not C++'s exact
+/// async-gating behavior.
+///
+/// The type exists regardless of features; only the non-`Sequential`
+/// BEHAVIOR is feature-gated: without the "parallel" feature,
+/// `KdTreeBuilder::build()` panics on `Auto`/`Threads(_)` with a message
+/// mirroring C++ `NANOFLANN_NO_THREADS`'s throw ("Multithreading is
+/// disabled").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildThreads {
+    Sequential,
+    Auto,
+    Threads(core::num::NonZeroU32),
+}
+
+impl Default for BuildThreads {
+    fn default() -> Self {
+        Self::Sequential
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -24,5 +48,10 @@ mod tests {
         let p = SearchParams::default();
         assert_eq!(p.eps, 0.0);
         assert!(p.sorted);
+    }
+
+    #[test]
+    fn build_threads_default_is_sequential() {
+        assert_eq!(BuildThreads::default(), BuildThreads::Sequential);
     }
 }
