@@ -10,7 +10,7 @@ use crate::filter::PointFilter;
 use crate::metric::Distance;
 use crate::node::Node;
 use crate::params::SearchParams;
-use crate::result_set::ResultSet;
+use crate::result_set::{BoxResultSet, ResultSet};
 use crate::scalar::{DistanceValue, Scalar};
 
 /// Everything a query needs, borrowed: dataset, metric, dimensionality, the
@@ -202,6 +202,104 @@ where
         }
     }
     dists[idx] = dst;
+    true
+}
+
+/// = static `findWithinBox` (nanoflann.hpp ~2030-2074): all points inside the
+/// axis-aligned box, boundaries INCLUSIVE, output in traversal order, NEVER
+/// sorted, no `SearchParameters`. `bounds.len() == ctx.dim`. Empty tree -> 0,
+/// `out` cleared.
+///
+/// Explicit `Vec<u32>` node stack, seeded with the root (always arena index
+/// 0, per `SearchCtx`'s doc comment). Push order per interior node mirrors
+/// the source EXACTLY: `child1` pushed first (if `bounds[divfeat].low <=
+/// node.div_low()`), then `child2` (if `bounds[divfeat].high >=
+/// node.div_high()`) — both INCLUSIVE compares against the node's div
+/// bounds (nanoflann.hpp:2068-2069). Because this is a LIFO stack, when both
+/// pushes happen `child2` is popped and processed FIRST; this determines the
+/// output order (locked by `find_within_box_exact_traversal_order` above).
+///
+/// No `PointFilter` parameter: C++'s static `findWithinBox` has no
+/// `isActive`-style hook (unlike `findNeighbors`), so this port has none.
+///
+/// C++'s inner loop honors `result.addPoint`'s bool return as a mid-loop
+/// early-out (nanoflann.hpp:2053-2058: `if (!result.addPoint(...)) return
+/// result.size();`) — if the result set signals "stop", the search returns
+/// immediately without visiting the rest of the stack. `BoxResultSet::add`
+/// here returns `()` (see `result_set.rs`), not `bool`: the built-in
+/// collector never wants to stop early (it always accepts every point), so
+/// that early-out is unobservable for this collector and is deliberately
+/// not ported.
+#[allow(dead_code)] // TODO(task-10): called by the tree façade's find_within_box public method
+pub(crate) fn find_within_box<T, DS, M, Idx>(
+    ctx: &SearchCtx<'_, T, DS, M, Idx>,
+    bounds: &[Interval<T>],
+    out: &mut Vec<Idx>,
+) -> usize
+where
+    T: Scalar,
+    DS: DataSource<T> + ?Sized,
+    M: Distance<T>,
+    Idx: IndexAccess,
+{
+    let mut result = BoxResultSet::new(out);
+
+    // C++ (nanoflann.hpp:2032): `if (this->size(*this) == 0) return 0;` —
+    // an empty dataset has no built tree (no root node) to walk.
+    if ctx.nodes.is_empty() {
+        return 0;
+    }
+
+    debug_assert_eq!(bounds.len(), ctx.dim, "bounds.len() != dim");
+
+    let mut stack: Vec<u32> = vec![0];
+
+    while let Some(node_idx) = stack.pop() {
+        let node = &ctx.nodes[node_idx as usize];
+
+        if node.is_leaf() {
+            let (left, right) = node.leaf_range();
+            for i in left..right {
+                let accessor = ctx.vind[i];
+                if contains_point(ctx, bounds, accessor) {
+                    result.add(accessor);
+                }
+            }
+        } else {
+            let idx = node.split_dim();
+            let low_bound = node.div_low();
+            let high_bound = node.div_high();
+            let (child1, child2) = node.children();
+
+            if bounds[idx].low <= low_bound {
+                stack.push(child1);
+            }
+            if bounds[idx].high >= high_bound {
+                stack.push(child2);
+            }
+        }
+    }
+
+    result.size()
+}
+
+/// Port of `contains` (nanoflann.hpp:2182-2192): a point is inside the box
+/// iff EVERY dimension's coordinate satisfies `Interval::contains` (the
+/// C++-parity inclusive `point < low || point > high` -> reject predicate,
+/// see `bbox.rs`).
+fn contains_point<T, DS, M, Idx>(ctx: &SearchCtx<'_, T, DS, M, Idx>, bounds: &[Interval<T>], idx: Idx) -> bool
+where
+    T: Scalar,
+    DS: DataSource<T> + ?Sized,
+    M: Distance<T>,
+    Idx: IndexAccess,
+{
+    for i in 0..ctx.dim {
+        let point = ctx.ds.point_component(idx.to_usize(), i);
+        if !bounds[i].contains(point) {
+            return false;
+        }
+    }
     true
 }
 
@@ -1310,5 +1408,257 @@ mod tests {
 
         handle.join().expect("heavy-query-worker thread panicked (a stack overflow instead aborts the whole process, with no Result to observe)");
         eprintln!("heavy_query_degenerate_trees: all knn/radius queries matched brute force on both heavy trees");
+    }
+
+    // ---------------------------------------------------------------
+    // Task 9: find_within_box
+    // ---------------------------------------------------------------
+
+    fn brute_force_box<const N: usize>(pts: &[[f64; N]], bounds: &[Interval<f64>]) -> Vec<u32> {
+        (0..pts.len())
+            .filter(|&i| (0..N).all(|d| bounds[d].contains(pts[i][d])))
+            .map(|i| i as u32)
+            .collect()
+    }
+
+    fn tree_box<const N: usize>(
+        vind: &[u32],
+        arena: &[Node<f64>],
+        bbox: &[Interval<f64>],
+        pts: &[[f64; N]],
+        bounds: &[Interval<f64>],
+    ) -> Vec<u32> {
+        let dim = N;
+        let metric = L2;
+        let ctx = SearchCtx { ds: &pts, metric: &metric, dim, nodes: arena, vind, root_bbox: bbox };
+        let mut out = Vec::new();
+        let count = find_within_box(&ctx, bounds, &mut out);
+        assert_eq!(count, out.len(), "find_within_box return value must equal out.len()");
+        out
+    }
+
+    // Test 1: face inclusion — dim-3 integer grid 0..=3^3 (64 points), box
+    // [1,2]x[0,3]x[2,2]. Result must equal the brute-force inclusive filter,
+    // and points exactly on every face (low AND high, each axis) must be
+    // included.
+    #[test]
+    fn find_within_box_face_inclusion() {
+        let mut pts: Vec<[f64; 3]> = Vec::new();
+        for x in 0..=3 {
+            for y in 0..=3 {
+                for z in 0..=3 {
+                    pts.push([x as f64, y as f64, z as f64]);
+                }
+            }
+        }
+        let (vind, arena, bbox) = build_tree(&pts, 4);
+
+        let bounds = vec![
+            Interval { low: 1.0, high: 2.0 },
+            Interval { low: 0.0, high: 3.0 },
+            Interval { low: 2.0, high: 2.0 },
+        ];
+
+        let mut got = tree_box(&vind, &arena, &bbox, &pts, &bounds);
+        let mut expected = brute_force_box(&pts, &bounds);
+        got.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(got, expected, "find_within_box must equal the brute-force inclusive filter (as a set)");
+
+        // Explicit face checks: both faces of dim0 (x=1 low, x=2 high) and
+        // both faces of dim1 (y=0 low, y=3 high), all at the degenerate
+        // dim2 value z=2 (low == high on that axis).
+        for corner in [[1.0, 0.0, 2.0], [2.0, 0.0, 2.0], [1.0, 3.0, 2.0], [2.0, 3.0, 2.0]] {
+            let idx = pts.iter().position(|p| *p == corner).expect("corner point must exist in the grid") as u32;
+            assert!(got.contains(&idx), "face point {corner:?} (index {idx}) must be included (inclusive boundaries)");
+        }
+    }
+
+    // Test 2: exact traversal order lock.
+    //
+    // Dataset: pts = [[1.0], [2.0], ..., [10.0]] (dim 1, 10 points),
+    // leaf_max_size = 2. Hand-derived tree (by simulating `middle_split` /
+    // `plane_split` from build.rs exactly, since arena index assignment is
+    // preorder DFS, left child fully built before right per the Finalize
+    // push-order comment in `SubtreeBuilder::build`):
+    //
+    //   Node0 (root):   interior, cutfeat=0, divlow=5,  divhigh=6,  children=(1,6)
+    //   Node1:          interior, cutfeat=0, divlow=3,  divhigh=4,  children=(2,5)
+    //   Node2:          interior, cutfeat=0, divlow=2,  divhigh=3,  children=(3,4)
+    //   Node3:          leaf, vind[0..2)  = point-indices [0,1]   (values 1,2)
+    //   Node4:          leaf, vind[2..3)  = point-indices [2]     (value 3)
+    //   Node5:          leaf, vind[3..5)  = point-indices [4,3]   (values 5,4)
+    //   Node6:          interior, cutfeat=0, divlow=7,  divhigh=8,  children=(7,8)
+    //   Node7:          leaf, vind[5..7)  = point-indices [6,5]   (values 7,6)
+    //   Node8:          interior, cutfeat=0, divlow=8,  divhigh=9,  children=(9,10)
+    //   Node9:          leaf, vind[7..8)  = point-indices [7]     (value 8)
+    //   Node10:         leaf, vind[8..10) = point-indices [8,9]   (values 9,10)
+    //
+    // (Node4/Node5's split at Node1 happens to leave the right leaf's vind
+    // order as [4,3] rather than [3,4] because `plane_split`'s in-place
+    // Dutch-flag partition swaps elements > cutval down from the right end;
+    // similarly Node7's leaf ends up [6,5].)
+    //
+    // Query box = [2.0, 9.0] (dim 1). Hand-traced stack walk (push child1
+    // then child2 -> child2 pops FIRST):
+    //   pop 0(root): low2<=5 push 1; high9>=6 push 6.        stack=[1,6]
+    //   pop 6:       low2<=7 push 7; high9>=8 push 8.        stack=[1,7,8]
+    //   pop 8:       low2<=8 push 9; high9>=9 push 10.       stack=[1,7,9,10]
+    //   pop 10: leaf {8,9} vals{9,10} -> 9 in [2,9]? yes(idx8); 10? no.  out=[8]
+    //   pop 9:  leaf {7} val{8} -> in [2,9]? yes.                        out=[8,7]
+    //   pop 7:  leaf {6,5} vals{7,6} (iterated in that vind order)
+    //           -> both in [2,9]: idx6 then idx5.                       out=[8,7,6,5]
+    //   pop 1:       low2<=3 push 2; high9>=4 push 5.        stack=[2,5]
+    //   pop 5:  leaf {4,3} vals{5,4} -> both in range: idx4 then idx3.   out=[8,7,6,5,4,3]
+    //   pop 2:       low2<=2 push 3; high9>=3 push 4.        stack=[3,4]
+    //   pop 4:  leaf {2} val{3} -> in range: idx2.                      out=[8,7,6,5,4,3,2]
+    //   pop 3:  leaf {0,1} vals{1,2} -> val1 NOT in [2,9] (excluded);
+    //           val2 in range: idx1.                                    out=[8,7,6,5,4,3,2,1]
+    //
+    // Final expected sequence: [8,7,6,5,4,3,2,1] (locks child2-pops-first).
+    #[test]
+    fn find_within_box_exact_traversal_order() {
+        let pts: Vec<[f64; 1]> = (1..=10).map(|v| [v as f64]).collect();
+        let (vind, arena, bbox) = build_tree(&pts, 2);
+
+        let bounds = vec![Interval { low: 2.0, high: 9.0 }];
+        let got = tree_box(&vind, &arena, &bbox, &pts, &bounds);
+
+        assert_eq!(got, vec![8u32, 7, 6, 5, 4, 3, 2, 1], "traversal order must match the hand-derived stack walk");
+    }
+
+    // Test 3: prune boundaries — inclusive descent (`<=`/`>=`), not the
+    // exclusive `<`/`>` a port bug would use. Reuses the tree from Test 2.
+    #[test]
+    fn find_within_box_prune_boundary_low_equals_div_low() {
+        let pts: Vec<[f64; 1]> = (1..=10).map(|v| [v as f64]).collect();
+        let (vind, arena, bbox) = build_tree(&pts, 2);
+
+        // box.low == Node2's divlow (2.0) exactly. The only matching point
+        // (value 2, index 1) lives in Node2's child1 (Node3); a `<` port
+        // bug would fail `2.0 < 2.0` and prune Node3, losing it.
+        let bounds = vec![Interval { low: 2.0, high: 2.0 }];
+        let got = tree_box(&vind, &arena, &bbox, &pts, &bounds);
+        assert_eq!(got, vec![1u32]);
+    }
+
+    #[test]
+    fn find_within_box_prune_boundary_high_equals_div_high() {
+        let pts: Vec<[f64; 1]> = (1..=10).map(|v| [v as f64]).collect();
+        let (vind, arena, bbox) = build_tree(&pts, 2);
+
+        // box.high == the root's divhigh (6.0) exactly. The only matching
+        // point (value 6, index 5) lives under the root's child2 (Node6); a
+        // `>` port bug would fail `6.0 > 6.0` and prune Node6, losing it.
+        let bounds = vec![Interval { low: 6.0, high: 6.0 }];
+        let got = tree_box(&vind, &arena, &bbox, &pts, &bounds);
+        assert_eq!(got, vec![5u32]);
+    }
+
+    // Test 4: brute-force property — 100 seeded LCG cases, n <= 300, dim 2/3,
+    // random boxes (including degenerate low==high boxes per axis).
+    fn run_box_case<const N: usize>(seed: u64, n: usize, leaf_max_size: usize) {
+        let mut rng = Lcg(seed);
+        let pts: Vec<[f64; N]> = (0..n)
+            .map(|_| {
+                let mut p = [0.0f64; N];
+                for d in 0..N {
+                    p[d] = rng.next_f64() * 200.0 - 100.0;
+                }
+                p
+            })
+            .collect();
+
+        let mut bounds = vec![Interval { low: 0.0, high: 0.0 }; N];
+        for d in 0..N {
+            let a = rng.next_f64() * 200.0 - 100.0;
+            let b = rng.next_f64() * 200.0 - 100.0;
+            let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+            // ~1-in-5 chance of collapsing this axis to a degenerate point.
+            bounds[d] = if rng.next_f64() < 0.2 { Interval { low: lo, high: lo } } else { Interval { low: lo, high: hi } };
+        }
+
+        let (vind, arena, bbox) = build_tree(&pts, leaf_max_size);
+        let mut got = tree_box(&vind, &arena, &bbox, &pts, &bounds);
+        let mut expected = brute_force_box(&pts, &bounds);
+        assert_eq!(got.len(), expected.len(), "seed={seed} n={n} dim={N} bounds={bounds:?}: count mismatch");
+        got.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(got, expected, "seed={seed} n={n} dim={N} bounds={bounds:?}: set mismatch");
+    }
+
+    #[test]
+    fn find_within_box_brute_force_property() {
+        for seed in 0..100u64 {
+            let n = 1 + (seed as usize * 37) % 300;
+            let leaf_max = 1 + (seed as usize % 8);
+            if seed % 2 == 0 {
+                run_box_case::<2>(seed.wrapping_mul(7919).wrapping_add(1), n, leaf_max);
+            } else {
+                run_box_case::<3>(seed.wrapping_mul(7919).wrapping_add(1), n, leaf_max);
+            }
+        }
+    }
+
+    // Test 5: never sorted — search seeded random cases (wide box, so the
+    // FULL point set is returned in natural traversal order) for one whose
+    // output is not ascending-sorted, and lock that. Guards against an
+    // accidental "helpful" sort creeping into `find_within_box` (unlike
+    // knn/radius search, box search takes no `SearchParams` and never sorts).
+    #[test]
+    fn find_within_box_never_sorted() {
+        let mut found = false;
+        for seed in 0..200u64 {
+            let n = 1 + (seed as usize * 53) % 300;
+            let leaf_max = 1 + (seed as usize % 6);
+            let mut rng = Lcg(seed.wrapping_mul(104729).wrapping_add(3));
+            let pts: Vec<[f64; 3]> = (0..n)
+                .map(|_| {
+                    let mut p = [0.0f64; 3];
+                    for d in 0..3 {
+                        p[d] = rng.next_f64() * 200.0 - 100.0;
+                    }
+                    p
+                })
+                .collect();
+            let bounds = vec![Interval { low: -100.0, high: 100.0 }; 3];
+            let (vind, arena, bbox) = build_tree(&pts, leaf_max);
+            let got = tree_box(&vind, &arena, &bbox, &pts, &bounds);
+            if got.len() >= 3 && got.windows(2).any(|w| w[0] > w[1]) {
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "expected at least one seeded case with non-ascending find_within_box output");
+    }
+
+    // Test 6: empty tree -> 0, `out` cleared (pre-populated to prove it).
+    #[test]
+    fn find_within_box_empty_tree() {
+        let arena: Vec<Node<f64>> = Vec::new();
+        let vind: Vec<u32> = Vec::new();
+        let bbox: Vec<Interval<f64>> = Vec::new();
+        let pts: Vec<[f64; 2]> = Vec::new();
+        let pts: &[[f64; 2]] = &pts;
+        let metric = L2;
+        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: 2, nodes: &arena, vind: &vind, root_bbox: &bbox };
+
+        let bounds = vec![Interval { low: -1.0, high: 1.0 }; 2];
+        let mut out = vec![42u32, 43, 44];
+        let count = find_within_box(&ctx, &bounds, &mut out);
+
+        assert_eq!(count, 0);
+        assert!(out.is_empty());
+    }
+
+    // Test 7: no-match box -> 0.
+    #[test]
+    fn find_within_box_no_match() {
+        let pts: Vec<[f64; 1]> = (1..=10).map(|v| [v as f64]).collect();
+        let (vind, arena, bbox) = build_tree(&pts, 2);
+
+        let bounds = vec![Interval { low: 1000.0, high: 2000.0 }];
+        let got = tree_box(&vind, &arena, &bbox, &pts, &bounds);
+        assert!(got.is_empty());
     }
 }

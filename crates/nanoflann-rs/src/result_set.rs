@@ -213,12 +213,10 @@ impl<'a, D: DistanceValue, Idx: Copy> ResultSet<D, Idx> for RadiusResultSet<'a, 
 /// which never sorts and returns a plain count — so this stays crate-private
 /// and carries no distances. (C++'s manual-only `BoxResultSet::sort()` is
 /// deliberately not ported; callers own the output Vec and can sort it.)
-#[allow(dead_code)] // TODO(task-9): used by find_within_box
 pub(crate) struct BoxResultSet<'a, Idx> {
     pub(crate) indices: &'a mut Vec<Idx>,
 }
 
-#[allow(dead_code)] // TODO(task-9): used by find_within_box
 impl<'a, Idx: Copy> BoxResultSet<'a, Idx> {
     pub(crate) fn new(indices: &'a mut Vec<Idx>) -> Self {
         indices.clear();
