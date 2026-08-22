@@ -19,55 +19,12 @@
 use crate::bbox::Interval;
 use crate::data_source::DataSource;
 use crate::node::Node;
-use crate::scalar::Scalar;
-
-/// Crate-private index<->usize conversion. Task 10 re-homes this as the
-/// public `IndexType` trait; keep the method names stable: `to_usize` /
-/// `from_usize`.
-pub(crate) trait IndexAccess: Copy {
-    fn to_usize(self) -> usize;
-    /// Panics (via `try_into().unwrap()`) if `v` doesn't fit in `Self`.
-    fn from_usize(v: usize) -> Self;
-}
-
-impl IndexAccess for u32 {
-    #[inline]
-    fn to_usize(self) -> usize {
-        self as usize
-    }
-    #[inline]
-    fn from_usize(v: usize) -> Self {
-        v.try_into().unwrap()
-    }
-}
-
-impl IndexAccess for u64 {
-    #[inline]
-    fn to_usize(self) -> usize {
-        self as usize
-    }
-    #[inline]
-    fn from_usize(v: usize) -> Self {
-        v.try_into().unwrap()
-    }
-}
-
-impl IndexAccess for usize {
-    #[inline]
-    fn to_usize(self) -> usize {
-        self
-    }
-    #[inline]
-    fn from_usize(v: usize) -> Self {
-        v
-    }
-}
+use crate::scalar::{IndexType, Scalar};
 
 /// Identity permutation `0..n` (C++ `init_vind`, nanoflann.hpp:2174-2180:
 /// `for (IndexType i = 0; i < size_; i++) vAcc_[i] = i;`). Panics if
 /// `n > u32::MAX as usize` (leaf offsets are stored as `u32` in `Node`).
-#[allow(dead_code)] // TODO(task-10): called by the tree façade to seed vind
-pub(crate) fn init_vind<Idx: IndexAccess>(n: usize) -> Vec<Idx> {
+pub(crate) fn init_vind<Idx: IndexType>(n: usize) -> Vec<Idx> {
     assert!(
         n <= u32::MAX as usize,
         "init_vind: point count {n} exceeds u32::MAX (leaf offsets are u32)"
@@ -108,7 +65,7 @@ fn compute_min_max<T, DS, Idx>(ds: &DS, ind: &[Idx], dim: usize) -> (T, T)
 where
     T: Scalar,
     DS: DataSource<T> + ?Sized,
-    Idx: IndexAccess,
+    Idx: IndexType,
 {
     let mut min_elem = ds.point_component(ind[0].to_usize(), dim);
     let mut max_elem = min_elem;
@@ -163,7 +120,7 @@ pub(crate) fn plane_split<T, DS, Idx>(
 where
     T: Scalar,
     DS: DataSource<T> + ?Sized,
-    Idx: IndexAccess,
+    Idx: IndexType,
 {
     let count = ind.len();
     let mut left: usize = 0;
@@ -199,7 +156,7 @@ pub(crate) fn middle_split<T, DS, Idx>(
 where
     T: Scalar,
     DS: DataSource<T> + ?Sized,
-    Idx: IndexAccess,
+    Idx: IndexType,
 {
     let count = ind.len();
     // nanoflann.hpp:1486: `const auto EPS = static_cast<DistanceType>(0.00001);`
@@ -271,7 +228,6 @@ where
 /// the permuted index vector this call owns (the whole vector for a full
 /// build; disjoint sub-slices in the parallel build), `base` its offset in
 /// the global vector: leaf nodes store global offsets `base + local`.
-#[allow(dead_code)] // TODO(task-10): constructed by the tree façade (KdTree::build)
 pub(crate) struct SubtreeBuilder<'a, T: Scalar, DS: DataSource<T> + ?Sized, Idx: Copy> {
     pub ds: &'a DS,
     pub dim: usize,
@@ -294,12 +250,11 @@ enum Work<T> {
     Finalize { node: u32, cutfeat: usize },
 }
 
-#[allow(dead_code)] // TODO(task-10): SubtreeBuilder::build called by the tree façade
 impl<'a, T, DS, Idx> SubtreeBuilder<'a, T, DS, Idx>
 where
     T: Scalar,
     DS: DataSource<T> + ?Sized,
-    Idx: IndexAccess,
+    Idx: IndexType,
 {
     /// Build the subtree over all of `self.vind`, whose bounding box is
     /// `bbox` (mutated to the TIGHT box of the actual points, exactly like

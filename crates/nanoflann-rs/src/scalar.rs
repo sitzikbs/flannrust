@@ -60,6 +60,49 @@ impl DistanceValue for f64 {
     fn from_f32(v: f32) -> Self { v as f64 }
 }
 
+/// Public point-index type (promoted from `build.rs`'s crate-private
+/// `IndexAccess`, task 6 — same contract, same method names, now part of the
+/// public API so callers can pick `u32`/`u64`/`usize` via
+/// `KdTreeBuilder::index_type`).
+pub trait IndexType: Copy + PartialOrd + Send + Sync + 'static {
+    fn to_usize(self) -> usize;
+    /// Panics (via `try_into().unwrap()`) if `v` doesn't fit in `Self`.
+    fn from_usize(v: usize) -> Self;
+}
+
+impl IndexType for u32 {
+    #[inline]
+    fn to_usize(self) -> usize {
+        self as usize
+    }
+    #[inline]
+    fn from_usize(v: usize) -> Self {
+        v.try_into().unwrap()
+    }
+}
+
+impl IndexType for u64 {
+    #[inline]
+    fn to_usize(self) -> usize {
+        self as usize
+    }
+    #[inline]
+    fn from_usize(v: usize) -> Self {
+        v.try_into().unwrap()
+    }
+}
+
+impl IndexType for usize {
+    #[inline]
+    fn to_usize(self) -> usize {
+        self
+    }
+    #[inline]
+    fn from_usize(v: usize) -> Self {
+        v
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -98,5 +141,18 @@ mod tests {
     fn test_scalar_default_f64_is_zero() {
         let zero: f64 = f64::default();
         assert_eq!(zero, 0.0f64);
+    }
+
+    #[test]
+    fn test_index_type_round_trip_u32_u64_usize() {
+        assert_eq!(<u32 as IndexType>::from_usize(7).to_usize(), 7);
+        assert_eq!(<u64 as IndexType>::from_usize(7).to_usize(), 7);
+        assert_eq!(<usize as IndexType>::from_usize(7).to_usize(), 7);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_index_type_u32_from_usize_panics_on_overflow() {
+        let _ = <u32 as IndexType>::from_usize(u32::MAX as usize + 1);
     }
 }

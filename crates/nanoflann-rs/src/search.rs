@@ -4,14 +4,13 @@
 //! ~1595-1605, `findNeighbors` ~1990-2011).
 
 use crate::bbox::Interval;
-use crate::build::IndexAccess;
 use crate::data_source::DataSource;
 use crate::filter::PointFilter;
 use crate::metric::Distance;
 use crate::node::Node;
 use crate::params::SearchParams;
 use crate::result_set::{BoxResultSet, ResultSet};
-use crate::scalar::{DistanceValue, Scalar};
+use crate::scalar::{DistanceValue, IndexType, Scalar};
 
 /// Everything a query needs, borrowed: dataset, metric, dimensionality, the
 /// built arena + permuted index vector, and the tree's root bounding box.
@@ -33,7 +32,6 @@ pub(crate) struct SearchCtx<'a, T: Scalar, DS: DataSource<T> + ?Sized, M: Distan
 ///
 /// `dists_scratch` is caller-provided, length `ctx.dim`, zeroed here (callers
 /// with `ConstDim` pass a stack array — no per-query heap allocation).
-#[allow(dead_code)] // TODO(task-10): called by the tree façade's query methods (knn_search / radius_search / rknn_search)
 pub(crate) fn find_neighbors<T, DS, M, Idx, R, F>(
     ctx: &SearchCtx<T, DS, M, Idx>,
     result: &mut R,
@@ -46,7 +44,7 @@ where
     T: Scalar,
     DS: DataSource<T> + ?Sized,
     M: Distance<T>,
-    Idx: IndexAccess,
+    Idx: IndexType,
     R: ResultSet<M::DistanceType, Idx>,
     F: PointFilter<Idx>,
 {
@@ -140,7 +138,7 @@ where
     T: Scalar,
     DS: DataSource<T> + ?Sized,
     M: Distance<T>,
-    Idx: IndexAccess,
+    Idx: IndexType,
     R: ResultSet<M::DistanceType, Idx>,
     F: PointFilter<Idx>,
 {
@@ -230,7 +228,6 @@ where
 /// collector never wants to stop early (it always accepts every point), so
 /// that early-out is unobservable for this collector and is deliberately
 /// not ported.
-#[allow(dead_code)] // TODO(task-10): called by the tree façade's find_within_box public method
 pub(crate) fn find_within_box<T, DS, M, Idx>(
     ctx: &SearchCtx<'_, T, DS, M, Idx>,
     bounds: &[Interval<T>],
@@ -240,7 +237,7 @@ where
     T: Scalar,
     DS: DataSource<T> + ?Sized,
     M: Distance<T>,
-    Idx: IndexAccess,
+    Idx: IndexType,
 {
     let mut result = BoxResultSet::new(out);
 
@@ -292,7 +289,7 @@ where
     T: Scalar,
     DS: DataSource<T> + ?Sized,
     M: Distance<T>,
-    Idx: IndexAccess,
+    Idx: IndexType,
 {
     for i in 0..ctx.dim {
         let point = ctx.ds.point_component(idx.to_usize(), i);
