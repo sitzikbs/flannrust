@@ -2,3 +2,6 @@
 name = "nanoflann-ref"
 edition = "2021"
 publish = false
+
+[build-dependencies]
+cc = "1"

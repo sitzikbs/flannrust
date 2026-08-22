@@ -1,0 +1,413 @@
+// extern "C" surface over the vendored, UNMODIFIED nanoflann.hpp (1.12.1).
+// This file adds no algorithmic logic of its own -- it only builds the
+// correct nanoflann template instantiations, forwards calls, and copies
+// results into caller-owned buffers so the Rust side can be plain, safe FFI.
+//
+// Compiled with NANOFLANN_FIRST_MATCH left UNDEFINED (default nanoflann tie
+// behavior: ties broken by insertion order into the sorted result buffer,
+// not by index).
+//
+// All indices exposed across the C boundary are uint32_t: both the tree's
+// IndexType (4th template parameter, `index_t`) and every ResultSet's
+// IndexType are explicitly instantiated as uint32_t, so there is no
+// size_t/uint32_t mismatch anywhere in this file.
+
+#include "nanoflann.hpp"
+
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <utility>
+#include <vector>
+
+using nanoflann::BoxResultSet;
+using nanoflann::KDTreeSingleIndexAdaptor;
+using nanoflann::KDTreeSingleIndexAdaptorParams;
+using nanoflann::KNNResultSet;
+using nanoflann::L1_Adaptor;
+using nanoflann::L2_Adaptor;
+using nanoflann::L2_Simple_Adaptor;
+using nanoflann::RKNNResultSet;
+using nanoflann::ResultItem;
+using nanoflann::SearchParameters;
+using nanoflann::SO2_Adaptor;
+using nanoflann::SO3_Adaptor;
+
+namespace
+{
+
+// Row-major point-cloud adaptor: pts[idx * dim + d]. Borrows `pts`, never
+// copies -- the caller (Rust side) owns the buffer for the tree's lifetime.
+template <typename T>
+struct RowMajorAdaptor
+{
+    const T* pts;
+    size_t   n;
+    size_t   dim;
+
+    inline size_t kdtree_get_point_count() const { return n; }
+    inline T      kdtree_get_pt(const size_t idx, const size_t d) const { return pts[idx * dim + d]; }
+    template <class BBOX>
+    bool kdtree_get_bbox(BBOX&) const
+    {
+        return false;
+    }
+};
+
+// Metric tag, mirrored on the Rust side as `Metric`.
+enum nfr_metric
+{
+    NFR_L1        = 0,
+    NFR_L2        = 1,
+    NFR_L2_SIMPLE = 2,
+    NFR_SO2       = 3,
+    NFR_SO3       = 4,
+};
+
+// Runtime-dim (DIM = -1) tree, one alias per metric. index_t = uint32_t
+// throughout (both the tree's IndexType and every ResultSet below use
+// uint32_t explicitly).
+template <typename T, typename Distance>
+using Tree = KDTreeSingleIndexAdaptor<Distance, RowMajorAdaptor<T>, -1, uint32_t>;
+
+template <typename T>
+using L1Tree = Tree<T, L1_Adaptor<T, RowMajorAdaptor<T>, T, uint32_t>>;
+template <typename T>
+using L2Tree = Tree<T, L2_Adaptor<T, RowMajorAdaptor<T>, T, uint32_t>>;
+template <typename T>
+using L2SimpleTree = Tree<T, L2_Simple_Adaptor<T, RowMajorAdaptor<T>, T, uint32_t>>;
+template <typename T>
+using SO2Tree = Tree<T, SO2_Adaptor<T, RowMajorAdaptor<T>, T, uint32_t>>;
+template <typename T>
+using SO3Tree = Tree<T, SO3_Adaptor<T, RowMajorAdaptor<T>, T, uint32_t>>;
+
+// Fixed DIM=3 fast-path tree, L2 metric only (benchmark-only entry points).
+template <typename T>
+using Tree3 = KDTreeSingleIndexAdaptor<
+    L2_Adaptor<T, RowMajorAdaptor<T>, T, uint32_t>, RowMajorAdaptor<T>, 3, uint32_t>;
+
+// Owning handle for the runtime-dim entry points: the adaptor (borrows the
+// caller's points), a type-erased pointer to one of the 5 concrete tree
+// instantiations above (selected by `metric` at build time), and scratch
+// buffers for the two-call fetch pattern (radius/box search sizes are not
+// known up front).
+template <typename T>
+struct nfr_index
+{
+    nfr_metric          metric;
+    RowMajorAdaptor<T>  adaptor;
+    void*               tree = nullptr;
+    std::vector<ResultItem<uint32_t, T>> radius_scratch;
+    std::vector<uint32_t>                box_scratch;
+};
+
+template <typename T>
+struct nfr3_index
+{
+    RowMajorAdaptor<T> adaptor;
+    Tree3<T>*          tree = nullptr;
+};
+
+// Dispatches to the concrete tree type selected by `h->metric` and invokes
+// `f` on it. This is a single switch per call site (inlined/monomorphized
+// via the template, one instantiation of `f` per metric) -- NOT a virtual
+// call. nanoflann's DatasetAdaptor/Distance are compile-time template
+// parameters, so there is no common base class to dispatch through
+// virtually; a switch on a small enum is the only option, and keeping it to
+// exactly one switch per entry point (via this shared helper) keeps the
+// hot query paths free of vtable indirection.
+template <typename T, typename F>
+auto dispatch(nfr_index<T>* h, F&& f) -> decltype(f(std::declval<L2Tree<T>&>()))
+{
+    switch (h->metric)
+    {
+        case NFR_L1: return f(*static_cast<L1Tree<T>*>(h->tree));
+        case NFR_L2: return f(*static_cast<L2Tree<T>*>(h->tree));
+        case NFR_L2_SIMPLE: return f(*static_cast<L2SimpleTree<T>*>(h->tree));
+        case NFR_SO2: return f(*static_cast<SO2Tree<T>*>(h->tree));
+        case NFR_SO3: return f(*static_cast<SO3Tree<T>*>(h->tree));
+    }
+    // Unreachable: nfr_metric only ever holds one of the 5 values above,
+    // assigned from the `metric` argument of the corresponding nfr*_build_*
+    // call, which the Rust side constrains to the `Metric` enum's range.
+    return f(*static_cast<L2Tree<T>*>(h->tree));
+}
+
+template <typename T, typename F>
+auto dispatch(const nfr_index<T>* h, F&& f) -> decltype(f(std::declval<const L2Tree<T>&>()))
+{
+    switch (h->metric)
+    {
+        case NFR_L1: return f(*static_cast<const L1Tree<T>*>(h->tree));
+        case NFR_L2: return f(*static_cast<const L2Tree<T>*>(h->tree));
+        case NFR_L2_SIMPLE: return f(*static_cast<const L2SimpleTree<T>*>(h->tree));
+        case NFR_SO2: return f(*static_cast<const SO2Tree<T>*>(h->tree));
+        case NFR_SO3: return f(*static_cast<const SO3Tree<T>*>(h->tree));
+    }
+    return f(*static_cast<const L2Tree<T>*>(h->tree));
+}
+
+// ---- Generic (templated on T) entry-point implementations -----------------
+
+template <typename T>
+nfr_index<T>* nfr_build_impl(
+    const T* pts, size_t n, int dim, int metric, size_t leaf_max_size, unsigned n_thread_build)
+{
+    auto* h    = new nfr_index<T>();
+    h->metric  = static_cast<nfr_metric>(metric);
+    h->adaptor = RowMajorAdaptor<T>{pts, n, static_cast<size_t>(dim)};
+
+    const KDTreeSingleIndexAdaptorParams params(
+        leaf_max_size, nanoflann::KDTreeSingleIndexAdaptorFlags::None, n_thread_build);
+
+    switch (h->metric)
+    {
+        case NFR_L1:
+            h->tree = new L1Tree<T>(dim, h->adaptor, params);
+            break;
+        case NFR_L2:
+            h->tree = new L2Tree<T>(dim, h->adaptor, params);
+            break;
+        case NFR_L2_SIMPLE:
+            h->tree = new L2SimpleTree<T>(dim, h->adaptor, params);
+            break;
+        case NFR_SO2:
+            h->tree = new SO2Tree<T>(dim, h->adaptor, params);
+            break;
+        case NFR_SO3:
+            h->tree = new SO3Tree<T>(dim, h->adaptor, params);
+            break;
+    }
+    return h;
+}
+
+template <typename T>
+void nfr_free_impl(nfr_index<T>* h)
+{
+    if (!h) return;
+    switch (h->metric)
+    {
+        case NFR_L1: delete static_cast<L1Tree<T>*>(h->tree); break;
+        case NFR_L2: delete static_cast<L2Tree<T>*>(h->tree); break;
+        case NFR_L2_SIMPLE: delete static_cast<L2SimpleTree<T>*>(h->tree); break;
+        case NFR_SO2: delete static_cast<SO2Tree<T>*>(h->tree); break;
+        case NFR_SO3: delete static_cast<SO3Tree<T>*>(h->tree); break;
+    }
+    delete h;
+}
+
+template <typename T>
+size_t nfr_size_impl(const nfr_index<T>* h)
+{
+    return dispatch(h, [](const auto& tree) { return tree.size(tree); });
+}
+
+template <typename T>
+size_t nfr_used_memory_impl(const nfr_index<T>* h)
+{
+    return dispatch(h, [](const auto& tree) { return tree.usedMemory(tree); });
+}
+
+template <typename T>
+size_t nfr_vind_impl(const nfr_index<T>* h, uint32_t* out, size_t cap)
+{
+    return dispatch(h, [&](const auto& tree) {
+        const size_t n = tree.vAcc_.size();
+        const size_t copy_n = cap < n ? cap : n;
+        if (copy_n > 0) std::memcpy(out, tree.vAcc_.data(), copy_n * sizeof(uint32_t));
+        return n;
+    });
+}
+
+template <typename T>
+size_t nfr_knn_impl(
+    const nfr_index<T>* h, const T* q, size_t k, T eps, uint32_t* out_idx, T* out_dist)
+{
+    return dispatch(h, [&](const auto& tree) {
+        KNNResultSet<T, uint32_t> result_set(k);
+        result_set.init(out_idx, out_dist);
+        tree.findNeighbors(result_set, q, SearchParameters(eps, /*sorted=*/true));
+        return result_set.size();
+    });
+}
+
+template <typename T>
+size_t nfr_rknn_impl(
+    const nfr_index<T>* h, const T* q, size_t k, T radius, T eps, uint32_t* out_idx, T* out_dist)
+{
+    return dispatch(h, [&](const auto& tree) {
+        RKNNResultSet<T, uint32_t> result_set(k, radius);
+        result_set.init(out_idx, out_dist);
+        tree.findNeighbors(result_set, q, SearchParameters(eps, /*sorted=*/true));
+        return result_set.size();
+    });
+}
+
+template <typename T>
+size_t nfr_radius_count_impl(nfr_index<T>* h, const T* q, T radius, int sorted, T eps)
+{
+    return dispatch(h, [&](const auto& tree) {
+        const SearchParameters params(eps, sorted != 0);
+        return tree.radiusSearch(q, radius, h->radius_scratch, params);
+    });
+}
+
+template <typename T>
+size_t nfr_radius_fetch_impl(const nfr_index<T>* h, uint32_t* out_idx, T* out_dist, size_t cap)
+{
+    const size_t n      = h->radius_scratch.size();
+    const size_t copy_n = cap < n ? cap : n;
+    for (size_t i = 0; i < copy_n; ++i)
+    {
+        out_idx[i]  = h->radius_scratch[i].first;
+        out_dist[i] = h->radius_scratch[i].second;
+    }
+    return n;
+}
+
+template <typename T>
+size_t nfr_box_count_impl(nfr_index<T>* h, const T* lo, const T* hi)
+{
+    return dispatch(h, [&](auto& tree) {
+        using TreeT               = std::remove_reference_t<decltype(tree)>;
+        typename TreeT::BoundingBox bbox;
+        bbox.resize(h->adaptor.dim);
+        for (size_t i = 0; i < h->adaptor.dim; ++i)
+        {
+            bbox[i].low  = lo[i];
+            bbox[i].high = hi[i];
+        }
+        BoxResultSet<uint32_t> result_set(h->box_scratch);
+        return tree.findWithinBox(result_set, bbox);
+    });
+}
+
+template <typename T>
+size_t nfr_box_fetch_impl(const nfr_index<T>* h, uint32_t* out_idx, size_t cap)
+{
+    const size_t n      = h->box_scratch.size();
+    const size_t copy_n = cap < n ? cap : n;
+    if (copy_n > 0) std::memcpy(out_idx, h->box_scratch.data(), copy_n * sizeof(uint32_t));
+    return n;
+}
+
+// ---- Fixed DIM=3 fast-path implementations (benchmark-only) --------------
+
+template <typename T>
+nfr3_index<T>* nfr3_build_impl(const T* pts, size_t n, size_t leaf_max_size, unsigned n_thread_build)
+{
+    auto* h    = new nfr3_index<T>();
+    h->adaptor = RowMajorAdaptor<T>{pts, n, 3};
+    const KDTreeSingleIndexAdaptorParams params(
+        leaf_max_size, nanoflann::KDTreeSingleIndexAdaptorFlags::None, n_thread_build);
+    h->tree = new Tree3<T>(3, h->adaptor, params);
+    return h;
+}
+
+template <typename T>
+void nfr3_free_impl(nfr3_index<T>* h)
+{
+    if (!h) return;
+    delete h->tree;
+    delete h;
+}
+
+template <typename T>
+size_t nfr3_knn_impl(const nfr3_index<T>* h, const T* q, size_t k, uint32_t* out_idx, T* out_dist)
+{
+    // Their best-known config: the plain `knnSearch` convenience method
+    // (default SearchParameters: eps=0, sorted=true), no eps parameter.
+    return h->tree->knnSearch(q, k, out_idx, out_dist);
+}
+
+}  // namespace
+
+// ---- extern "C" surface ----------------------------------------------------
+//
+// One pair of entry points per scalar (f32 -> `_f` suffix, f64 -> `_d`
+// suffix), generated by macro to avoid duplicating the (already-generic)
+// implementations above.
+
+extern "C"
+{
+    struct nfr_index_f;
+    struct nfr_index_d;
+    struct nfr3_index_f;
+    struct nfr3_index_d;
+}
+
+#define NFR_DEFINE_ENTRY_POINTS(T, SUF)                                                          \
+    extern "C" nfr_index_##SUF* nfr_build_##SUF(                                                 \
+        const T* pts, size_t n, int dim, int metric, size_t leaf_max_size,                        \
+        unsigned n_thread_build)                                                                  \
+    {                                                                                             \
+        return reinterpret_cast<nfr_index_##SUF*>(                                                \
+            nfr_build_impl<T>(pts, n, dim, metric, leaf_max_size, n_thread_build));                \
+    }                                                                                              \
+    extern "C" void nfr_free_##SUF(nfr_index_##SUF* h)                                            \
+    {                                                                                              \
+        nfr_free_impl<T>(reinterpret_cast<nfr_index<T>*>(h));                                      \
+    }                                                                                              \
+    extern "C" size_t nfr_size_##SUF(const nfr_index_##SUF* h)                                    \
+    {                                                                                              \
+        return nfr_size_impl<T>(reinterpret_cast<const nfr_index<T>*>(h));                         \
+    }                                                                                              \
+    extern "C" size_t nfr_used_memory_##SUF(const nfr_index_##SUF* h)                              \
+    {                                                                                              \
+        return nfr_used_memory_impl<T>(reinterpret_cast<const nfr_index<T>*>(h));                  \
+    }                                                                                              \
+    extern "C" size_t nfr_vind_##SUF(const nfr_index_##SUF* h, uint32_t* out, size_t cap)          \
+    {                                                                                              \
+        return nfr_vind_impl<T>(reinterpret_cast<const nfr_index<T>*>(h), out, cap);               \
+    }                                                                                              \
+    extern "C" size_t nfr_knn_##SUF(                                                              \
+        const nfr_index_##SUF* h, const T* q, size_t k, T eps, uint32_t* out_idx, T* out_dist)     \
+    {                                                                                              \
+        return nfr_knn_impl<T>(reinterpret_cast<const nfr_index<T>*>(h), q, k, eps, out_idx, out_dist); \
+    }                                                                                               \
+    extern "C" size_t nfr_rknn_##SUF(                                                              \
+        const nfr_index_##SUF* h, const T* q, size_t k, T radius, T eps, uint32_t* out_idx,        \
+        T* out_dist)                                                                                \
+    {                                                                                               \
+        return nfr_rknn_impl<T>(                                                                    \
+            reinterpret_cast<const nfr_index<T>*>(h), q, k, radius, eps, out_idx, out_dist);        \
+    }                                                                                                \
+    extern "C" size_t nfr_radius_count_##SUF(                                                       \
+        nfr_index_##SUF* h, const T* q, T radius, int sorted, T eps)                                \
+    {                                                                                                \
+        return nfr_radius_count_impl<T>(reinterpret_cast<nfr_index<T>*>(h), q, radius, sorted, eps); \
+    }                                                                                                \
+    extern "C" size_t nfr_radius_fetch_##SUF(                                                       \
+        const nfr_index_##SUF* h, uint32_t* out_idx, T* out_dist, size_t cap)                       \
+    {                                                                                                \
+        return nfr_radius_fetch_impl<T>(                                                            \
+            reinterpret_cast<const nfr_index<T>*>(h), out_idx, out_dist, cap);                      \
+    }                                                                                                \
+    extern "C" size_t nfr_box_count_##SUF(nfr_index_##SUF* h, const T* lo, const T* hi)             \
+    {                                                                                                \
+        return nfr_box_count_impl<T>(reinterpret_cast<nfr_index<T>*>(h), lo, hi);                    \
+    }                                                                                                \
+    extern "C" size_t nfr_box_fetch_##SUF(const nfr_index_##SUF* h, uint32_t* out_idx, size_t cap)  \
+    {                                                                                                \
+        return nfr_box_fetch_impl<T>(reinterpret_cast<const nfr_index<T>*>(h), out_idx, cap);        \
+    }                                                                                                \
+    extern "C" nfr3_index_##SUF* nfr3_build_##SUF(                                                  \
+        const T* pts, size_t n, size_t leaf_max_size, unsigned n_thread_build)                       \
+    {                                                                                                \
+        return reinterpret_cast<nfr3_index_##SUF*>(                                                  \
+            nfr3_build_impl<T>(pts, n, leaf_max_size, n_thread_build));                              \
+    }                                                                                                \
+    extern "C" void nfr3_free_##SUF(nfr3_index_##SUF* h)                                             \
+    {                                                                                                \
+        nfr3_free_impl<T>(reinterpret_cast<nfr3_index<T>*>(h));                                      \
+    }                                                                                                \
+    extern "C" size_t nfr3_knn_##SUF(                                                                \
+        const nfr3_index_##SUF* h, const T* q, size_t k, uint32_t* out_idx, T* out_dist)             \
+    {                                                                                                \
+        return nfr3_knn_impl<T>(reinterpret_cast<const nfr3_index<T>*>(h), q, k, out_idx, out_dist); \
+    }
+
+NFR_DEFINE_ENTRY_POINTS(float, f)
+NFR_DEFINE_ENTRY_POINTS(double, d)
+
+#undef NFR_DEFINE_ENTRY_POINTS
