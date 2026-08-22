@@ -13,7 +13,9 @@
 //! - `leaf_sweep`: n = 100_000, dim = 3, f32, leaf_max_size in {1, 4, 10, 16,
 //!   32, 50, 128, 1024} -- BOTH build time and k=10 knn time, for both libs.
 //!   Reproduces nanoflann's README Sec 2.1 methodology and validates
-//!   leaf = 10 for our node layout.
+//!   leaf = 10 for our node layout. The knn phase is ZERO-ALLOCATION per
+//!   query on both sides (`knn_into`, reused out-buffers) -- see
+//!   `bench_knn.rs`'s module doc for why.
 //!
 //! ID scheme: `build/{lib}/{n}/{dim}/{threads}`, `build_fixed3/{lib}/{n}`,
 //! `leaf_sweep/{lib}/{leaf}/{phase}` -- `lib` in {rust, cpp}.
@@ -160,18 +162,22 @@ fn bench_leaf_sweep(c: &mut Criterion) {
 
         group.bench_function(format!("rust/{leaf}/knn"), |b| {
             let mut rr = RoundRobin::new(&q, DIM);
+            let mut out_idx = vec![0u32; K];
+            let mut out_dist = vec![0.0f32; K];
             b.iter(|| {
                 let query = black_box(rr.next());
-                let (idx, dist) = rust_idx.knn(query, K, 0.0);
-                black_box((idx, dist));
+                let found = rust_idx.knn_into(query, K, 0.0, &mut out_idx, &mut out_dist);
+                black_box(found);
             })
         });
         group.bench_function(format!("cpp/{leaf}/knn"), |b| {
             let mut rr = RoundRobin::new(&q, DIM);
+            let mut out_idx = vec![0u32; K];
+            let mut out_dist = vec![0.0f32; K];
             b.iter(|| {
                 let query = black_box(rr.next());
-                let (idx, dist) = cpp_idx.knn(query, K, 0.0);
-                black_box((idx, dist));
+                let found = cpp_idx.knn_into(query, K, 0.0, &mut out_idx, &mut out_dist);
+                black_box(found);
             })
         });
     }

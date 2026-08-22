@@ -518,6 +518,27 @@ macro_rules! define_rust_index {
                 (idx, dist)
             }
 
+            /// Zero-allocation `knn`: writes into caller-owned `out_idx`/
+            /// `out_dist` (both MUST have length exactly `k` -- asserted)
+            /// instead of allocating fresh `Vec`s, via the underlying
+            /// `KdTree::knn_search_with` directly. Returns the found count
+            /// (`<= k`; valid entries are `out_idx[..found]`/
+            /// `out_dist[..found]`). Mirrors `nanoflann_ref::RefIndexF32::
+            /// knn_into`'s contract exactly, for allocation-symmetric
+            /// benchmark/perf-gate query loops.
+            pub fn knn_into(&self, q: &[$t], k: usize, eps: f32, out_idx: &mut [u32], out_dist: &mut [$t]) -> usize {
+                assert_eq!(out_idx.len(), k, "knn_into: out_idx.len() must equal k");
+                assert_eq!(out_dist.len(), k, "knn_into: out_dist.len() must equal k");
+                let params = SearchParams { eps, sorted: true };
+                match self {
+                    $Name::L1(t) => t.knn_search_with(q, out_idx, out_dist, &params),
+                    $Name::L2(t) => t.knn_search_with(q, out_idx, out_dist, &params),
+                    $Name::L2Simple(t) => t.knn_search_with(q, out_idx, out_dist, &params),
+                    $Name::SO2(t) => t.knn_search_with(q, out_idx, out_dist, &params),
+                    $Name::SO3(t) => t.knn_search_with(q, out_idx, out_dist, &params),
+                }
+            }
+
             /// `radius` is in the metric's native scale (SQUARED for
             /// L2-family, matching the C++ oracle's convention).
             pub fn rknn(&self, q: &[$t], k: usize, radius: $t, eps: f32) -> (Vec<u32>, Vec<$t>) {
@@ -560,6 +581,34 @@ macro_rules! define_rust_index {
                     }
                 }
                 out.into_iter().map(|ri| (ri.index, ri.distance)).collect()
+            }
+
+            /// Zero-(re)allocation `radius`: writes into a caller-owned
+            /// `out: &mut Vec<ResultItem<u32, T>>` instead of allocating a
+            /// fresh `Vec` (and a second `Vec` for the tuple conversion)
+            /// per call. `KdTree::radius_search` itself `clear()`s `out`
+            /// and refills it, so reusing the SAME `Vec` across many calls
+            /// with similar result sizes reallocates only while growing to
+            /// the largest size seen (mirrors
+            /// `nanoflann_ref::RefIndexF32::radius_into`'s resize-based
+            /// contract). Returns the found count (== `out.len()` after the
+            /// call).
+            pub fn radius_into(
+                &self,
+                q: &[$t],
+                radius: $t,
+                sorted: bool,
+                eps: f32,
+                out: &mut Vec<ResultItem<u32, $t>>,
+            ) -> usize {
+                let params = SearchParams { eps, sorted };
+                match self {
+                    $Name::L1(t) => t.radius_search(q, radius, out, &params),
+                    $Name::L2(t) => t.radius_search(q, radius, out, &params),
+                    $Name::L2Simple(t) => t.radius_search(q, radius, out, &params),
+                    $Name::SO2(t) => t.radius_search(q, radius, out, &params),
+                    $Name::SO3(t) => t.radius_search(q, radius, out, &params),
+                }
             }
 
             /// Inclusive faces on every axis, indices only, never sorted
@@ -1537,5 +1586,74 @@ mod tests {
 
         assert_eq!(seq.vind(), auto.vind(), "Auto vind must match Sequential");
         assert_eq!(seq.vind(), threads2.vind(), "Threads(2) vind must match Sequential");
+    }
+
+    // ------------------------------------------------------------------
+    // knn_into / radius_into -- must match their allocating counterparts
+    // bit-for-bit (Task 13 fix-round-2: allocation-symmetric query paths).
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn knn_into_matches_allocating_knn() {
+        let data = vec![0.0, 0.0, 1.0, 0.0, 2.0, 2.0, -1.0, -1.0, 5.0, 5.0];
+        let idx = build_rust_f64(&data, 2, XMetric::L2, 2, BuildThreads::Sequential);
+        let q = [0.5, 0.5];
+        let (want_idx, want_dist) = idx.knn(&q, 3, 0.0);
+
+        let mut got_idx = vec![0u32; 3];
+        let mut got_dist = vec![0.0f64; 3];
+        let found = idx.knn_into(&q, 3, 0.0, &mut got_idx, &mut got_dist);
+
+        assert_eq!(found, want_idx.len());
+        assert_eq!(&got_idx[..found], want_idx.as_slice());
+        assert_eq!(&got_dist[..found], want_dist.as_slice(), "distances must be bit-identical");
+    }
+
+    #[test]
+    #[should_panic]
+    fn knn_into_panics_on_wrong_buffer_length() {
+        let data = vec![0.0, 0.0, 1.0, 0.0];
+        let idx = build_rust_f64(&data, 2, XMetric::L2, 2, BuildThreads::Sequential);
+        let mut short_idx = vec![0u32; 1];
+        let mut dist = vec![0.0f64; 2];
+        let _ = idx.knn_into(&[0.0, 0.0], 2, 0.0, &mut short_idx, &mut dist);
+    }
+
+    #[test]
+    fn radius_into_matches_allocating_radius() {
+        let data = vec![0.0, 0.0, 1.0, 0.0, 2.0, 2.0, -1.0, -1.0, 5.0, 5.0];
+        let idx = build_rust_f64(&data, 2, XMetric::L2, 2, BuildThreads::Sequential);
+        let q = [0.0, 0.0];
+        let want = idx.radius(&q, 10.0, true, 0.0);
+
+        let mut out: Vec<ResultItem<u32, f64>> = Vec::new();
+        let count = idx.radius_into(&q, 10.0, true, 0.0, &mut out);
+
+        assert_eq!(count, want.len());
+        assert_eq!(out.len(), want.len());
+        for i in 0..want.len() {
+            assert_eq!(out[i].index, want[i].0);
+            assert_eq!(out[i].distance, want[i].1, "distances must be bit-identical at rank {i}");
+        }
+    }
+
+    #[test]
+    fn radius_into_reuses_and_resizes_across_calls_with_different_result_sizes() {
+        let data = vec![0.0, 0.0, 1.0, 0.0, 2.0, 2.0, -1.0, -1.0, 5.0, 5.0];
+        let idx = build_rust_f64(&data, 2, XMetric::L2, 2, BuildThreads::Sequential);
+        let q = [0.0, 0.0];
+        let mut out: Vec<ResultItem<u32, f64>> = Vec::new();
+
+        let c1 = idx.radius_into(&q, 0.5, true, 0.0, &mut out);
+        assert_eq!(c1, 1, "only the origin point itself is within radius 0.5");
+        assert_eq!(out.len(), 1);
+
+        let c2 = idx.radius_into(&q, 100.0, true, 0.0, &mut out);
+        assert_eq!(c2, 5, "radius 100.0 should capture all 5 points");
+        assert_eq!(out.len(), 5);
+
+        let c3 = idx.radius_into(&q, 0.5, true, 0.0, &mut out);
+        assert_eq!(c3, 1);
+        assert_eq!(out.len(), 1, "buffer must shrink back down, not leave stale entries");
     }
 }

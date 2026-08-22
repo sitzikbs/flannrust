@@ -24,8 +24,8 @@
 //! `--test-threads=1` (gate timings must not share the machine with a
 //! sibling test's CPU load).
 
+use nanoflann_rs::{ConstDim, KdTreeBuilder, ResultItem, L2};
 use nanoflann_ref::{Metric, RefIndex3F32, RefIndexF32, RefIndexF64};
-use nanoflann_rs::{ConstDim, KdTreeBuilder, L2};
 use xval::{build_rust_f32, build_rust_f64, cfg_seed, queries, timed_median_ms, to_array3, to_f32, uniform, BuildThreads, RoundRobin, XMetric};
 
 const RUNS: usize = 7;
@@ -155,10 +155,12 @@ fn perf_gate_knn_dim3_f32_k10() {
     });
     let cpp_ms = timed_median_ms(RUNS, || {
         let mut rr = RoundRobin::new(&q32, DIM);
+        let mut out_idx = vec![0u32; K];
+        let mut out_dist = vec![0.0f32; K];
         for _ in 0..N_QUERIES {
             let query = std::hint::black_box(rr.next());
-            let (idx, dist) = cpp_tree.knn(query, K);
-            std::hint::black_box((idx, dist));
+            let found = cpp_tree.knn_into(query, K, &mut out_idx, &mut out_dist);
+            std::hint::black_box(found);
         }
     });
 
@@ -188,18 +190,22 @@ fn perf_gate_knn_dyn_dim8_f64_k10() {
 
     let rust_ms = timed_median_ms(RUNS, || {
         let mut rr = RoundRobin::new(&q, DIM);
+        let mut out_idx = vec![0u32; K];
+        let mut out_dist = vec![0.0f64; K];
         for _ in 0..N_QUERIES {
             let query = std::hint::black_box(rr.next());
-            let (idx, dist) = rust_tree.knn(query, K, 0.0);
-            std::hint::black_box((idx, dist));
+            let found = rust_tree.knn_into(query, K, 0.0, &mut out_idx, &mut out_dist);
+            std::hint::black_box(found);
         }
     });
     let cpp_ms = timed_median_ms(RUNS, || {
         let mut rr = RoundRobin::new(&q, DIM);
+        let mut out_idx = vec![0u32; K];
+        let mut out_dist = vec![0.0f64; K];
         for _ in 0..N_QUERIES {
             let query = std::hint::black_box(rr.next());
-            let (idx, dist) = cpp_tree.knn(query, K, 0.0);
-            std::hint::black_box((idx, dist));
+            let found = cpp_tree.knn_into(query, K, 0.0, &mut out_idx, &mut out_dist);
+            std::hint::black_box(found);
         }
     });
 
@@ -220,8 +226,9 @@ fn perf_gate_radius_dim3_f32() {
     const POOL: usize = 1000;
     const SELECTIVITY_K: usize = 100; // "~100-point selectivity" per the brief
 
-    let data = to_f32(&uniform(cfg_seed("perf_gate_radius", &[N]), N, DIM));
-    let q64 = queries(cfg_seed("perf_gate_radius_q", &[N]), &uniform(cfg_seed("perf_gate_radius", &[N]), N, DIM), DIM, POOL);
+    let data64 = uniform(cfg_seed("perf_gate_radius", &[N]), N, DIM);
+    let data = to_f32(&data64);
+    let q64 = queries(cfg_seed("perf_gate_radius_q", &[N]), &data64, DIM, POOL);
     let q = to_f32(&q64);
 
     // Build ONCE, outside all timing.
@@ -237,18 +244,21 @@ fn perf_gate_radius_dim3_f32() {
 
     let rust_ms = timed_median_ms(RUNS, || {
         let mut rr = RoundRobin::new(&q, DIM);
+        let mut out: Vec<ResultItem<u32, f32>> = Vec::new();
         for _ in 0..N_QUERIES {
             let query = std::hint::black_box(rr.next());
-            let out = rust_tree.radius(query, radius, true, 0.0);
-            std::hint::black_box(out);
+            let found = rust_tree.radius_into(query, radius, true, 0.0, &mut out);
+            std::hint::black_box(found);
         }
     });
     let cpp_ms = timed_median_ms(RUNS, || {
         let mut rr = RoundRobin::new(&q, DIM);
+        let mut out_idx: Vec<u32> = Vec::new();
+        let mut out_dist: Vec<f32> = Vec::new();
         for _ in 0..N_QUERIES {
             let query = std::hint::black_box(rr.next());
-            let out = cpp_tree.radius(query, radius, true, 0.0);
-            std::hint::black_box(out);
+            let found = cpp_tree.radius_into(query, radius, true, 0.0, &mut out_idx, &mut out_dist);
+            std::hint::black_box(found);
         }
     });
 

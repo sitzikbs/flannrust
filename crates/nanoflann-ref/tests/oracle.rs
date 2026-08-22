@@ -278,3 +278,114 @@ fn so2_last_dim_only_matches_hand_computed_wrap_f32() {
     assert_eq!(indices, vec![0]);
     assert!((dists[0] - 0.0).abs() < 1e-6, "dist={}", dists[0]);
 }
+
+// ---- extra: zero-allocation `_into` variants match their allocating
+// counterparts bit-for-bit (Task 13 fix-round-2: allocation-symmetric C++
+// query paths for benchmarks). ----
+
+#[test]
+fn knn_into_matches_allocating_knn_f32() {
+    let idx = RefIndexF32::build(&PTS_F32, DIM, Metric::L2, 10, 1);
+    let (want_idx, want_dist) = idx.knn(&QUERY_F32, 3, 0.0);
+
+    let mut got_idx = vec![0u32; 3];
+    let mut got_dist = vec![0.0f32; 3];
+    let found = idx.knn_into(&QUERY_F32, 3, 0.0, &mut got_idx, &mut got_dist);
+
+    assert_eq!(found, want_idx.len());
+    assert_eq!(&got_idx[..found], want_idx.as_slice());
+    assert_eq!(&got_dist[..found], want_dist.as_slice(), "distances must be bit-identical");
+}
+
+#[test]
+fn knn_into_panics_on_wrong_buffer_length() {
+    let idx = RefIndexF32::build(&PTS_F32, DIM, Metric::L2, 10, 1);
+    let mut short_idx = vec![0u32; 2];
+    let mut dist = vec![0.0f32; 3];
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        idx.knn_into(&QUERY_F32, 3, 0.0, &mut short_idx, &mut dist)
+    }));
+    assert!(result.is_err(), "knn_into must panic when out_idx.len() != k");
+}
+
+#[test]
+fn knn_into_matches_allocating_knn_f64() {
+    let idx = RefIndexF64::build(&PTS_F64, DIM, Metric::L2, 10, 1);
+    let (want_idx, want_dist) = idx.knn(&QUERY_F64, 4, 0.0);
+
+    let mut got_idx = vec![0u32; 4];
+    let mut got_dist = vec![0.0f64; 4];
+    let found = idx.knn_into(&QUERY_F64, 4, 0.0, &mut got_idx, &mut got_dist);
+
+    assert_eq!(found, want_idx.len());
+    assert_eq!(&got_idx[..found], want_idx.as_slice());
+    assert_eq!(&got_dist[..found], want_dist.as_slice(), "distances must be bit-identical");
+}
+
+#[test]
+fn radius_into_matches_allocating_radius_f32() {
+    let idx = RefIndexF32::build(&PTS_F32, DIM, Metric::L2, 10, 1);
+    let want = idx.radius(&QUERY_F32, 5.0, true, 0.0);
+
+    let mut got_idx: Vec<u32> = Vec::new();
+    let mut got_dist: Vec<f32> = Vec::new();
+    let count = idx.radius_into(&QUERY_F32, 5.0, true, 0.0, &mut got_idx, &mut got_dist);
+
+    assert_eq!(count, want.len());
+    assert_eq!(got_idx.len(), want.len());
+    assert_eq!(got_dist.len(), want.len());
+    for i in 0..want.len() {
+        assert_eq!(got_idx[i], want[i].0);
+        assert_eq!(got_dist[i], want[i].1, "distances must be bit-identical at rank {i}");
+    }
+}
+
+#[test]
+fn radius_into_reuses_and_resizes_buffers_across_calls_with_different_result_sizes() {
+    let idx = RefIndexF32::build(&PTS_F32, DIM, Metric::L2, 10, 1);
+    let mut out_idx: Vec<u32> = Vec::new();
+    let mut out_dist: Vec<f32> = Vec::new();
+
+    // Small radius (fewer results), then a large radius (more results),
+    // then back to small -- the SAME buffers must end up correctly sized
+    // (not stale) after each call, growing and shrinking as needed.
+    let c1 = idx.radius_into(&QUERY_F32, 0.5, true, 0.0, &mut out_idx, &mut out_dist);
+    assert_eq!(c1, 1);
+    assert_eq!(out_idx.len(), 1);
+
+    let c2 = idx.radius_into(&QUERY_F32, 100.0, true, 0.0, &mut out_idx, &mut out_dist);
+    assert_eq!(c2, 5, "radius 100.0 should capture all 5 points");
+    assert_eq!(out_idx.len(), 5);
+
+    let c3 = idx.radius_into(&QUERY_F32, 0.5, true, 0.0, &mut out_idx, &mut out_dist);
+    assert_eq!(c3, 1);
+    assert_eq!(out_idx.len(), 1, "buffer must shrink back down, not leave stale entries");
+}
+
+#[test]
+fn fixed3_knn_into_matches_allocating_knn_f32() {
+    let idx = RefIndex3F32::build(&PTS_F32, 10, 1);
+    let (want_idx, want_dist) = idx.knn(&QUERY_F32, 2);
+
+    let mut got_idx = vec![0u32; 2];
+    let mut got_dist = vec![0.0f32; 2];
+    let found = idx.knn_into(&QUERY_F32, 2, &mut got_idx, &mut got_dist);
+
+    assert_eq!(found, want_idx.len());
+    assert_eq!(&got_idx[..found], want_idx.as_slice());
+    assert_eq!(&got_dist[..found], want_dist.as_slice(), "distances must be bit-identical");
+}
+
+#[test]
+fn fixed3_knn_into_matches_allocating_knn_f64() {
+    let idx = RefIndex3F64::build(&PTS_F64, 10, 1);
+    let (want_idx, want_dist) = idx.knn(&QUERY_F64, 3);
+
+    let mut got_idx = vec![0u32; 3];
+    let mut got_dist = vec![0.0f64; 3];
+    let found = idx.knn_into(&QUERY_F64, 3, &mut got_idx, &mut got_dist);
+
+    assert_eq!(found, want_idx.len());
+    assert_eq!(&got_idx[..found], want_idx.as_slice());
+    assert_eq!(&got_dist[..found], want_dist.as_slice(), "distances must be bit-identical");
+}

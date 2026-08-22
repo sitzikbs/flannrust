@@ -12,7 +12,11 @@
 //!
 //! - Speed: the perf-gate's four workloads (identical median-of-7
 //!   methodology, via `xval::timed_median_ms`/`xval::median_of` -- see
-//!   `tests/perf_gate.rs`) plus `build_1M_dim3_f32` seq/par.
+//!   `tests/perf_gate.rs`) plus `build_1M_dim3_f32` seq/par. Every query
+//!   loop (knn/radius) is ALLOCATION-SYMMETRIC: both sides use reused,
+//!   caller-owned out-buffers (`knn_into`/`radius_into`, not the
+//!   allocating `knn()`/`radius()` convenience wrappers) -- see this file's
+//!   emitted `meta.speed_methodology`.
 //! - Accuracy: three seeded datasets (uniform n=50k dim 3, uniform n=50k
 //!   dim 8, with_duplicates n=20k dim 3), 2000 queries each, k=10. Ground
 //!   truth is brute-force LINEAR SCAN (`xval::brute_force_knn_l2_f32`,
@@ -30,7 +34,7 @@
 //!   from `xval::score_query_f32`'s `rel_dist_errors`.
 
 use nanoflann_ref::{Metric, RefIndex3F32, RefIndexF32};
-use nanoflann_rs::{ConstDim, KdTreeBuilder, L2};
+use nanoflann_rs::{ConstDim, KdTreeBuilder, ResultItem, L2};
 use std::io::Write;
 use xval::{
     brute_force_knn_l2_f32, build_rust_f32, cfg_seed, queries, score_exact_tie_aware_f32, score_query_f32,
@@ -48,6 +52,12 @@ const SCORING_NOTE: &str = "exact_tie_aware_vs_bruteforce: true iff the k return
 /// against either tree's internal arithmetic, so GT must route through the
 /// same kernel).
 const GT_METHODOLOGY_NOTE: &str = "ground-truth distances computed via the library's own L2 metric kernel (nanoflann_rs::L2::eval, the same code path KdTree::knn_search uses internally for leaf points), NOT an independently-written summation; point SELECTION is a dumb linear scan over every index, independent of any tree's traversal order.";
+
+/// One-line description of the speed-timing allocation methodology,
+/// embedded verbatim in the emitted JSON's `meta.speed_methodology` field
+/// (controller ruling: state this as the METHODOLOGY, not a caveat -- both
+/// sides are allocation-symmetric, not just Rust).
+const SPEED_METHODOLOGY_NOTE: &str = "both sides zero-allocation per query: out-buffers (Vec<u32>/Vec<T>) are allocated once per timed workload and reused across every query, via knn_search/radius_search (rust) and knn_into/radius_into (nanoflann_ref's caller-buffer methods, backed directly by the raw FFI's out-pointer writes) -- not the allocating knn()/radius() convenience wrappers on either side.";
 
 const RUNS: usize = 7;
 
@@ -160,10 +170,12 @@ fn speed_rows() -> Vec<SpeedRow> {
         });
         let cpp_ms = timed_median_ms(RUNS, || {
             let mut rr = RoundRobin::new(&q32, DIM);
+            let mut out_idx = vec![0u32; K];
+            let mut out_dist = vec![0.0f32; K];
             for _ in 0..N_QUERIES {
                 let query = std::hint::black_box(rr.next());
-                let (idx, dist) = cpp_tree.knn(query, K);
-                std::hint::black_box((idx, dist));
+                let found = cpp_tree.knn_into(query, K, &mut out_idx, &mut out_dist);
+                std::hint::black_box(found);
             }
         });
         rows.push(SpeedRow { workload: "knn_dim3_f32_k10", rust_ms, cpp_ms });
@@ -190,18 +202,22 @@ fn speed_rows() -> Vec<SpeedRow> {
 
         let rust_ms = timed_median_ms(RUNS, || {
             let mut rr = RoundRobin::new(&q, DIM);
+            let mut out_idx = vec![0u32; K];
+            let mut out_dist = vec![0.0f64; K];
             for _ in 0..N_QUERIES {
                 let query = std::hint::black_box(rr.next());
-                let (idx, dist) = rust_tree.knn(query, K, 0.0);
-                std::hint::black_box((idx, dist));
+                let found = rust_tree.knn_into(query, K, 0.0, &mut out_idx, &mut out_dist);
+                std::hint::black_box(found);
             }
         });
         let cpp_ms = timed_median_ms(RUNS, || {
             let mut rr = RoundRobin::new(&q, DIM);
+            let mut out_idx = vec![0u32; K];
+            let mut out_dist = vec![0.0f64; K];
             for _ in 0..N_QUERIES {
                 let query = std::hint::black_box(rr.next());
-                let (idx, dist) = cpp_tree.knn(query, K, 0.0);
-                std::hint::black_box((idx, dist));
+                let found = cpp_tree.knn_into(query, K, 0.0, &mut out_idx, &mut out_dist);
+                std::hint::black_box(found);
             }
         });
         rows.push(SpeedRow { workload: "knn_dyn_dim8_f64_k10", rust_ms, cpp_ms });
@@ -231,18 +247,21 @@ fn speed_rows() -> Vec<SpeedRow> {
 
         let rust_ms = timed_median_ms(RUNS, || {
             let mut rr = RoundRobin::new(&q, DIM);
+            let mut out: Vec<ResultItem<u32, f32>> = Vec::new();
             for _ in 0..N_QUERIES {
                 let query = std::hint::black_box(rr.next());
-                let out = rust_tree.radius(query, radius, true, 0.0);
-                std::hint::black_box(out);
+                let found = rust_tree.radius_into(query, radius, true, 0.0, &mut out);
+                std::hint::black_box(found);
             }
         });
         let cpp_ms = timed_median_ms(RUNS, || {
             let mut rr = RoundRobin::new(&q, DIM);
+            let mut out_idx: Vec<u32> = Vec::new();
+            let mut out_dist: Vec<f32> = Vec::new();
             for _ in 0..N_QUERIES {
                 let query = std::hint::black_box(rr.next());
-                let out = cpp_tree.radius(query, radius, true, 0.0);
-                std::hint::black_box(out);
+                let found = cpp_tree.radius_into(query, radius, true, 0.0, &mut out_idx, &mut out_dist);
+                std::hint::black_box(found);
             }
         });
         rows.push(SpeedRow { workload: "radius_dim3_f32", rust_ms, cpp_ms });
@@ -422,13 +441,14 @@ fn main() {
     progress("starting");
 
     let meta = format!(
-        "  \"meta\": {{\n    \"date\": \"{}\",\n    \"nanoflann_version\": \"1.12.1\",\n    \"rustc\": \"{}\",\n    \"cpu_threads\": {},\n    \"target_cpu_native\": {},\n    \"scoring\": \"{}\",\n    \"gt_methodology\": \"{}\"\n  }}",
+        "  \"meta\": {{\n    \"date\": \"{}\",\n    \"nanoflann_version\": \"1.12.1\",\n    \"rustc\": \"{}\",\n    \"cpu_threads\": {},\n    \"target_cpu_native\": {},\n    \"scoring\": \"{}\",\n    \"gt_methodology\": \"{}\",\n    \"speed_methodology\": \"{}\"\n  }}",
         today_utc(),
         rustc_version(),
         cpu_threads(),
         target_cpu_native(),
         SCORING_NOTE,
-        GT_METHODOLOGY_NOTE
+        GT_METHODOLOGY_NOTE,
+        SPEED_METHODOLOGY_NOTE
     );
 
     let speed = speed_rows();

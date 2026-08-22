@@ -303,6 +303,25 @@ macro_rules! define_ref_index {
                 (idx, dist)
             }
 
+            /// Zero-allocation `knn`: writes into caller-owned `out_idx`/
+            /// `out_dist` (both MUST have length exactly `k` -- asserted)
+            /// instead of allocating fresh `Vec`s, so a caller can reuse the
+            /// same buffers across many calls (benchmark/perf-gate query
+            /// loops). Returns the found count (`<= k`, valid entries are
+            /// `out_idx[..found]`/`out_dist[..found]`; anything beyond
+            /// `found` is leftover from the buffer's previous contents, NOT
+            /// meaningful). Same semantics as `knn` otherwise.
+            pub fn knn_into(&self, q: &[$t], k: usize, eps: f32, out_idx: &mut [u32], out_dist: &mut [$t]) -> usize {
+                assert_eq!(q.len(), self.dim, "query dim mismatch");
+                assert_eq!(out_idx.len(), k, "knn_into: out_idx.len() must equal k");
+                assert_eq!(out_dist.len(), k, "knn_into: out_dist.len() must equal k");
+                // SAFETY: `out_idx`/`out_dist` are sized to `k` (asserted
+                // above); the C++ side (KNNResultSet capacity == k) writes
+                // at most `k` entries and returns the number actually
+                // written.
+                unsafe { $knn(self.handle, q.as_ptr(), k, eps, out_idx.as_mut_ptr(), out_dist.as_mut_ptr()) }
+            }
+
             /// `k`-nearest-neighbor search bounded by a maximum radius
             /// (RKNNResultSet). `radius` is passed through raw -- for L2
             /// metrics the caller must pre-square it, matching nanoflann's
@@ -350,6 +369,44 @@ macro_rules! define_ref_index {
                 };
                 debug_assert_eq!(returned, count);
                 idx.into_iter().zip(dist).collect()
+            }
+
+            /// Zero-(re)allocation `radius`: writes into caller-owned
+            /// `out_idx`/`out_dist` `Vec`s instead of allocating fresh ones
+            /// per call. Contract: both `Vec`s are `resize`d to the exact
+            /// result count internally (grows only if the caller's current
+            /// capacity is insufficient -- Rust's `Vec::resize` never
+            /// reallocates when shrinking or when capacity already
+            /// suffices, so a caller reusing the same `Vec`s across many
+            /// calls with similar result sizes pays for at most the first
+            /// few calls' worth of growth). Returns the result count (==
+            /// `out_idx.len() == out_dist.len()` after the call). Same
+            /// ordering/strict-`<` semantics as `radius` otherwise.
+            pub fn radius_into(
+                &self,
+                q: &[$t],
+                radius: $t,
+                sorted: bool,
+                eps: f32,
+                out_idx: &mut Vec<u32>,
+                out_dist: &mut Vec<$t>,
+            ) -> usize {
+                assert_eq!(q.len(), self.dim, "query dim mismatch");
+                // SAFETY: see `radius` above -- same two-call pairing
+                // discipline, encapsulated entirely within this method.
+                let count = unsafe {
+                    $radius_count(self.handle, q.as_ptr(), radius, sorted as c_int, eps)
+                };
+                out_idx.resize(count, 0);
+                out_dist.resize(count, <$t as Default>::default());
+                // SAFETY: `out_idx`/`out_dist` sized to `count`, obtained
+                // from the immediately-preceding `_count` call on this same
+                // handle.
+                let returned = unsafe {
+                    $radius_fetch(self.handle, out_idx.as_mut_ptr(), out_dist.as_mut_ptr(), count)
+                };
+                debug_assert_eq!(returned, count);
+                count
             }
 
             /// Indices of all points inside the axis-aligned box `[lo, hi]`
@@ -453,6 +510,20 @@ macro_rules! define_ref_index3 {
                 idx.truncate(found);
                 dist.truncate(found);
                 (idx, dist)
+            }
+
+            /// Zero-allocation `knn`: writes into caller-owned `out_idx`/
+            /// `out_dist` (both MUST have length exactly `k` -- asserted)
+            /// instead of allocating fresh `Vec`s. Returns the found count
+            /// (`<= k`); see `RefIndexF32::knn_into`'s doc comment for the
+            /// exact valid-entries contract.
+            pub fn knn_into(&self, q: &[$t], k: usize, out_idx: &mut [u32], out_dist: &mut [$t]) -> usize {
+                assert_eq!(q.len(), 3, "query dim mismatch (fixed DIM=3)");
+                assert_eq!(out_idx.len(), k, "knn_into: out_idx.len() must equal k");
+                assert_eq!(out_dist.len(), k, "knn_into: out_dist.len() must equal k");
+                // SAFETY: see `RefIndex*::knn_into` above -- identical
+                // capacity/return-count contract.
+                unsafe { $knn(self.handle, q.as_ptr(), k, out_idx.as_mut_ptr(), out_dist.as_mut_ptr()) }
             }
         }
 

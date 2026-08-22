@@ -12,11 +12,17 @@
 //! ID scheme: `radius/{lib}/{sel}` -- `lib` in {rust, cpp}, `sel` in
 //! {sel10, sel1000}.
 //!
+//! Both sides are ZERO-(RE)ALLOCATION per query: `radius_into` writes into
+//! caller-owned buffers (allocated once per `bench_function`, outside
+//! `b.iter`, and reused across every iteration) instead of the allocating
+//! `radius()` convenience wrappers.
+//!
 //! Run with `RUSTFLAGS="-C target-cpu=native" cargo bench -p xval` for a fair
 //! fight -- see `bench_build.rs`'s module doc / `xval::lib` docs for why.
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use nanoflann_ref::{Metric, RefIndexF32};
+use nanoflann_rs::ResultItem;
 use xval::{build_rust_f32, cfg_seed, queries, to_f32, uniform, BuildThreads, RoundRobin, XMetric};
 
 const N: usize = 100_000;
@@ -45,18 +51,21 @@ fn bench_radius(c: &mut Criterion) {
     for (sel_name, radius) in [("sel10", sel10), ("sel1000", sel1000)] {
         group.bench_function(format!("rust/{sel_name}"), |b| {
             let mut rr = RoundRobin::new(&q32, DIM);
+            let mut out: Vec<ResultItem<u32, f32>> = Vec::new();
             b.iter(|| {
                 let query = black_box(rr.next());
-                let out = rust_idx.radius(query, radius, true, 0.0);
-                black_box(out);
+                let found = rust_idx.radius_into(query, radius, true, 0.0, &mut out);
+                black_box(found);
             })
         });
         group.bench_function(format!("cpp/{sel_name}"), |b| {
             let mut rr = RoundRobin::new(&q32, DIM);
+            let mut out_idx: Vec<u32> = Vec::new();
+            let mut out_dist: Vec<f32> = Vec::new();
             b.iter(|| {
                 let query = black_box(rr.next());
-                let out = cpp_idx.radius(query, radius, true, 0.0);
-                black_box(out);
+                let found = cpp_idx.radius_into(query, radius, true, 0.0, &mut out_idx, &mut out_dist);
+                black_box(found);
             })
         });
     }

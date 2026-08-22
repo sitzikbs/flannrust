@@ -9,7 +9,11 @@
 //!
 //! Both groups build the index ONCE outside the timing loop, then iterate a
 //! pre-generated 1000-query set round-robin (index counter mod len) inside
-//! `b.iter`; `black_box` on inputs and outputs.
+//! `b.iter`; `black_box` on inputs and outputs. Both sides are ZERO-
+//! ALLOCATION per query: out-buffers (`Vec<u32>`/`Vec<T>`, length `k`) are
+//! allocated ONCE per `bench_function` (outside `b.iter`) and reused across
+//! every iteration, via `knn_search`/`knn_into` (rust) and `knn_into` (cpp)
+//! -- not the allocating `knn()` convenience wrappers.
 //!
 //! ID scheme: `knn/{lib}/{dim}/{scalar}/k{k}`, `knn_fixed3/{lib}/{scalar}/k{k}`
 //! -- `lib` in {rust, cpp}.
@@ -47,18 +51,22 @@ fn bench_knn_runtime_dim(c: &mut Criterion) {
         for &k in &KS {
             group.bench_function(format!("rust/{dim}/f32/k{k}"), |b| {
                 let mut rr = RoundRobin::new(&q32, dim);
+                let mut out_idx = vec![0u32; k];
+                let mut out_dist = vec![0.0f32; k];
                 b.iter(|| {
                     let query = black_box(rr.next());
-                    let (idx, dist) = rust32.knn(query, k, 0.0);
-                    black_box((idx, dist));
+                    let found = rust32.knn_into(query, k, 0.0, &mut out_idx, &mut out_dist);
+                    black_box(found);
                 })
             });
             group.bench_function(format!("cpp/{dim}/f32/k{k}"), |b| {
                 let mut rr = RoundRobin::new(&q32, dim);
+                let mut out_idx = vec![0u32; k];
+                let mut out_dist = vec![0.0f32; k];
                 b.iter(|| {
                     let query = black_box(rr.next());
-                    let (idx, dist) = cpp32.knn(query, k, 0.0);
-                    black_box((idx, dist));
+                    let found = cpp32.knn_into(query, k, 0.0, &mut out_idx, &mut out_dist);
+                    black_box(found);
                 })
             });
         }
@@ -72,18 +80,22 @@ fn bench_knn_runtime_dim(c: &mut Criterion) {
         for &k in &KS {
             group.bench_function(format!("rust/{dim}/f64/k{k}"), |b| {
                 let mut rr = RoundRobin::new(&q64_pool, dim);
+                let mut out_idx = vec![0u32; k];
+                let mut out_dist = vec![0.0f64; k];
                 b.iter(|| {
                     let query = black_box(rr.next());
-                    let (idx, dist) = rust64.knn(query, k, 0.0);
-                    black_box((idx, dist));
+                    let found = rust64.knn_into(query, k, 0.0, &mut out_idx, &mut out_dist);
+                    black_box(found);
                 })
             });
             group.bench_function(format!("cpp/{dim}/f64/k{k}"), |b| {
                 let mut rr = RoundRobin::new(&q64_pool, dim);
+                let mut out_idx = vec![0u32; k];
+                let mut out_dist = vec![0.0f64; k];
                 b.iter(|| {
                     let query = black_box(rr.next());
-                    let (idx, dist) = cpp64.knn(query, k, 0.0);
-                    black_box((idx, dist));
+                    let found = cpp64.knn_into(query, k, 0.0, &mut out_idx, &mut out_dist);
+                    black_box(found);
                 })
             });
         }
@@ -125,10 +137,12 @@ fn bench_knn_fixed3(c: &mut Criterion) {
         });
         group.bench_function(format!("cpp/f32/k{k}"), |b| {
             let mut rr = RoundRobin::new(&q32, DIM);
+            let mut out_idx = vec![0u32; k];
+            let mut out_dist = vec![0.0f32; k];
             b.iter(|| {
                 let query = black_box(rr.next());
-                let (idx, dist) = cpp32.knn(query, k);
-                black_box((idx, dist));
+                let found = cpp32.knn_into(query, k, &mut out_idx, &mut out_dist);
+                black_box(found);
             })
         });
     }
@@ -156,10 +170,12 @@ fn bench_knn_fixed3(c: &mut Criterion) {
         });
         group.bench_function(format!("cpp/f64/k{k}"), |b| {
             let mut rr = RoundRobin::new(&q64b, DIM);
+            let mut out_idx = vec![0u32; k];
+            let mut out_dist = vec![0.0f64; k];
             b.iter(|| {
                 let query = black_box(rr.next());
-                let (idx, dist) = cpp64.knn(query, k);
-                black_box((idx, dist));
+                let found = cpp64.knn_into(query, k, &mut out_idx, &mut out_dist);
+                black_box(found);
             })
         });
     }
