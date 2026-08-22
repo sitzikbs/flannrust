@@ -157,8 +157,15 @@ where
 
     if node.is_leaf() {
         let (left, right) = node.leaf_range();
-        for i in left..right {
-            let accessor = ctx.vind[i];
+        // Audit finding (leaf-loop bounds checks): index the sub-slice
+        // `&ctx.vind[left..right]` directly and iterate it, instead of
+        // `for i in left..right { ctx.vind[i] }` — the slice range performs
+        // ONE bounds check (`left..right` against `vind.len()`) up front,
+        // then the `for &accessor in slice` loop walks it by pointer with
+        // no further per-iteration check, vs. a per-iteration check LLVM
+        // isn't always able to hoist out of the loop on its own. SAME
+        // traversal order, same values.
+        for &accessor in &ctx.vind[left..right] {
             if !filter.is_active(accessor) {
                 continue;
             }
@@ -268,8 +275,9 @@ where
 
         if node.is_leaf() {
             let (left, right) = node.leaf_range();
-            for i in left..right {
-                let accessor = ctx.vind[i];
+            // Same bounds-check-elision restructuring as search_level's
+            // leaf loop above.
+            for &accessor in &ctx.vind[left..right] {
                 if contains_point(ctx, bounds, accessor) {
                     result.add(accessor);
                 }
