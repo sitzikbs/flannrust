@@ -56,14 +56,16 @@ where
     debug_assert!(query.len() >= ctx.dim, "query vector shorter than dim");
     debug_assert_eq!(dists_scratch.len(), ctx.dim, "dists_scratch.len() != dim");
 
-    // C++ (nanoflann.hpp ~2006): `DistanceType epsError = 1 + static_cast<DistanceType>(searchParams.eps);`
-    // — literally casts `eps` to `DistanceType` FIRST, then adds `1` in
-    // `DistanceType` arithmetic. Per the M1 ruling (task-8 brief context),
-    // we instead compute `1.0f32 + eps` in `f32` FIRST and only THEN widen
-    // via `DistanceValue::from_f32`, to get f64 bit-parity with the pinned
-    // set of test vectors. Deliberate discrepancy from the literal C++ cast
-    // order — see task-8 report.
-    let eps_error = M::DistanceType::from_f32(1.0f32 + params.eps);
+    // C++ (nanoflann.hpp:1999): `DistanceType epsError = 1 + static_cast<DistanceType>(searchParams.eps);`
+    // — widens `eps` (f32) to `DistanceType` FIRST, then adds `1` in
+    // `DistanceType` arithmetic. Mirrored exactly: widen each operand via
+    // `DistanceValue::from_f32` (an exact f32->f64 widening, no rounding),
+    // then add in `DistanceType` space. (Fix round 1: an earlier version of
+    // this computed `1.0f32 + params.eps` in `f32` FIRST and widened the
+    // sum — that rounds to f32 precision before widening and is NOT
+    // bit-identical to the C++; see `eps_error_widen_first_parity` below for
+    // a discriminating test.)
+    let eps_error = M::DistanceType::from_f32(1.0f32) + M::DistanceType::from_f32(params.eps);
 
     for d in dists_scratch.iter_mut() {
         *d = M::DistanceType::ZERO;
@@ -299,6 +301,40 @@ mod tests {
         indices.truncate(count);
         dists.truncate(count);
         (indices, dists, full)
+    }
+
+    fn brute_force_radius<const N: usize>(pts: &[[f64; N]], query: &[f64; N], radius: f64) -> Vec<(u32, f64)> {
+        let dim = N;
+        let metric = L2;
+        let mut out: Vec<(u32, f64)> = (0..pts.len())
+            .filter_map(|i| {
+                let d = metric.eval(query.as_slice(), &pts, i, dim);
+                if d < radius { Some((i as u32, d)) } else { None }
+            })
+            .collect();
+        out.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap().then(a.0.cmp(&b.0)));
+        out
+    }
+
+    fn tree_radius<const N: usize>(
+        vind: &[u32],
+        arena: &[Node<f64>],
+        bbox: &[Interval<f64>],
+        pts: &[[f64; N]],
+        query: &[f64; N],
+        radius: f64,
+    ) -> Vec<(u32, f64)> {
+        let dim = N;
+        let metric = L2;
+        let ctx = SearchCtx { ds: &pts, metric: &metric, dim, nodes: arena, vind, root_bbox: bbox };
+        let mut items = Vec::new();
+        {
+            let mut rs = crate::result_set::RadiusResultSet::new(radius, &mut items);
+            let mut scratch = vec![0.0f64; dim];
+            let params = SearchParams { eps: 0.0, sorted: true };
+            find_neighbors(&ctx, &mut rs, query.as_slice(), &params, &AcceptAll, &mut scratch);
+        }
+        items.into_iter().map(|it| (it.index, it.distance)).collect()
     }
 
     fn run_brute_force_case<const N: usize>(seed: u64, n: usize, k: usize, leaf_max_size: usize) {
@@ -594,13 +630,17 @@ mod tests {
         // (order-independent, unaffected by the swap above).
         //
         // Query = 0.4 (near leaf A). Root: diff1=val-divlow=0.4-1.0=-0.6;
-        // diff2=val-divhigh=0.4-10.0=-9.6; sum=-10.2 < 0 -> best_child = left
-        // (A), visited FIRST, leaf loop scans its range in vind order [0,1]
-        // (unsorted by distance). cut_dist=accum_dist(0.4,1.0)=(0.4-1.0)^2=0.36.
-        // Both A's points are well within radius 200 -> added in order 0,
-        // then 1. mindist = 0 + 0.36 - 0 = 0.36; eps=0 -> 0.36*1 <= 200 ->
-        // visit other (B), leaf loop scans ITS vind range [3,2] (per the
-        // swap above) -> added 3, then 2.
+        // diff2=val-divhigh=0.4-10.0=-9.6; sum=-10.2 < 0 -> best_child =
+        // child1 = left (A), visited FIRST, leaf loop scans its range in
+        // vind order [0,1] (unsorted by distance). On the `<0` branch
+        // cut_dist uses div_HIGH (it's the entry cost for the OTHER child,
+        // which is child2/right/B here): cut_dist=accum_dist(0.4,10.0)=
+        // (0.4-10.0)^2=92.16 — NOT div_low (that's the other branch's
+        // formula, for when child2/right is picked as best instead). Both
+        // A's points are well within radius 200 -> added in order 0, then 1.
+        // mindist = 0 + 92.16 - 0 = 92.16; eps=0 -> 92.16*1 <= 200 -> visit
+        // other (B), leaf loop scans ITS vind range [3,2] (per the swap
+        // above) -> added 3, then 2.
         //
         // Expected unsorted (traversal) order: indices [0, 1, 3, 2].
         let pts: Vec<[f64; 1]> = vec![[0.0], [1.0], [10.0], [11.0]];
@@ -766,39 +806,64 @@ mod tests {
     // Test 4: eps
     // ---------------------------------------------------------------
 
-    #[test]
-    fn eps_large_visits_only_one_leaf() {
-        use core::cell::Cell;
-        struct CountingFilter(Cell<usize>);
-        impl PointFilter<u32> for CountingFilter {
-            fn is_active(&self, _idx: u32) -> bool {
-                self.0.set(self.0.get() + 1);
-                true
-            }
+    struct CountingFilter(core::cell::Cell<usize>);
+    impl PointFilter<u32> for CountingFilter {
+        fn is_active(&self, _idx: u32) -> bool {
+            self.0.set(self.0.get() + 1);
+            true
         }
+    }
 
-        // 8 well-separated points, leaf_max_size = 1 so a "leaf" == one point:
-        // with eps=10 (eps_error=11), the huge inter-point gaps make
-        // `mindist * 11 <= worst_dist` false at every interior node except
-        // along the single best-child descent path, so exactly ONE leaf (one
-        // point) gets visited.
-        let pts: Vec<[f64; 1]> = vec![[-300.0], [-200.0], [-100.0], [-0.1], [0.1], [100.0], [200.0], [300.0]];
+    #[test]
+    fn eps_zero_visits_both_leaves_eps_large_visits_one() {
+        // Fix round 1, finding 3: the original version of this test used 8
+        // widely-separated points, which made it PASS identically at eps=0
+        // too (every prune check failed regardless of eps_error, since
+        // mindist >> worst_dist by a huge margin at every node) — i.e. it
+        // never actually exercised eps's effect, only that AcceptAll-style
+        // full traversal reaches one leaf. Replaced with a 2-point,
+        // leaf_max_size=1 tree hand-picked so the SINGLE prune check that
+        // exists (at the root) sits exactly ON the eps=0 boundary, making
+        // the eps=0 vs eps=10 outcomes genuinely different.
+        //
+        // Points -0.1 (index 0) and 0.1 (index 1), query 0.0. middle_split
+        // (bbox=[-0.1,0.1], cutval=0.0) puts index0 in the LEFT leaf, index1
+        // in the RIGHT leaf; divlow=-0.1 (left's own point), divhigh=0.1
+        // (right's own point). Heuristic: diff1=0-(-0.1)=0.1, diff2=0-0.1=
+        // -0.1, sum=0.0, NOT < 0 -> best=RIGHT(index1), cut_dist (for
+        // OTHER=LEFT)=accum_dist(0,-0.1)=(0.1)^2=0.01=mindist.
+        //
+        // worst_dist after visiting RIGHT (k=1): dist to 0.1 = (0-0.1)^2 =
+        // 0.01 (exactly equal to mindist — a genuine tie, not a margin).
+        //
+        // eps=0 (eps_error=1.0): 0.01*1.0 <= 0.01 -> TRUE (inclusive `<=`)
+        // -> visits LEFT too -> both points seen -> count == 2.
+        // eps=10 (eps_error=11.0): 0.01*11.0=0.11 <= 0.01 -> FALSE -> LEFT
+        // pruned -> only RIGHT seen -> count == 1.
+        let pts: Vec<[f64; 1]> = vec![[-0.1], [0.1]];
         let (vind, arena, bbox) = build_tree(&pts, 1);
         let metric = L2;
         let pts: &[[f64; 1]] = &pts;
         let ctx = SearchCtx { ds: &pts, metric: &metric, dim: 1, nodes: &arena, vind: &vind, root_bbox: &bbox };
 
-        let filter = CountingFilter(Cell::new(0));
-        let mut indices = [0u32; 1];
-        let mut dists = [0.0f64; 1];
-        {
+        let run = |eps: f32| -> (usize, u32) {
+            let filter = CountingFilter(core::cell::Cell::new(0));
+            let mut indices = [0u32; 1];
+            let mut dists = [0.0f64; 1];
             let mut rs = KnnResultSet::<f64, u32>::new(&mut indices, &mut dists);
             let mut scratch = [0.0f64; 1];
-            let params = SearchParams { eps: 10.0, sorted: true };
-            find_neighbors(&ctx, &mut rs, &[0.05], &params, &filter, &mut scratch);
-        }
-        assert_eq!(filter.0.get(), 1, "eps=10 should visit exactly one leaf (one point)");
-        assert_eq!(indices, [4], "should still find the nearest point in the visited leaf");
+            let params = SearchParams { eps, sorted: true };
+            find_neighbors(&ctx, &mut rs, &[0.0], &params, &filter, &mut scratch);
+            (filter.0.get(), indices[0])
+        };
+
+        let (count_exact, nearest_exact) = run(0.0);
+        assert_eq!(count_exact, 2, "eps=0: the root's prune check is an exact tie (<=), both leaves should be visited");
+        assert_eq!(nearest_exact, 1, "nearest to 0.0 is index 1 (0.1)");
+
+        let (count_large, nearest_large) = run(10.0);
+        assert_eq!(count_large, 1, "eps=10: the tie should be broken by the widened eps_error, pruning the other leaf");
+        assert_eq!(nearest_large, 1, "eps=10 should still find the correct nearest point in the one visited leaf");
     }
 
     // BRIEF DISCREPANCY, resolved by proof (see task-8-report.md for the
@@ -919,5 +984,331 @@ mod tests {
             "approx dist {got} exceeds (1+eps)*true_best {}",
             1.5 * true_best
         );
+    }
+
+    // ---------------------------------------------------------------
+    // Fix round 1, finding 1: eps_error must widen-first
+    // ---------------------------------------------------------------
+
+    /// A `ResultSet` whose `worst_dist()` is a fixed, caller-chosen constant
+    /// — completely decoupled from any point actually found. Used to pin
+    /// down `search_level`'s prune-gate arithmetic (`mindist * eps_error <=
+    /// worst_dist`) to an exact target ratio without fighting floating-point
+    /// rounding in a geometric construction.
+    struct FixedWorstDist {
+        worst: f64,
+    }
+    impl ResultSet<f64, u32> for FixedWorstDist {
+        fn worst_dist(&self) -> f64 {
+            self.worst
+        }
+        fn add_point(&mut self, _dist: f64, _index: u32) -> bool {
+            true
+        }
+        fn full(&self) -> bool {
+            false
+        }
+        fn size(&self) -> usize {
+            0
+        }
+    }
+
+    /// Counts `is_active` calls for one specific index only (the "other"
+    /// branch's sole point), so visiting-or-not is directly observable.
+    struct TargetOnlyCounter {
+        target: u32,
+        count: core::cell::Cell<usize>,
+    }
+    impl PointFilter<u32> for TargetOnlyCounter {
+        fn is_active(&self, idx: u32) -> bool {
+            if idx == self.target {
+                self.count.set(self.count.get() + 1);
+            }
+            true
+        }
+    }
+
+    /// `find_neighbors` computes `eps_error` as `DistanceValue::from_f32(1.0)
+    /// + DistanceValue::from_f32(params.eps)` — widening `1.0f32` and
+    /// `eps: f32` to `f64` FIRST, then adding in `f64` — mirroring
+    /// nanoflann.hpp:1999's `1 + static_cast<DistanceType>(searchParams.eps)`
+    /// exactly. An earlier version of this code instead computed
+    /// `1.0f32 + params.eps` in `f32` (rounding to f32 precision) and widened
+    /// the SUM, which is NOT bit-identical. At `eps = 0.1f32` the two forms
+    /// diverge in the low bits:
+    ///   widen-first (correct):  from_f32(1.0) + from_f32(0.1) = 1.1000000014901161
+    ///   add-then-widen (old bug): from_f32(1.0f32 + 0.1f32)   = 1.100000023841858
+    /// This test builds a hand-crafted node (bypassing the builder, same
+    /// technique as `eps_moderate_bounds_approximate_error_dim2_hand_derived`)
+    /// where the prune gate `mindist * eps_error <= worst_dist` sits exactly
+    /// between the two constants (mindist=1.0 exactly, worst_dist mocked to
+    /// the exact midpoint of the two eps_error values via `FixedWorstDist`),
+    /// so the CORRECT constant visits the other branch and the OLD (buggy)
+    /// constant prunes it — a genuinely discriminating test.
+    #[test]
+    fn eps_error_widen_first_parity() {
+        let eps = 0.1f32;
+        let eps_correct = f64::from(1.0f32) + f64::from(eps); // widen-first: matches nanoflann.hpp:1999
+        let eps_old_buggy = f64::from(1.0f32 + eps); // add-in-f32-then-widen: the bug this fixes
+        assert!(eps_correct < eps_old_buggy, "sanity: the two constants must actually differ");
+        assert!((eps_correct - 1.1000000014901161).abs() < 1e-16, "eps_correct={eps_correct}");
+        assert!((eps_old_buggy - 1.100000023841858).abs() < 1e-16, "eps_old_buggy={eps_old_buggy}");
+
+        // mindist = 1.0 exactly. worst_dist is mocked to the exact midpoint
+        // of the two constants, so the gate outcome depends ENTIRELY on
+        // which eps_error value is used.
+        let worst_dist_target = (eps_correct + eps_old_buggy) / 2.0;
+
+        // index0 = dummy point at 0.5 (RIGHT leaf, "best" — always visited
+        // unconditionally; its actual distance is irrelevant since
+        // worst_dist is mocked). index1 = target point at -1.0 (LEFT leaf,
+        // "other" — the one whose visitation this test observes).
+        let pts: Vec<[f64; 1]> = vec![[0.5], [-1.0]];
+        let pts: &[[f64; 1]] = &pts;
+        let vind: Vec<u32> = vec![1, 0]; // left leaf = vind[0..1] = [1]; right leaf = vind[1..2] = [0]
+        let mut arena: Vec<Node<f64>> = vec![
+            Node::split(0, -1.0, 0.5), // root: div_low = index1's own x, div_high = index0's own x
+            Node::leaf(0, 1),          // left leaf: index1 (-1.0)
+            Node::leaf(1, 2),          // right leaf: index0 (0.5)
+        ];
+        arena[0].set_children(1, 2);
+
+        // Heuristic check: diff1=val-div_low=0-(-1.0)=1.0; diff2=val-div_high
+        // =0-0.5=-0.5; sum=0.5 >= 0 -> best=child2=RIGHT(index0),
+        // other=child1=LEFT(index1). cut_dist (for LEFT)=accum_dist(0,-1.0)=
+        // (0-(-1.0))^2=1.0=mindist, exactly as designed.
+        let metric = L2;
+        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: 1, nodes: &arena, vind: &vind, root_bbox: &[] };
+        let query = [0.0f64];
+
+        let run_with_eps_error = |eps_error: f64| -> usize {
+            let mut rs = FixedWorstDist { worst: worst_dist_target };
+            let filter = TargetOnlyCounter { target: 1, count: core::cell::Cell::new(0) };
+            let mut dists = [0.0f64];
+            search_level(&ctx, &mut rs, &query, 0, 0.0f64, &mut dists, eps_error, &filter);
+            filter.count.get()
+        };
+
+        assert_eq!(run_with_eps_error(eps_correct), 1, "the CORRECT (widen-first) eps_error should visit the other leaf");
+        assert_eq!(run_with_eps_error(eps_old_buggy), 0, "the OLD (add-then-widen, buggy) eps_error would have pruned it");
+
+        // Confirm the ACTUAL production code path (`find_neighbors`, which
+        // computes `eps_error` internally from `params.eps`) matches the
+        // corrected widen-first behavior — same mocked ResultSet, plumbed
+        // through the real driver this time (needs a real root_bbox so
+        // `compute_initial_distances` doesn't contribute; query=0.0 is
+        // inside [-1.0, 0.5] on every axis, so it contributes exactly 0).
+        let ctx_with_bbox = SearchCtx {
+            ds: &pts,
+            metric: &metric,
+            dim: 1,
+            nodes: &arena,
+            vind: &vind,
+            root_bbox: &[Interval { low: -1.0, high: 0.5 }],
+        };
+        let mut rs = FixedWorstDist { worst: worst_dist_target };
+        let filter = TargetOnlyCounter { target: 1, count: core::cell::Cell::new(0) };
+        let mut scratch = [0.0f64];
+        let params = SearchParams { eps, sorted: true };
+        find_neighbors(&ctx_with_bbox, &mut rs, &query, &params, &filter, &mut scratch);
+        assert_eq!(
+            filter.count.get(),
+            1,
+            "find_neighbors's internally-computed eps_error must match the corrected (widen-first) constant"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Fix round 1, finding 4: deep-tree QUERY coverage (release-only, #[ignore])
+    // ---------------------------------------------------------------
+
+    /// Iterative max-depth (root = depth 1) — local copy of build.rs's test
+    /// helper of the same name (that one is private to build.rs's own test
+    /// module, so it isn't reachable from here).
+    fn max_depth(arena: &[Node<f64>], root: u32) -> usize {
+        let mut stack = vec![(root, 1usize)];
+        let mut max_d = 0usize;
+        while let Some((idx, d)) = stack.pop() {
+            if d > max_d {
+                max_d = d;
+            }
+            let node = &arena[idx as usize];
+            if !node.is_leaf() {
+                let (c1, c2) = node.children();
+                stack.push((c1, d + 1));
+                stack.push((c2, d + 1));
+            }
+        }
+        max_d
+    }
+
+    /// Same exponential-spine construction as build.rs's
+    /// `heavy_exponential_build_1m` test (duplicated here — that generator
+    /// is private to build.rs's own test module). Measured depth there:
+    /// ~2115.
+    fn heavy_dim1_points(n: usize) -> Vec<[f64; 1]> {
+        let mut spine: Vec<f64> = Vec::new();
+        let mut v = 2f64.powi(1023);
+        while v > 0.0 && spine.len() < n - 1 {
+            spine.push(v);
+            v /= 2.0;
+        }
+        let mut values = spine;
+        values.resize(n, 0.0);
+        values.into_iter().map(|v| [v]).collect()
+    }
+
+    /// Same round-robin construction as build.rs's
+    /// `heavy_exponential_build_1m_dim8` test. Measured depth there: ~16794.
+    fn heavy_dim8_points(n: usize) -> Vec<[f64; 8]> {
+        const DIM: usize = 8;
+        let mut ladder: Vec<f64> = Vec::new();
+        let mut v = 2f64.powi(1023);
+        while v > 0.0 {
+            ladder.push(v);
+            v /= 2.0;
+        }
+        let spine_len = (ladder.len() * DIM).min(n - 1);
+        let mut points: Vec<[f64; DIM]> = Vec::with_capacity(n);
+        for k in 0..spine_len {
+            let d = k % DIM;
+            let m = k / DIM;
+            let mut coords = [0.0f64; DIM];
+            coords[d] = ladder[m];
+            points.push(coords);
+        }
+        points.resize(n, [0.0f64; DIM]);
+        points
+    }
+
+    /// `search_level` is native recursion — deliberately NOT converted to an
+    /// explicit stack the way task 6's BUILDER was (see `search_level`'s doc
+    /// comment) — so a sufficiently deep tree could in principle overflow a
+    /// worker thread's stack during a QUERY, not just during the build task
+    /// 6 already stress-tested. This reuses task 6's two deepest known
+    /// constructions (`build.rs::heavy_exponential_build_1m`, depth ~2115,
+    /// and `..._dim8`, depth ~16794) and runs real knn + radius searches
+    /// against them on a thread sized like a rayon worker.
+    ///
+    /// Stack size measurement: tried 2 MiB (rayon-worker-sized) first, under
+    /// `--release` (as specified) — it SURVIVED both constructions,
+    /// including the dim-8 tree at depth ~16794 (a release-optimized
+    /// `search_level` frame is small: a handful of `f64`/`u32`/index locals
+    /// and a couple of references, no debug-info bloat, so ~16794 native
+    /// frames comfortably fit in 2 MiB). Kept at 2 MiB — no need to fall
+    /// back to 8 MiB. (This was measured in `--release` specifically, per
+    /// the task instructions; an unoptimized/debug build's larger frames
+    /// could plausibly need more headroom, but that's not what a rayon
+    /// worker thread runs in production, so it's out of scope here.) Note
+    /// C++ has the exact same exposure regardless — nanoflann's
+    /// `searchLevel` is native recursion too, with no stack-depth guard; this
+    /// isn't a regression relative to upstream, just confirmation that the
+    /// static tree's worst case (from task 6's own adversarial
+    /// constructions) stays safely within a standard rayon-sized worker
+    /// stack when queried in release mode.
+    #[test]
+    #[ignore]
+    fn heavy_query_degenerate_trees() {
+        const STACK_SIZE: usize = 2 * 1024 * 1024;
+        eprintln!(
+            "heavy_query_degenerate_trees: using {STACK_SIZE} byte ({} MiB) worker stack",
+            STACK_SIZE / (1024 * 1024)
+        );
+
+        let n = 1_000_000usize;
+
+        let pts1 = heavy_dim1_points(n);
+        let (vind1, arena1, bbox1) = build_tree(&pts1, 10);
+        let depth1 = max_depth(&arena1, 0);
+        eprintln!("dim-1 heavy tree depth = {depth1}");
+        assert!(depth1 > 2_000, "expected the dim-1 heavy tree to stay deep, got {depth1}");
+
+        let pts8 = heavy_dim8_points(n);
+        let (vind8, arena8, bbox8) = build_tree(&pts8, 10);
+        let depth8 = max_depth(&arena8, 0);
+        eprintln!("dim-8 heavy tree depth = {depth8}");
+        assert!(depth8 > 10_000, "expected the dim-8 heavy tree to stay deep, got {depth8}");
+
+        let handle = std::thread::Builder::new()
+            .name("heavy-query-worker".into())
+            .stack_size(STACK_SIZE)
+            .spawn(move || {
+                // Query selection note: an EARLIER version of this test used
+                // query=[0.0] (and dim-8's all-zero analog) and hit a real
+                // methodology bug, not a search bug — this heavy dataset has
+                // ~1M-2115 (dim-1) / ~1M-16794 (dim-8) points at EXACTLY
+                // 0.0 (both the explicit padding AND the deep spine tail,
+                // which underflows to exactly 0.0 once squared, since IEEE
+                // f64 has a finite denormal floor). A query at/near the
+                // origin faces a many-thousand-way EXACT tie for "nearest",
+                // and `brute_force_knn`'s linear index-order scan resolves
+                // ties by SMALLEST INDEX while the tree's resolution follows
+                // TRAVERSAL order (leaf-visit order, not index order) — both
+                // are valid readings of `KeepInsertionOrder`'s contract (see
+                // result_set.rs), but they don't have to agree with each
+                // other on WHICH tied points win when there are thousands of
+                // them, so comparing exact index lists against such a query
+                // is not a meaningful test. Instead: queries here are exact
+                // copies of specific, well-separated (non-tail, non-padding)
+                // data points, so their nearest neighbors are unambiguous
+                // (adjacent geometric-ladder rungs, strictly ordered, no
+                // ties) — this still exercises the SAME deep recursive
+                // traversal paths (the tree still has to walk all the way
+                // down to a leaf and prune back up through ~2000-17000
+                // levels to answer these), which is what this test is
+                // actually checking (stack safety + correctness under deep
+                // recursion), without the tie-methodology trap.
+                // Indices chosen comfortably mid-spine (magnitude ~2^423,
+                // ~2^323, ~2^23): NOT from the top of the spine (index 0's
+                // magnitude ~2^1023 — squaring a difference between two
+                // such huge values overflows f64's ~2^1024 range to
+                // `+inf`, which then fails EVERY `dist < worst_dist` gate
+                // and silently drops genuinely-nearer points; caught this
+                // empirically — an earlier version of this test used
+                // `pts1[0]`/`pts1[500]` and got a real but spurious
+                // `tree_idx.len()==1` "mismatch" purely from squared-L2
+                // overflow, not a search bug).
+                let queries1: Vec<[f64; 1]> = vec![pts1[600], pts1[700], pts1[1000]];
+                for q in &queries1 {
+                    let (tree_idx, tree_dists, _) = tree_knn(&vind1, &arena1, &bbox1, &pts1, q, 10, 0.0);
+                    let (bf_idx, bf_dists) = brute_force_knn(&pts1, q, 10);
+                    assert_eq!(tree_idx, bf_idx, "dim-1 knn index mismatch for query {q:?}");
+                    assert_eq!(tree_dists, bf_dists, "dim-1 knn dist mismatch for query {q:?}");
+
+                    // Radius strictly between the 1st and 2nd nearest
+                    // distances -> exactly one point within radius (the
+                    // query's own exact match, distance 0), no tie/boundary
+                    // ambiguity possible.
+                    let radius = (bf_dists[0] + bf_dists[1]) / 2.0;
+                    let mut tree_r = tree_radius(&vind1, &arena1, &bbox1, &pts1, q, radius);
+                    tree_r.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap().then(a.0.cmp(&b.0)));
+                    let bf_r = brute_force_radius(&pts1, q, radius);
+                    assert_eq!(tree_r, bf_r, "dim-1 radius mismatch for query {q:?}");
+                    assert_eq!(tree_r.len(), 1, "radius was chosen to admit exactly the query's own match");
+                }
+
+                // Same overflow-avoidance as dim-1: indices k=8*m+axis with
+                // m in {600, 700, 5000/8=625} — all comfortably past the
+                // point where squared differences between adjacent ladder
+                // rungs would overflow f64.
+                let queries8: Vec<[f64; 8]> = vec![pts8[8 * 600 + 2], pts8[8 * 700 + 5], pts8[5000]];
+                for q in &queries8 {
+                    let (tree_idx, tree_dists, _) = tree_knn(&vind8, &arena8, &bbox8, &pts8, q, 10, 0.0);
+                    let (bf_idx, bf_dists) = brute_force_knn(&pts8, q, 10);
+                    assert_eq!(tree_idx, bf_idx, "dim-8 knn index mismatch for query {q:?}");
+                    assert_eq!(tree_dists, bf_dists, "dim-8 knn dist mismatch for query {q:?}");
+
+                    let radius = (bf_dists[0] + bf_dists[1]) / 2.0;
+                    let mut tree_r = tree_radius(&vind8, &arena8, &bbox8, &pts8, q, radius);
+                    tree_r.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap().then(a.0.cmp(&b.0)));
+                    let bf_r = brute_force_radius(&pts8, q, radius);
+                    assert_eq!(tree_r, bf_r, "dim-8 radius mismatch for query {q:?}");
+                    assert_eq!(tree_r.len(), 1, "radius was chosen to admit exactly the query's own match");
+                }
+            })
+            .expect("failed to spawn heavy-query-worker thread");
+
+        handle.join().expect("heavy-query-worker thread panicked (a stack overflow instead aborts the whole process, with no Result to observe)");
+        eprintln!("heavy_query_degenerate_trees: all knn/radius queries matched brute force on both heavy trees");
     }
 }
