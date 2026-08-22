@@ -19,7 +19,7 @@
 //! set while the C++ side already gets the host's full ISA.
 
 use nanoflann_rs::{
-    BuildThreads as RustBuildThreads, DynDim, FlatSlice, Interval, KdTree, KdTreeBuilder,
+    BuildThreads as RustBuildThreads, Distance, DynDim, FlatSlice, Interval, KdTree, KdTreeBuilder,
     ResultItem, SearchParams, L1, L2, L2Simple, SO2, SO3,
 };
 use rand::Rng;
@@ -669,20 +669,45 @@ define_rust_index!(RustIndexF32, build_rust_f32, f32);
 // reference. O(n_queries * n); intentionally the slow, dumb, trivially-
 // correct baseline -- see each function's doc comment for the exact tie
 // rule and error definition (both hand-checked by the unit tests below).
+//
+// DISTANCE ARITHMETIC (controller ruling, round 2 -- see task-13-report.md's
+// "Investigation" section for the full story): distances here are computed
+// via `L2.eval(query, &ds, idx, dim)` -- the LIBRARY'S OWN metric kernel,
+// the exact same trait method `KdTree::knn_search`'s leaf-scan calls
+// internally (`search.rs`'s `ctx.metric.eval(...)`) -- NOT a hand-rolled
+// `iter().zip().map().sum()`. Selection (which points are scanned, and in
+// what order) stays a dumb, tree-independent linear scan over every index;
+// only the ARITHMETIC is shared with the trees. This is load-bearing: an
+// independently-written summation (even mathematically identical) is not
+// guaranteed bit-identical to either tree's internal computation, because
+// IEEE-754 addition is not associative and a different code path can round
+// differently in the last ULP -- confirmed by direct measurement (a first
+// attempt using a hand-rolled sum here made a bit-exact accuracy scorer
+// FAIL on ~90% of totally-correct, non-tied uniform-data queries, purely
+// from 1-ULP drift against the ad-hoc scanner, despite Rust and C++ trees
+// agreeing with EACH OTHER bit-exactly on every one of those same queries).
+// Routing GT through the same kernel the trees use closes that gap, because
+// the two real implementations were specifically engineered (identical
+// unroll/summation order + `-ffp-contract=off` + no rustc contraction --
+// see `tests/native_parity.rs`) to bit-match THAT kernel already.
 // ============================================================================
 
 macro_rules! impl_brute_force_knn {
     ($name:ident, $t:ty) => {
-        /// Linear-scan k-NN ground truth under squared L2 (matching this
-        /// crate's convention everywhere else: L2-family distances are
-        /// SQUARED, never square-rooted). Tie-broken by ASCENDING INDEX --
-        /// a total, deterministic order that does not depend on any tree's
-        /// build/traversal order, chosen so the ground truth itself is
-        /// reproducible independent of which implementation (or which
-        /// insertion-order tie rule) produced a candidate result being
-        /// scored against it. Returns up to `k` `(index, squared_distance)`
-        /// pairs (fewer iff `data` holds fewer than `k` points), sorted
-        /// ascending primarily by distance, secondarily by index.
+        /// Linear-scan k-NN ground truth under squared L2, computed via the
+        /// LIBRARY's own `L2` metric kernel (`nanoflann_rs::L2::eval`, via a
+        /// `FlatSlice` over `data`) -- NOT an independently-written
+        /// summation; see this module's doc comment above for why that
+        /// distinction is load-bearing for bit-exact scoring. Tie-broken by
+        /// ASCENDING INDEX -- a total, deterministic order that does not
+        /// depend on any tree's build/traversal order, chosen so the ground
+        /// truth's SELECTION is reproducible independent of which
+        /// implementation (or which insertion-order tie rule) produced a
+        /// candidate result being scored against it (only the arithmetic is
+        /// shared with the trees; selection is a plain index-order scan).
+        /// Returns up to `k` `(index, squared_distance)` pairs (fewer iff
+        /// `data` holds fewer than `k` points), sorted ascending primarily
+        /// by distance, secondarily by index.
         ///
         /// Panics if `dim == 0`, `query.len() != dim`, or `data.len()` is
         /// not a multiple of `dim`.
@@ -691,13 +716,9 @@ macro_rules! impl_brute_force_knn {
             assert_eq!(query.len(), dim, "{}: query.len() must equal dim", stringify!($name));
             assert_eq!(data.len() % dim, 0, "{}: data.len() must be a multiple of dim", stringify!($name));
             let n = data.len() / dim;
-            let mut all: Vec<(u32, $t)> = (0..n)
-                .map(|i| {
-                    let pt = &data[i * dim..(i + 1) * dim];
-                    let d: $t = pt.iter().zip(query.iter()).map(|(&a, &b)| (a - b) * (a - b)).sum();
-                    (i as u32, d)
-                })
-                .collect();
+            let ds = FlatSlice::new(data, dim);
+            let mut all: Vec<(u32, $t)> =
+                (0..n).map(|i| (i as u32, L2.eval(query, &ds, i, dim))).collect();
             all.sort_by(|a, b| a.1.partial_cmp(&b.1).expect("brute_force_knn: NaN distance").then(a.0.cmp(&b.0)));
             all.truncate(k.min(n));
             all
@@ -715,6 +736,19 @@ pub struct QueryScore {
     /// SET exactly (order-independent -- deliberately not positional, since
     /// a candidate may legitimately return the same k points in a different
     /// order under a different tie rule and still be "exact").
+    ///
+    /// NOTE (controller ruling, see `score_exact_tie_aware_f32`/`_f64`'s doc
+    /// comment below): this definition is STILL too strict on
+    /// duplicate-heavy datasets -- when multiple points are exactly tied at
+    /// the k-th distance boundary, "the" index SET is not uniquely defined,
+    /// so a candidate that legitimately picks a DIFFERENT (but equally
+    /// valid) winner of that tie scores `exact = false` here even though it
+    /// made no error. `examples/report_data.rs`'s accuracy report uses
+    /// `score_exact_tie_aware_f32`/`_f64` for its `exact_tie_aware_vs_bruteforce`
+    /// field instead of this one for exactly that reason. This field (and
+    /// `rel_dist_errors` below) are kept as-is for their existing callers/
+    /// tests and because `rel_dist_errors` is still the right per-rank error
+    /// metric regardless of tie handling.
     pub exact: bool,
     /// Per-rank relative distance error, ONLY populated when
     /// `gt.len() == got.len()` (a length mismatch is itself evidence of an
@@ -763,6 +797,65 @@ macro_rules! impl_score_query {
 
 impl_score_query!(score_query_f32, f32);
 impl_score_query!(score_query_f64, f64);
+
+macro_rules! impl_score_exact_tie_aware {
+    ($name:ident, $t:ty) => {
+        /// Tie-aware ground-truth exactness check (controller ruling on
+        /// `examples/report_data.rs`'s accuracy report -- see
+        /// `QueryScore::exact`'s doc comment above for why the plain
+        /// order-independent set match is too strict on duplicate-heavy
+        /// datasets). A query is EXACT iff BOTH hold:
+        ///
+        /// 1. `got`'s distances, taken IN ORDER, are bit-equal to `gt`'s
+        ///    distances in order (both are assumed already sorted ascending
+        ///    by distance, which is how every `gt`/`got` pair in this crate
+        ///    is actually produced -- `brute_force_knn_l2_*` and every
+        ///    `.knn(...)` wrapper here always return ascending-sorted
+        ///    results). This pins the DISTANCE MULTISET (including
+        ///    duplicates) without requiring any particular index to win a
+        ///    boundary tie, and a length mismatch fails this outright.
+        /// 2. Every returned index is a LEGITIMATE neighbor at its rank:
+        ///    its OWN true squared-L2 distance to `query` -- recomputed
+        ///    directly from `data` via the SAME library `L2` metric kernel
+        ///    used for `gt` (see the module doc comment above for why this
+        ///    is load-bearing: an independently-written summation is not
+        ///    reliably bit-identical to the trees' internal arithmetic,
+        ///    even for a mathematically-correct result) -- is bit-equal to
+        ///    the distance `got` reported for it. This is what actually
+        ///    catches errors condition 1 alone would miss -- e.g. a wrong
+        ///    index whose reported distance happens to match the GT
+        ///    distance at that rank.
+        ///
+        /// Together these accept ANY valid resolution of a k-th-boundary
+        /// tie (any index whose true distance equals the tied value) while
+        /// still rejecting a genuinely wrong neighbor, a wrong distance, or
+        /// a missed closer point. Panics if `dim == 0` or `query.len() !=
+        /// dim` (same preconditions as `brute_force_knn_l2_*`).
+        pub fn $name(data: &[$t], dim: usize, query: &[$t], gt: &[(u32, $t)], got: &[(u32, $t)]) -> bool {
+            assert!(dim > 0, "{}: dim must be > 0", stringify!($name));
+            assert_eq!(query.len(), dim, "{}: query.len() must equal dim", stringify!($name));
+            if gt.len() != got.len() {
+                return false;
+            }
+            for i in 0..gt.len() {
+                if got[i].1.to_bits() != gt[i].1.to_bits() {
+                    return false;
+                }
+            }
+            let ds = FlatSlice::new(data, dim);
+            for &(idx, reported_dist) in got {
+                let true_dist: $t = L2.eval(query, &ds, idx as usize, dim);
+                if true_dist.to_bits() != reported_dist.to_bits() {
+                    return false;
+                }
+            }
+            true
+        }
+    };
+}
+
+impl_score_exact_tie_aware!(score_exact_tie_aware_f32, f32);
+impl_score_exact_tie_aware!(score_exact_tie_aware_f64, f64);
 
 // ============================================================================
 // Median-of-N timing -- shared by `tests/perf_gate.rs` and
@@ -1324,6 +1417,58 @@ mod tests {
         let got = [(0u32, 0.0f32)];
         let s = score_query_f32(&gt, &got);
         assert_eq!(s.rel_dist_errors, vec![0.0]);
+    }
+
+    // ------------------------------------------------------------------
+    // score_exact_tie_aware_f32 -- controller-mandated tie-aware exactness
+    // scorer (replaces the order-independent-set-match `.exact` field for
+    // report_data.rs's ground-truth exactness metric, which was too strict
+    // on duplicate-heavy datasets: see `QueryScore::exact`'s doc comment).
+    //
+    // Hand-built dim-1 dataset: p0=0.0 (query-exact, dist 0), p1=1.0 (dist
+    // 1), p2=-1.0 (dist 1 -- GENUINELY TIED with p1), p3=10.0 (dist 100,
+    // clearly excluded from any k=2 top-2). query = [0.0]. GT for k=2, tied
+    // at rank 1 broken by ascending index -> [(0,0.0),(1,1.0)].
+    // ------------------------------------------------------------------
+
+    const TIE_DATA: [f32; 4] = [0.0, 1.0, -1.0, 10.0];
+    const TIE_QUERY: [f32; 1] = [0.0];
+
+    #[test]
+    fn tie_aware_accepts_a_different_but_legitimate_tie_winner() {
+        let gt = [(0u32, 0.0f32), (1u32, 1.0)];
+        // A valid alternate tie resolution: index 2 (p2, ALSO true-distance
+        // 1.0) instead of index 1 -- e.g. a tree's traversal-order tie rule
+        // picking a different, equally-correct, winner of the rank-1 tie.
+        let got = [(0u32, 0.0f32), (2u32, 1.0)];
+
+        // OLD (order-independent set match) scores this a MISS: {0,1} != {0,2}.
+        let old = score_query_f32(&gt, &got);
+        assert!(!old.exact, "old set-match scorer is expected to reject a different tie winner");
+
+        // NEW (tie-aware) scores this EXACT: both conditions hold (distance
+        // list bit-equal positionally; index 2's recomputed true distance
+        // -- (-1.0)^2 == 1.0 -- matches its reported distance).
+        assert!(
+            score_exact_tie_aware_f32(&TIE_DATA, 1, &TIE_QUERY, &gt, &got),
+            "tie-aware scorer must accept a legitimate alternate tie resolution"
+        );
+    }
+
+    #[test]
+    fn tie_aware_rejects_a_genuinely_wrong_neighbor() {
+        let gt = [(0u32, 0.0f32), (1u32, 1.0)];
+        // Index 3 (p3, TRUE distance 100.0) reported with a fabricated
+        // distance of 1.0 -- not a tie, a genuinely wrong result.
+        let got = [(0u32, 0.0f32), (3u32, 1.0)];
+
+        let old = score_query_f32(&gt, &got);
+        assert!(!old.exact, "old set-match scorer must reject this too: {{0,1}} != {{0,3}}");
+
+        assert!(
+            !score_exact_tie_aware_f32(&TIE_DATA, 1, &TIE_QUERY, &gt, &got),
+            "tie-aware scorer must reject a fabricated/mismatched distance-to-index pairing"
+        );
     }
 
     // ------------------------------------------------------------------

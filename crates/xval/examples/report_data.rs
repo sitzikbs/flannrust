@@ -15,18 +15,39 @@
 //!   `tests/perf_gate.rs`) plus `build_1M_dim3_f32` seq/par.
 //! - Accuracy: three seeded datasets (uniform n=50k dim 3, uniform n=50k
 //!   dim 8, with_duplicates n=20k dim 3), 2000 queries each, k=10. Ground
-//!   truth is brute-force linear scan (`xval::brute_force_knn_l2_f32`),
-//!   computed ONCE per dataset (independent of eps) and reused across
-//!   eps in {0.0, 0.1, 1.0}. Both implementations are scored against that
-//!   SAME ground truth via `xval::score_query_f32`.
+//!   truth is brute-force LINEAR SCAN (`xval::brute_force_knn_l2_f32`,
+//!   selection independent of any tree), but its DISTANCE ARITHMETIC is the
+//!   library's own `L2` metric kernel -- see `xval::lib`'s "Brute-force
+//!   ground truth" module doc and this file's emitted `meta.gt_methodology`
+//!   -- computed ONCE per dataset (independent of eps) and reused across
+//!   eps in {0.0, 0.1, 1.0}. `exact_tie_aware_vs_bruteforce` (per impl) uses
+//!   `xval::score_exact_tie_aware_f32` -- see that function's doc comment,
+//!   and the `"scoring"` line in this file's emitted `meta` object, for the
+//!   exact definition (controller ruling: the plain order-independent
+//!   index-SET match is too strict on duplicate-heavy datasets, where
+//!   multiple points can be genuinely tied at the k-th distance boundary).
+//!   `mean_dist_rel_error_*`/`max_dist_rel_error_*` are unaffected -- still
+//!   from `xval::score_query_f32`'s `rel_dist_errors`.
 
 use nanoflann_ref::{Metric, RefIndex3F32, RefIndexF32};
 use nanoflann_rs::{ConstDim, KdTreeBuilder, L2};
 use std::io::Write;
 use xval::{
-    brute_force_knn_l2_f32, build_rust_f32, cfg_seed, queries, score_query_f32, timed_median_ms, to_array3, to_f32,
-    uniform, with_duplicates, BuildThreads, RoundRobin, XMetric,
+    brute_force_knn_l2_f32, build_rust_f32, cfg_seed, queries, score_exact_tie_aware_f32, score_query_f32,
+    timed_median_ms, to_array3, to_f32, uniform, with_duplicates, BuildThreads, RoundRobin, XMetric,
 };
+
+/// One-line description of the accuracy scoring methodology, embedded
+/// verbatim in the emitted JSON's `meta.scoring` field.
+const SCORING_NOTE: &str = "exact_tie_aware_vs_bruteforce: true iff the k returned distances bit-match the ground truth's k smallest distances positionally (both sorted ascending) AND every returned index's recomputed true distance equals its reported distance -- accepts any valid k-th-boundary tie resolution while still catching a wrong point, wrong distance, or missed closer neighbor.";
+
+/// One-line description of how ground-truth distances are computed,
+/// embedded verbatim in the emitted JSON's `meta.gt_methodology` field
+/// (controller ruling round 2 -- see task-13-report.md's "Investigation"
+/// section: an independently-written summation is not reliably bit-exact
+/// against either tree's internal arithmetic, so GT must route through the
+/// same kernel).
+const GT_METHODOLOGY_NOTE: &str = "ground-truth distances computed via the library's own L2 metric kernel (nanoflann_rs::L2::eval, the same code path KdTree::knn_search uses internally for leaf points), NOT an independently-written summation; point SELECTION is a dumb linear scan over every index, independent of any tree's traversal order.";
 
 const RUNS: usize = 7;
 
@@ -267,8 +288,8 @@ fn speed_rows() -> Vec<SpeedRow> {
 struct AccuracyRow {
     workload: String,
     n_queries: usize,
-    rust_exact_vs_bruteforce: f64,
-    cpp_exact_vs_bruteforce: f64,
+    rust_exact_tie_aware_vs_bruteforce: f64,
+    cpp_exact_tie_aware_vs_bruteforce: f64,
     rust_eq_cpp_bitexact: bool,
     mean_dist_rel_error_rust: f64,
     max_dist_rel_error_rust: f64,
@@ -317,16 +338,22 @@ fn accuracy_rows_for_dataset(name: &str, dim: usize, data: &[f32]) -> Vec<Accura
             let r_pairs: Vec<(u32, f32)> = r_idx.iter().copied().zip(r_dist.iter().copied()).collect();
             let c_pairs: Vec<(u32, f32)> = c_idx.iter().copied().zip(c_dist.iter().copied()).collect();
 
+            // `rel_dist_errors` (mean/max error stats) still comes from the
+            // plain per-rank scorer -- unaffected by the tie-aware fix.
             let r_score = score_query_f32(gt, &r_pairs);
             let c_score = score_query_f32(gt, &c_pairs);
-            if r_score.exact {
-                rust_exact_count += 1;
-            }
-            if c_score.exact {
-                cpp_exact_count += 1;
-            }
             rust_errs.extend(r_score.rel_dist_errors);
             cpp_errs.extend(c_score.rel_dist_errors);
+
+            // Exactness (the JSON's `exact_tie_aware_vs_bruteforce` field)
+            // uses the tie-aware scorer -- see the module doc / controller
+            // ruling referenced there.
+            if score_exact_tie_aware_f32(data, dim, query, gt, &r_pairs) {
+                rust_exact_count += 1;
+            }
+            if score_exact_tie_aware_f32(data, dim, query, gt, &c_pairs) {
+                cpp_exact_count += 1;
+            }
 
             if bitexact {
                 if r_idx.len() != c_idx.len() {
@@ -348,8 +375,8 @@ fn accuracy_rows_for_dataset(name: &str, dim: usize, data: &[f32]) -> Vec<Accura
         out.push(AccuracyRow {
             workload: format!("{name}_dim{dim}_f32_k{K}_{eps_label}"),
             n_queries: N_ACC_QUERIES,
-            rust_exact_vs_bruteforce: rust_exact_count as f64 / N_ACC_QUERIES as f64,
-            cpp_exact_vs_bruteforce: cpp_exact_count as f64 / N_ACC_QUERIES as f64,
+            rust_exact_tie_aware_vs_bruteforce: rust_exact_count as f64 / N_ACC_QUERIES as f64,
+            cpp_exact_tie_aware_vs_bruteforce: cpp_exact_count as f64 / N_ACC_QUERIES as f64,
             rust_eq_cpp_bitexact: bitexact,
             mean_dist_rel_error_rust: mean(&rust_errs),
             max_dist_rel_error_rust: max(&rust_errs),
@@ -395,11 +422,13 @@ fn main() {
     progress("starting");
 
     let meta = format!(
-        "  \"meta\": {{\n    \"date\": \"{}\",\n    \"nanoflann_version\": \"1.12.1\",\n    \"rustc\": \"{}\",\n    \"cpu_threads\": {},\n    \"target_cpu_native\": {}\n  }}",
+        "  \"meta\": {{\n    \"date\": \"{}\",\n    \"nanoflann_version\": \"1.12.1\",\n    \"rustc\": \"{}\",\n    \"cpu_threads\": {},\n    \"target_cpu_native\": {},\n    \"scoring\": \"{}\",\n    \"gt_methodology\": \"{}\"\n  }}",
         today_utc(),
         rustc_version(),
         cpu_threads(),
-        target_cpu_native()
+        target_cpu_native(),
+        SCORING_NOTE,
+        GT_METHODOLOGY_NOTE
     );
 
     let speed = speed_rows();
@@ -422,11 +451,11 @@ fn main() {
         .iter()
         .map(|r| {
             format!(
-                "    {{ \"workload\": \"{}\", \"n_queries\": {}, \"rust_exact_vs_bruteforce\": {}, \"cpp_exact_vs_bruteforce\": {}, \"rust_eq_cpp_bitexact\": {}, \"mean_dist_rel_error_rust\": {}, \"max_dist_rel_error_rust\": {}, \"mean_dist_rel_error_cpp\": {}, \"max_dist_rel_error_cpp\": {} }}",
+                "    {{ \"workload\": \"{}\", \"n_queries\": {}, \"rust_exact_tie_aware_vs_bruteforce\": {}, \"cpp_exact_tie_aware_vs_bruteforce\": {}, \"rust_eq_cpp_bitexact\": {}, \"mean_dist_rel_error_rust\": {}, \"max_dist_rel_error_rust\": {}, \"mean_dist_rel_error_cpp\": {}, \"max_dist_rel_error_cpp\": {} }}",
                 r.workload,
                 r.n_queries,
-                json_num(r.rust_exact_vs_bruteforce),
-                json_num(r.cpp_exact_vs_bruteforce),
+                json_num(r.rust_exact_tie_aware_vs_bruteforce),
+                json_num(r.cpp_exact_tie_aware_vs_bruteforce),
                 r.rust_eq_cpp_bitexact,
                 json_num(r.mean_dist_rel_error_rust),
                 json_num(r.max_dist_rel_error_rust),
