@@ -2,9 +2,13 @@
 
 pub mod scalar;
 pub mod dim;
+pub mod bbox;
+pub mod data_source;
 
 pub use scalar::{Scalar, DistanceValue};
 pub use dim::{Dim, ConstDim, DynDim};
+pub use bbox::Interval;
+pub use data_source::{DataSource, FlatSlice};
 
 #[cfg(test)]
 mod tests {
