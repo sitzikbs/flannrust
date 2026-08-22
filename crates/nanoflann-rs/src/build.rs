@@ -910,24 +910,37 @@ mod tests {
     fn heavy_exponential_build_1m() {
         let n = 1_000_000usize;
         // BRIEF DISCREPANCY, resolved by measurement (see task-6-report.md
-        // for the full derivation): neither of the brief's two suggested
-        // spacings (`0.9999^i`, depth 156; `2.0^(-i/50.0)`, depth 1092) nor
-        // the "obvious" harmonic worst-case `1/(n-i)` (depth 38 — it
-        // self-corrects because the minority side's size DOUBLES each level
-        // once the bbox's stale low bound stops dominating) reach the
-        // brief's suggested `> 10_000`. Worked out why: every one-sided
-        // "peel a small chunk, recurse into the big remainder" degenerate
-        // chain that `middle_split` can produce is, structurally, a
+        // for the full derivation, amended after review): neither of the
+        // brief's two suggested spacings (`0.9999^i`, depth 156;
+        // `2.0^(-i/50.0)`, depth 1092) nor the "obvious" harmonic worst-case
+        // `1/(n-i)` (depth 38 — it self-corrects because the minority
+        // side's size DOUBLES each level once the bbox's stale low bound
+        // stops dominating) reach the brief's suggested `> 10_000` for
+        // ONE-DIMENSIONAL data. Worked out why: every one-sided "peel a
+        // small chunk, recurse into the big remainder" degenerate chain that
+        // `middle_split` can produce on a SINGLE axis is, structurally, a
         // geometric halving of the bbox toward a value anchored at 0 or at
         // a stale inherited bound — and IEEE-754 `f64` has a hard, finite
-        // dynamic range (~2^1023 down to the smallest denormal ~2^-1074,
-        // about 2098 halvings total). That is a mathematical ceiling on how
-        // many such levels ANY single-dimension, magnitude-based degenerate
-        // construction can sustain, regardless of formula — confirmed by
-        // building the most extreme possible chain below (full-range
-        // halving from ~2^1023 down to the smallest positive denormal) and
-        // measuring its actual depth, which tops out around ~2100-2200,
-        // nowhere near 10_000.
+        // dynamic range on any one axis (~2^1023 down to the smallest
+        // denormal ~2^-1074, about 2098 halvings total). That is the
+        // ceiling on how many such levels a SINGLE-AXIS, magnitude-based
+        // degenerate construction can sustain over `[f64; 1]` data,
+        // regardless of formula — confirmed by building the most extreme
+        // possible one-axis chain below (full-range halving from ~2^1023
+        // down to the smallest positive denormal) and measuring its actual
+        // depth, which tops out around ~2100-2200.
+        //
+        // This is NOT a claim that depth > 10_000 is unreachable in
+        // general: `middle_split` always splits the currently-widest axis,
+        // so with D roughly-equal-width axes the same per-axis dynamic-range
+        // budget can be spent once per axis, round-robin, instead of once
+        // total — see `heavy_exponential_build_1m_dim8` below, which
+        // reaches depth > 10_000 exactly this way. This test's job is
+        // narrower: it is the deepest tree `f64` permits over ONE-dimensional
+        // data, and it already proves the point this task cares about — the
+        // explicit stack handles a tree ~120x deeper than a balanced tree
+        // over 1M points would ever be (~17 levels), with no native
+        // recursion involved at all.
         //
         // This spine (each step exactly half the previous, so no rounding
         // noise) peels ~2 points per level once the exact-tie behavior
@@ -935,12 +948,7 @@ mod tests {
         // midpoint, see the report), giving ~1049 degenerate levels, plus a
         // final balanced remainder over the padding once the spine hits
         // exactly 0.0. The assertion threshold (2_000) sits safely below
-        // the measured ceiling with margin, while still being ~120x deeper
-        // than a balanced tree over 1M points would ever be (~17 levels) —
-        // comfortably enough to overflow a bounded (e.g. 2 MiB rayon
-        // worker) native call stack were this native recursion instead of
-        // an explicit heap stack, which is the property this test exists
-        // to prove.
+        // the measured depth (2115) with margin.
         let mut spine: Vec<f64> = Vec::new();
         let mut v = 2f64.powi(1023);
         while v > 0.0 && spine.len() < n - 1 {
@@ -959,6 +967,66 @@ mod tests {
         assert!(
             depth > 2_000,
             "expected a deeply degenerate tree to exercise stack safety, got depth {depth}"
+        );
+
+        check_tree(&points, &arena, &vind, root, 10);
+    }
+
+    // ---------------------------------------------------------------
+    // 10b. Same idea, 8 dimensions: round-robin the per-axis dynamic-range
+    //      budget across axes to exceed the single-axis ceiling above.
+    // ---------------------------------------------------------------
+
+    /// `middle_split` always splits the axis with (a) bbox span within
+    /// `(1-EPS)` of the widest bbox span, and, among those candidates, (b)
+    /// the strictly largest ACTUAL spread (first candidate wins ties). If
+    /// all 8 axes start with equal-width bboxes, every axis is always a
+    /// candidate by (a); whichever axis currently has the largest actual
+    /// spread wins (b). This construction gives axis `d` (`d` = 0..7) its
+    /// OWN full-range halving ladder `2^1023, 2^1022, ..., ~2^-1074`
+    /// (exactly the ladder `heavy_exponential_build_1m` uses alone), placed
+    /// on a round-robin schedule: spine point `k` sets ONLY axis `k % 8` to
+    /// `ladder[k / 8]` (all other axes `0.0` for that point). So axis `d`'s
+    /// per-round spread is identical in shape to the single-axis case, just
+    /// interleaved with the other 7 axes' identical ladders — verified in a
+    /// small-scale Python prototype (200 rounds, dim 8, 1800 points) to
+    /// pick axes in the exact rotating order 0,1,2,...,7,0,1,2,...,7,...
+    /// and reach depth 1598 (~= the 1600-point spine length), i.e. the
+    /// per-axis ~2098-halving budget is spent ONCE PER AXIS instead of once
+    /// total. With 8 axes that gives a projected depth around `8 * 2098 ~=
+    /// 16_784` — well past `10_000`, confirmed by measurement below.
+    #[test]
+    #[ignore]
+    fn heavy_exponential_build_1m_dim8() {
+        const DIM: usize = 8;
+        let n = 1_000_000usize;
+
+        let mut ladder: Vec<f64> = Vec::new();
+        let mut v = 2f64.powi(1023);
+        while v > 0.0 {
+            ladder.push(v);
+            v /= 2.0;
+        }
+
+        let spine_len = (ladder.len() * DIM).min(n - 1);
+        let mut points: Vec<[f64; DIM]> = Vec::with_capacity(n);
+        for k in 0..spine_len {
+            let d = k % DIM;
+            let m = k / DIM;
+            let mut coords = [0.0f64; DIM];
+            coords[d] = ladder[m];
+            points.push(coords);
+        }
+        points.resize(n, [0.0f64; DIM]);
+
+        let (arena, vind, root, _bbox) = build_full_tree(&points, 10);
+
+        let depth = max_depth(&arena, root);
+        // Measured empirically at 16794 (see doc comment above); threshold
+        // kept well below that with margin.
+        assert!(
+            depth > 10_000,
+            "expected round-robin degenerate tree to exceed the single-axis ceiling, got depth {depth}"
         );
 
         check_tree(&points, &arena, &vind, root, 10);
