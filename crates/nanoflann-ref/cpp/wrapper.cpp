@@ -219,9 +219,18 @@ size_t nfr_vind_impl(const nfr_index<T>* h, uint32_t* out, size_t cap)
     });
 }
 
+// `eps` is `float` here (NOT `T`) for every T, matching nanoflann's own
+// `SearchParameters::eps` (nanoflann.hpp:874-881, hard-typed `float`
+// regardless of the tree's scalar type). Previously this template took `T
+// eps` for T=double entry points, which the Rust FFI declared as `f64` --
+// that `f64` then silently narrowed to `float` HERE on construction of
+// `SearchParameters`, so a value that round-tripped f32->f64->float on the
+// Rust side was fine, but nothing enforced that the Rust caller was in fact
+// widening from f32. Taking `float` directly makes both sides pass the exact
+// same bits with no implicit narrowing anywhere -- eps parity is structural.
 template <typename T>
 size_t nfr_knn_impl(
-    const nfr_index<T>* h, const T* q, size_t k, T eps, uint32_t* out_idx, T* out_dist)
+    const nfr_index<T>* h, const T* q, size_t k, float eps, uint32_t* out_idx, T* out_dist)
 {
     return dispatch(h, [&](const auto& tree) {
         KNNResultSet<T, uint32_t> result_set(k);
@@ -233,7 +242,7 @@ size_t nfr_knn_impl(
 
 template <typename T>
 size_t nfr_rknn_impl(
-    const nfr_index<T>* h, const T* q, size_t k, T radius, T eps, uint32_t* out_idx, T* out_dist)
+    const nfr_index<T>* h, const T* q, size_t k, T radius, float eps, uint32_t* out_idx, T* out_dist)
 {
     return dispatch(h, [&](const auto& tree) {
         RKNNResultSet<T, uint32_t> result_set(k, radius);
@@ -244,7 +253,7 @@ size_t nfr_rknn_impl(
 }
 
 template <typename T>
-size_t nfr_radius_count_impl(nfr_index<T>* h, const T* q, T radius, int sorted, T eps)
+size_t nfr_radius_count_impl(nfr_index<T>* h, const T* q, T radius, int sorted, float eps)
 {
     return dispatch(h, [&](const auto& tree) {
         const SearchParameters params(eps, sorted != 0);
@@ -361,19 +370,19 @@ extern "C"
         return nfr_vind_impl<T>(reinterpret_cast<const nfr_index<T>*>(h), out, cap);               \
     }                                                                                              \
     extern "C" size_t nfr_knn_##SUF(                                                              \
-        const nfr_index_##SUF* h, const T* q, size_t k, T eps, uint32_t* out_idx, T* out_dist)     \
+        const nfr_index_##SUF* h, const T* q, size_t k, float eps, uint32_t* out_idx, T* out_dist) \
     {                                                                                              \
         return nfr_knn_impl<T>(reinterpret_cast<const nfr_index<T>*>(h), q, k, eps, out_idx, out_dist); \
     }                                                                                               \
     extern "C" size_t nfr_rknn_##SUF(                                                              \
-        const nfr_index_##SUF* h, const T* q, size_t k, T radius, T eps, uint32_t* out_idx,        \
+        const nfr_index_##SUF* h, const T* q, size_t k, T radius, float eps, uint32_t* out_idx,    \
         T* out_dist)                                                                                \
     {                                                                                               \
         return nfr_rknn_impl<T>(                                                                    \
             reinterpret_cast<const nfr_index<T>*>(h), q, k, radius, eps, out_idx, out_dist);        \
     }                                                                                                \
     extern "C" size_t nfr_radius_count_##SUF(                                                       \
-        nfr_index_##SUF* h, const T* q, T radius, int sorted, T eps)                                \
+        nfr_index_##SUF* h, const T* q, T radius, int sorted, float eps)                            \
     {                                                                                                \
         return nfr_radius_count_impl<T>(reinterpret_cast<nfr_index<T>*>(h), q, radius, sorted, eps); \
     }                                                                                                \

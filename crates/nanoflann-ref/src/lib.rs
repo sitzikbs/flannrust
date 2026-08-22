@@ -134,7 +134,11 @@ mod raw {
             h: *const nfr_index_d,
             q: *const f64,
             k: usize,
-            eps: f64,
+            // eps is `float` on the C++ side (`SearchParameters::eps` is
+            // hard-typed `float` regardless of the tree's scalar type) --
+            // declared `f32` here, NOT `f64`, so there is no narrowing
+            // conversion anywhere in the FFI boundary.
+            eps: f32,
             out_idx: *mut u32,
             out_dist: *mut f64,
         ) -> usize;
@@ -143,7 +147,7 @@ mod raw {
             q: *const f64,
             k: usize,
             radius: f64,
-            eps: f64,
+            eps: f32,
             out_idx: *mut u32,
             out_dist: *mut f64,
         ) -> usize;
@@ -152,7 +156,7 @@ mod raw {
             q: *const f64,
             radius: f64,
             sorted: c_int,
-            eps: f64,
+            eps: f32,
         ) -> usize;
         pub fn nfr_radius_fetch_d(
             h: *const nfr_index_d,
@@ -279,8 +283,11 @@ macro_rules! define_ref_index {
             /// `k`-nearest-neighbor search (findNeighbors + KNNResultSet).
             /// Returns `(indices, squared-or-metric distances)`, truncated
             /// to the number actually found (less than `k` only if the tree
-            /// holds fewer than `k` points).
-            pub fn knn(&self, q: &[$t], k: usize, eps: $t) -> (Vec<u32>, Vec<$t>) {
+            /// holds fewer than `k` points). `eps` is `f32` regardless of
+            /// `$t` -- matches the C++ `SearchParameters::eps`, which is
+            /// hard-typed `float` no matter the tree's scalar type, so
+            /// there is no narrowing conversion anywhere on this path.
+            pub fn knn(&self, q: &[$t], k: usize, eps: f32) -> (Vec<u32>, Vec<$t>) {
                 assert_eq!(q.len(), self.dim, "query dim mismatch");
                 let mut idx = vec![0u32; k];
                 let mut dist = vec![<$t as Default>::default(); k];
@@ -299,8 +306,8 @@ macro_rules! define_ref_index {
             /// `k`-nearest-neighbor search bounded by a maximum radius
             /// (RKNNResultSet). `radius` is passed through raw -- for L2
             /// metrics the caller must pre-square it, matching nanoflann's
-            /// own squared-distance convention.
-            pub fn rknn(&self, q: &[$t], k: usize, radius: $t, eps: $t) -> (Vec<u32>, Vec<$t>) {
+            /// own squared-distance convention. `eps` is `f32` -- see `knn`.
+            pub fn rknn(&self, q: &[$t], k: usize, radius: $t, eps: f32) -> (Vec<u32>, Vec<$t>) {
                 assert_eq!(q.len(), self.dim, "query dim mismatch");
                 let mut idx = vec![0u32; k];
                 let mut dist = vec![<$t as Default>::default(); k];
@@ -323,8 +330,8 @@ macro_rules! define_ref_index {
 
             /// All points within `radius` (strict `<`, matching nanoflann's
             /// `RadiusResultSet::addPoint`), as `(index, distance)` pairs.
-            /// Ascending order iff `sorted`.
-            pub fn radius(&self, q: &[$t], radius: $t, sorted: bool, eps: $t) -> Vec<(u32, $t)> {
+            /// Ascending order iff `sorted`. `eps` is `f32` -- see `knn`.
+            pub fn radius(&self, q: &[$t], radius: $t, sorted: bool, eps: f32) -> Vec<(u32, $t)> {
                 assert_eq!(q.len(), self.dim, "query dim mismatch");
                 // SAFETY: `_count` populates the handle's internal C++
                 // scratch vector; `_fetch` is called immediately afterward,

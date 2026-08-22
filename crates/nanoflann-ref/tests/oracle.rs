@@ -58,6 +58,34 @@ fn knn_k2_returns_expected_indices_and_squared_distances_f32() {
     );
 }
 
+// ---- Test 1b: knn with nonzero eps (f32 FFI plumbing) ----
+//
+// leaf_max_size=10 >= n=5, so the whole dataset lives in a single leaf: no
+// internal node ever gets a prune decision to make, so the eps-approximate
+// search visits exactly the same points as an exact (eps=0) search would --
+// the result is well-defined regardless of eps's value. This isolates the
+// `eps: f32` FFI parameter itself (does the value even reach the C++ side
+// and get accepted by `SearchParameters`?) from any question of whether
+// approximate pruning is correct.
+
+#[test]
+fn knn_k2_with_nonzero_eps_returns_same_result_as_exact_f32() {
+    let idx = RefIndexF32::build(&PTS_F32, DIM, Metric::L2, 10, 1);
+    let (indices, dists) = idx.knn(&QUERY_F32, 2, 0.5);
+    assert_eq!(indices, vec![1, 0], "expected nearest-2 indices [1, 0]");
+    assert!((dists[0] - 0.03).abs() < 1e-6, "dist[0] = {}", dists[0]);
+    assert!((dists[1] - 0.83).abs() < 1e-6, "dist[1] = {}", dists[1]);
+}
+
+#[test]
+fn knn_k2_with_nonzero_eps_returns_same_result_as_exact_f64() {
+    let idx = RefIndexF64::build(&PTS_F64, DIM, Metric::L2, 10, 1);
+    let (indices, dists) = idx.knn(&QUERY_F64, 2, 0.5);
+    assert_eq!(indices, vec![1, 0], "expected nearest-2 indices [1, 0]");
+    assert!((dists[0] - 0.03).abs() < 1e-9, "dist[0] = {}", dists[0]);
+    assert!((dists[1] - 0.83).abs() < 1e-9, "dist[1] = {}", dists[1]);
+}
+
 // ---- Test 2: radius search, ascending order + strict-< exclusion ----
 
 #[test]

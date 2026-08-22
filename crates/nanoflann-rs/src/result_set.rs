@@ -443,7 +443,7 @@ mod tests {
         assert_eq!(size_of::<ResultItem<u32, f64>>(), 16);
 
         // Field offset
-        let item = ResultItem { index: 42u32, distance: 3.14f64 };
+        let item = ResultItem { index: 42u32, distance: 3.5f64 };
         let item_ptr = &item as *const ResultItem<u32, f64> as usize;
         let index_ptr = addr_of!(item.index) as usize;
 

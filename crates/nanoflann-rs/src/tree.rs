@@ -247,6 +247,12 @@ where
         self.root_bbox.as_ref()
     }
 
+    /// The build-time permutation of point indices, = nanoflann's `vAcc_`;
+    /// exposed for introspection and cross-validation.
+    pub fn point_indices(&self) -> &[Idx] {
+        &self.vind
+    }
+
     fn ctx(&self) -> SearchCtx<'_, T, DS, M, Idx> {
         SearchCtx {
             ds: &self.dataset,
@@ -799,6 +805,20 @@ mod tests {
             big_tree.used_memory_bytes() > small_tree.used_memory_bytes(),
             "used_memory_bytes should grow with n"
         );
+    }
+
+    // ---------------------------------------------------------------
+    // Test 11: point_indices() is a permutation of 0..n
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn point_indices_is_a_permutation_of_0_to_n() {
+        let pts = seeded_points::<3>(0x1234, 37, 25.0);
+        let tree = KdTreeBuilder::new(ConstDim::<3>, pts.as_slice()).build();
+        let mut got: Vec<u32> = tree.point_indices().to_vec();
+        assert_eq!(got.len(), 37);
+        got.sort_unstable();
+        assert_eq!(got, (0u32..37).collect::<Vec<u32>>());
     }
 
     // ---------------------------------------------------------------
