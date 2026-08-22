@@ -7,6 +7,7 @@
 //! implementation.
 
 use crate::data_source::DataSource;
+use crate::dim::Dim;
 use crate::scalar::{DistanceValue, Scalar};
 
 /// A nanoflann-style metric. Implementations are plain values, so stateful
@@ -22,12 +23,21 @@ use crate::scalar::{DistanceValue, Scalar};
 pub trait Distance<T: Scalar>: Send + Sync {
     type DistanceType: DistanceValue;
 
-    fn eval<DS: DataSource<T> + ?Sized>(
+    /// `d` carries the dimensionality — pass a [`crate::ConstDim`] where the
+    /// caller's dimension is a compile-time constant (e.g. the hot search
+    /// path over a `ConstDim<N>`-built tree) so the monomorphized body sees
+    /// `d.dim()` constant-fold to `N`, letting the optimizer fully unroll
+    /// fixed-width kernels (like `L2`'s 4-wide unroll) and elide bounds
+    /// checks; pass [`crate::DynDim`] for a runtime dimension. **API
+    /// CHANGE**: this parameter used to be a plain `dim: usize` — existing
+    /// external `Distance` implementations must update their `eval` to take
+    /// `d: D` (`D: Dim`) and call `d.dim()` wherever the old `dim` was used.
+    fn eval<DS: DataSource<T> + ?Sized, D: Dim>(
         &self,
         query: &[T],
         ds: &DS,
         idx: usize,
-        dim: usize,
+        d: D,
     ) -> Self::DistanceType;
 
     fn accum_dist(&self, a: T, b: T, axis: usize) -> Self::DistanceType;
@@ -82,13 +92,14 @@ macro_rules! impl_l1 {
         impl Distance<$t> for L1 {
             type DistanceType = $t;
 
-            fn eval<DS: DataSource<$t> + ?Sized>(
+            fn eval<DS: DataSource<$t> + ?Sized, D: Dim>(
                 &self,
                 query: &[$t],
                 ds: &DS,
                 idx: usize,
-                dim: usize,
+                dim: D,
             ) -> $t {
+                let dim = dim.dim();
                 let mut result: $t = 0.0;
                 let multof4 = (dim >> 2) << 2; // largest multiple of 4
                 let mut d = 0usize;
@@ -129,13 +140,14 @@ macro_rules! impl_l2 {
         impl Distance<$t> for L2 {
             type DistanceType = $t;
 
-            fn eval<DS: DataSource<$t> + ?Sized>(
+            fn eval<DS: DataSource<$t> + ?Sized, D: Dim>(
                 &self,
                 query: &[$t],
                 ds: &DS,
                 idx: usize,
-                dim: usize,
+                dim: D,
             ) -> $t {
+                let dim = dim.dim();
                 let mut result: $t = 0.0;
                 let multof4 = (dim >> 2) << 2; // largest multiple of 4
                 let mut d = 0usize;
@@ -180,13 +192,14 @@ macro_rules! impl_l2_simple {
         impl Distance<$t> for L2Simple {
             type DistanceType = $t;
 
-            fn eval<DS: DataSource<$t> + ?Sized>(
+            fn eval<DS: DataSource<$t> + ?Sized, D: Dim>(
                 &self,
                 query: &[$t],
                 ds: &DS,
                 idx: usize,
-                dim: usize,
+                dim: D,
             ) -> $t {
+                let dim = dim.dim();
                 let mut result: $t = 0.0;
                 for d in 0..dim {
                     let diff = query[d] - ds.point_component(idx, d);
@@ -208,13 +221,14 @@ macro_rules! impl_so2 {
         impl Distance<$t> for SO2 {
             type DistanceType = $t;
 
-            fn eval<DS: DataSource<$t> + ?Sized>(
+            fn eval<DS: DataSource<$t> + ?Sized, D: Dim>(
                 &self,
                 query: &[$t],
                 ds: &DS,
                 idx: usize,
-                dim: usize,
+                dim: D,
             ) -> $t {
+                let dim = dim.dim();
                 self.accum_dist(query[dim - 1], ds.point_component(idx, dim - 1), dim - 1)
             }
 
@@ -243,12 +257,12 @@ macro_rules! impl_so3 {
         impl Distance<$t> for SO3 {
             type DistanceType = $t;
 
-            fn eval<DS: DataSource<$t> + ?Sized>(
+            fn eval<DS: DataSource<$t> + ?Sized, D: Dim>(
                 &self,
                 query: &[$t],
                 ds: &DS,
                 idx: usize,
-                dim: usize,
+                dim: D,
             ) -> $t {
                 L2Simple.eval(query, ds, idx, dim)
             }
@@ -275,6 +289,7 @@ impl_so3!(f64);
 mod tests {
     use super::*;
     use crate::data_source::FlatSlice;
+    use crate::dim::{ConstDim, DynDim};
 
     // ---- Test 1: L2 dim-2 exact ----
 
@@ -282,7 +297,7 @@ mod tests {
     fn l2_dim2_exact_f64() {
         let q = [1.0f64, 2.0];
         let p: &[[f64; 2]] = &[[4.0, 6.0]];
-        let got = L2.eval(&q, &p, 0, 2);
+        let got = L2.eval(&q, &p, 0, ConstDim::<2>);
         assert_eq!(got, 25.0);
     }
 
@@ -290,7 +305,7 @@ mod tests {
     fn l2_dim2_exact_f32() {
         let q = [1.0f32, 2.0];
         let p: &[[f32; 2]] = &[[4.0, 6.0]];
-        let got = L2.eval(&q, &p, 0, 2);
+        let got = L2.eval(&q, &p, 0, ConstDim::<2>);
         assert_eq!(got, 25.0);
     }
 
@@ -315,7 +330,7 @@ mod tests {
         for &dim in TEST_DIMS {
             let (q, p) = gen_int_points_f64(dim);
             let ds = FlatSlice::new(&p, dim);
-            let got = L2.eval(&q, &ds, 0, dim);
+            let got = L2.eval(&q, &ds, 0, DynDim(dim));
             let want: f64 = q.iter().zip(p.iter()).map(|(a, b)| (a - b) * (a - b)).sum();
             assert_eq!(got, want, "dim={dim}");
         }
@@ -326,7 +341,7 @@ mod tests {
         for &dim in TEST_DIMS {
             let (q, p) = gen_int_points_f32(dim);
             let ds = FlatSlice::new(&p, dim);
-            let got = L2.eval(&q, &ds, 0, dim);
+            let got = L2.eval(&q, &ds, 0, DynDim(dim));
             let want: f32 = q.iter().zip(p.iter()).map(|(a, b)| (a - b) * (a - b)).sum();
             assert_eq!(got, want, "dim={dim}");
         }
@@ -337,7 +352,7 @@ mod tests {
         for &dim in TEST_DIMS {
             let (q, p) = gen_int_points_f64(dim);
             let ds = FlatSlice::new(&p, dim);
-            let got = L1.eval(&q, &ds, 0, dim);
+            let got = L1.eval(&q, &ds, 0, DynDim(dim));
             let want: f64 = q.iter().zip(p.iter()).map(|(a, b)| (a - b).abs()).sum();
             assert_eq!(got, want, "dim={dim}");
         }
@@ -348,7 +363,7 @@ mod tests {
         for &dim in TEST_DIMS {
             let (q, p) = gen_int_points_f32(dim);
             let ds = FlatSlice::new(&p, dim);
-            let got = L1.eval(&q, &ds, 0, dim);
+            let got = L1.eval(&q, &ds, 0, DynDim(dim));
             let want: f32 = q.iter().zip(p.iter()).map(|(a, b)| (a - b).abs()).sum();
             assert_eq!(got, want, "dim={dim}");
         }
@@ -360,8 +375,8 @@ mod tests {
     fn l2_simple_matches_l2_exact_integer_dim8() {
         let (q, p) = gen_int_points_f64(8);
         let ds = FlatSlice::new(&p, 8);
-        let l2 = L2.eval(&q, &ds, 0, 8);
-        let l2s = L2Simple.eval(&q, &ds, 0, 8);
+        let l2 = L2.eval(&q, &ds, 0, ConstDim::<8>);
+        let l2s = L2Simple.eval(&q, &ds, 0, ConstDim::<8>);
         assert_eq!(l2, l2s);
     }
 
@@ -371,8 +386,8 @@ mod tests {
         let q: Vec<f64> = (0..dim).map(|i| 0.1 * (i as f64)).collect();
         let p: Vec<f64> = (0..dim).map(|i| 0.1 * ((i as f64) + 1.0)).collect();
         let ds = FlatSlice::new(&p, dim);
-        let l2 = L2.eval(&q, &ds, 0, dim);
-        let l2s = L2Simple.eval(&q, &ds, 0, dim);
+        let l2 = L2.eval(&q, &ds, 0, DynDim(dim));
+        let l2s = L2Simple.eval(&q, &ds, 0, DynDim(dim));
         // Different summation order (4-way unroll vs plain sequential loop)
         // can produce a tiny floating-point discrepancy on non-exact inputs.
         assert!((l2 - l2s).abs() < 4.0 * f64::EPSILON, "l2={l2} l2s={l2s}");
@@ -384,7 +399,7 @@ mod tests {
     fn so2_ignores_all_but_last_dim_and_is_unsquared() {
         let q = [10.0f64, 0.1];
         let p: &[[f64; 2]] = &[[-10.0, -0.1]];
-        let got = SO2.eval(&q, &p, 0, 2);
+        let got = SO2.eval(&q, &p, 0, ConstDim::<2>);
         // First component (10.0 vs -10.0) is IGNORED entirely.
         // Result is UNsquared: 0.2, not 0.04.
         assert!((got - 0.2).abs() < 1e-12, "got={got}");
@@ -437,8 +452,8 @@ mod tests {
     fn so3_matches_l2_simple_bit_for_bit_dim4() {
         let q = [0.3f64, -1.7, 2.25, 0.001];
         let p: &[[f64; 4]] = &[[1.1, 0.05, -0.4, 3.333]];
-        let so3 = SO3.eval(&q, &p, 0, 4);
-        let l2s = L2Simple.eval(&q, &p, 0, 4);
+        let so3 = SO3.eval(&q, &p, 0, ConstDim::<4>);
+        let l2s = L2Simple.eval(&q, &p, 0, ConstDim::<4>);
         assert_eq!(so3.to_bits(), l2s.to_bits());
 
         let so3_acc = SO3.accum_dist(0.3f64, 1.1, 0);
@@ -487,13 +502,14 @@ mod tests {
         impl Distance<f64> for WeightedL2 {
             type DistanceType = f64;
 
-            fn eval<DS: DataSource<f64> + ?Sized>(
+            fn eval<DS: DataSource<f64> + ?Sized, D: Dim>(
                 &self,
                 query: &[f64],
                 ds: &DS,
                 idx: usize,
-                dim: usize,
+                dim: D,
             ) -> f64 {
+                let dim = dim.dim();
                 let mut result = 0.0;
                 for d in 0..dim {
                     let diff = query[d] - ds.point_component(idx, d);
@@ -513,7 +529,7 @@ mod tests {
         };
         let q = [0.0f64, 0.0, 0.0];
         let p: &[[f64; 3]] = &[[1.0, 1.0, 1.0]];
-        let got = metric.eval(&q, &p, 0, 3);
+        let got = metric.eval(&q, &p, 0, ConstDim::<3>);
         // 1*1^2 + 4*1^2 + 0.5*1^2 = 1 + 4 + 0.5 = 5.5
         assert_eq!(got, 5.5);
 

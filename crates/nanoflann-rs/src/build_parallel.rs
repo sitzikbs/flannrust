@@ -201,6 +201,7 @@ where
 mod tests {
     use super::*;
     use crate::build::init_vind;
+    use crate::dim::ConstDim;
     use crate::metric::L2;
     use crate::result_set::{KnnResultSet, ResultSet};
     use crate::search::{find_neighbors, SearchCtx};
@@ -322,7 +323,7 @@ mod tests {
         let seq_ctx = SearchCtx {
             ds: &points.as_slice(),
             metric: &L2,
-            dim: 3,
+            dim: ConstDim::<3>,
             nodes: &seq_arena,
             vind: &seq_vind,
             root_bbox: &seq_bbox,
@@ -330,7 +331,7 @@ mod tests {
         let auto_ctx = SearchCtx {
             ds: &points.as_slice(),
             metric: &L2,
-            dim: 3,
+            dim: ConstDim::<3>,
             nodes: &auto_arena,
             vind: &auto_vind,
             root_bbox: &auto_bbox,

@@ -767,7 +767,7 @@ macro_rules! impl_brute_force_knn {
             let n = data.len() / dim;
             let ds = FlatSlice::new(data, dim);
             let mut all: Vec<(u32, $t)> =
-                (0..n).map(|i| (i as u32, L2.eval(query, &ds, i, dim))).collect();
+                (0..n).map(|i| (i as u32, L2.eval(query, &ds, i, DynDim(dim)))).collect();
             all.sort_by(|a, b| a.1.partial_cmp(&b.1).expect("brute_force_knn: NaN distance").then(a.0.cmp(&b.0)));
             all.truncate(k.min(n));
             all
@@ -893,7 +893,7 @@ macro_rules! impl_score_exact_tie_aware {
             }
             let ds = FlatSlice::new(data, dim);
             for &(idx, reported_dist) in got {
-                let true_dist: $t = L2.eval(query, &ds, idx as usize, dim);
+                let true_dist: $t = L2.eval(query, &ds, idx as usize, DynDim(dim));
                 if true_dist.to_bits() != reported_dist.to_bits() {
                     return false;
                 }

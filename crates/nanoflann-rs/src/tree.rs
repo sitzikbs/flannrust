@@ -465,11 +465,11 @@ where
         &self.vind
     }
 
-    fn ctx(&self) -> SearchCtx<'_, T, DS, M, Idx> {
+    fn ctx(&self) -> SearchCtx<'_, T, D, DS, M, Idx> {
         SearchCtx {
             ds: &self.dataset,
             metric: &self.metric,
-            dim: self.dim.dim(),
+            dim: self.dim,
             nodes: &self.nodes,
             vind: &self.vind,
             root_bbox: self.root_bbox.as_ref(),
@@ -626,7 +626,7 @@ mod tests {
         {
             let mut rs = KnnResultSet::<Mtr::DistanceType, u32>::new(&mut indices, &mut dists);
             for i in 0..pts.len() {
-                let d = metric.eval(query.as_slice(), &pts, i, N);
+                let d = metric.eval(query.as_slice(), &pts, i, ConstDim::<N>);
                 rs.add_point(d, i as u32);
             }
             count = rs.size();
@@ -959,7 +959,8 @@ mod tests {
     impl Distance<f64> for WeightedL2 {
         type DistanceType = f64;
 
-        fn eval<Ds: DataSource<f64> + ?Sized>(&self, query: &[f64], ds: &Ds, idx: usize, dim: usize) -> f64 {
+        fn eval<Ds: DataSource<f64> + ?Sized, D: Dim>(&self, query: &[f64], ds: &Ds, idx: usize, dim: D) -> f64 {
+            let dim = dim.dim();
             let mut result = 0.0;
             for d in 0..dim {
                 let diff = query[d] - ds.point_component(idx, d);

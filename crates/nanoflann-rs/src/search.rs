@@ -5,6 +5,7 @@
 
 use crate::bbox::Interval;
 use crate::data_source::DataSource;
+use crate::dim::Dim;
 use crate::filter::PointFilter;
 use crate::metric::Distance;
 use crate::node::Node;
@@ -16,10 +17,17 @@ use crate::scalar::{DistanceValue, IndexType, Scalar};
 /// built arena + permuted index vector, and the tree's root bounding box.
 /// The root node is always arena index 0 (task 6's `SubtreeBuilder::build`
 /// always allocates the top-level node first).
-pub(crate) struct SearchCtx<'a, T: Scalar, DS: DataSource<T> + ?Sized, M: Distance<T>, Idx> {
+///
+/// `dim` is carried as a typed `D: Dim` (not a plain `usize`) so it reaches
+/// `Distance::eval` in the leaf-scan hot path (`search_level`) as a
+/// [`crate::ConstDim`] whenever the caller's tree was built over one —
+/// letting the metric kernel's dimension loop constant-fold and fully
+/// unroll under monomorphization instead of branching on a runtime value
+/// (task 14's ConstDim-unroll fix; see `metric.rs`'s `Distance::eval` doc).
+pub(crate) struct SearchCtx<'a, T: Scalar, D: Dim, DS: DataSource<T> + ?Sized, M: Distance<T>, Idx> {
     pub ds: &'a DS,
     pub metric: &'a M,
-    pub dim: usize,
+    pub dim: D,
     pub nodes: &'a [Node<T>],
     pub vind: &'a [Idx],
     pub root_bbox: &'a [Interval<T>],
@@ -32,8 +40,8 @@ pub(crate) struct SearchCtx<'a, T: Scalar, DS: DataSource<T> + ?Sized, M: Distan
 ///
 /// `dists_scratch` is caller-provided, length `ctx.dim`, zeroed here (callers
 /// with `ConstDim` pass a stack array — no per-query heap allocation).
-pub(crate) fn find_neighbors<T, DS, M, Idx, R, F>(
-    ctx: &SearchCtx<T, DS, M, Idx>,
+pub(crate) fn find_neighbors<T, D, DS, M, Idx, R, F>(
+    ctx: &SearchCtx<T, D, DS, M, Idx>,
     result: &mut R,
     query: &[T],
     params: &SearchParams,
@@ -42,6 +50,7 @@ pub(crate) fn find_neighbors<T, DS, M, Idx, R, F>(
 ) -> bool
 where
     T: Scalar,
+    D: Dim,
     DS: DataSource<T> + ?Sized,
     M: Distance<T>,
     Idx: IndexType,
@@ -51,8 +60,8 @@ where
     if ctx.nodes.is_empty() {
         return false;
     }
-    debug_assert!(query.len() >= ctx.dim, "query vector shorter than dim");
-    debug_assert_eq!(dists_scratch.len(), ctx.dim, "dists_scratch.len() != dim");
+    debug_assert!(query.len() >= ctx.dim.dim(), "query vector shorter than dim");
+    debug_assert_eq!(dists_scratch.len(), ctx.dim.dim(), "dists_scratch.len() != dim");
 
     // C++ (nanoflann.hpp:1999): `DistanceType epsError = 1 + static_cast<DistanceType>(searchParams.eps);`
     // — widens `eps` (f32) to `DistanceType` FIRST, then adds `1` in
@@ -91,18 +100,19 @@ where
 /// uses `else if`; functionally equivalent for a well-formed bbox where
 /// `low <= high`, but we mirror the source exactly per task instructions).
 /// Returns the summed lower-bound distance.
-fn compute_initial_distances<T, DS, M, Idx>(
-    ctx: &SearchCtx<T, DS, M, Idx>,
+fn compute_initial_distances<T, D, DS, M, Idx>(
+    ctx: &SearchCtx<T, D, DS, M, Idx>,
     query: &[T],
     dists: &mut [M::DistanceType],
 ) -> M::DistanceType
 where
     T: Scalar,
+    D: Dim,
     DS: DataSource<T> + ?Sized,
     M: Distance<T>,
 {
     let mut dist = M::DistanceType::ZERO;
-    for i in 0..ctx.dim {
+    for i in 0..ctx.dim.dim() {
         if query[i] < ctx.root_bbox[i].low {
             dists[i] = ctx.metric.accum_dist(query[i], ctx.root_bbox[i].low, i);
             dist = dist + dists[i];
@@ -124,8 +134,8 @@ where
 /// Returns `false` to abort (propagated from `ResultSet::add_point`
 /// returning `false`, nanoflann.hpp ~1245-1250), `true` to continue.
 #[allow(clippy::too_many_arguments)]
-fn search_level<T, DS, M, Idx, R, F>(
-    ctx: &SearchCtx<T, DS, M, Idx>,
+fn search_level<T, D, DS, M, Idx, R, F>(
+    ctx: &SearchCtx<T, D, DS, M, Idx>,
     result: &mut R,
     query: &[T],
     node_idx: u32,
@@ -136,6 +146,7 @@ fn search_level<T, DS, M, Idx, R, F>(
 ) -> bool
 where
     T: Scalar,
+    D: Dim,
     DS: DataSource<T> + ?Sized,
     M: Distance<T>,
     Idx: IndexType,
@@ -228,13 +239,14 @@ where
 /// collector never wants to stop early (it always accepts every point), so
 /// that early-out is unobservable for this collector and is deliberately
 /// not ported.
-pub(crate) fn find_within_box<T, DS, M, Idx>(
-    ctx: &SearchCtx<'_, T, DS, M, Idx>,
+pub(crate) fn find_within_box<T, D, DS, M, Idx>(
+    ctx: &SearchCtx<'_, T, D, DS, M, Idx>,
     bounds: &[Interval<T>],
     out: &mut Vec<Idx>,
 ) -> usize
 where
     T: Scalar,
+    D: Dim,
     DS: DataSource<T> + ?Sized,
     M: Distance<T>,
     Idx: IndexType,
@@ -247,7 +259,7 @@ where
         return 0;
     }
 
-    debug_assert_eq!(bounds.len(), ctx.dim, "bounds.len() != dim");
+    debug_assert_eq!(bounds.len(), ctx.dim.dim(), "bounds.len() != dim");
 
     let mut stack: Vec<u32> = vec![0];
 
@@ -284,14 +296,15 @@ where
 /// iff EVERY dimension's coordinate satisfies `Interval::contains` (the
 /// C++-parity inclusive `point < low || point > high` -> reject predicate,
 /// see `bbox.rs`).
-fn contains_point<T, DS, M, Idx>(ctx: &SearchCtx<'_, T, DS, M, Idx>, bounds: &[Interval<T>], idx: Idx) -> bool
+fn contains_point<T, D, DS, M, Idx>(ctx: &SearchCtx<'_, T, D, DS, M, Idx>, bounds: &[Interval<T>], idx: Idx) -> bool
 where
     T: Scalar,
+    D: Dim,
     DS: DataSource<T> + ?Sized,
     M: Distance<T>,
     Idx: IndexType,
 {
-    for i in 0..ctx.dim {
+    for i in 0..ctx.dim.dim() {
         let point = ctx.ds.point_component(idx.to_usize(), i);
         if !bounds[i].contains(point) {
             return false;
@@ -304,6 +317,7 @@ where
 mod tests {
     use super::*;
     use crate::bbox::compute_bounding_box;
+    use crate::dim::DynDim;
     use crate::build::{init_vind, SubtreeBuilder};
     use crate::filter::AcceptAll;
     use crate::metric::L2;
@@ -360,7 +374,7 @@ mod tests {
         {
             let mut rs = KnnResultSet::<f64, u32>::new(&mut indices, &mut dists);
             for i in 0..pts.len() {
-                let d = metric.eval(query.as_slice(), &pts, i, dim);
+                let d = metric.eval(query.as_slice(), &pts, i, DynDim(dim));
                 rs.add_point(d, i as u32);
             }
             count = rs.size();
@@ -381,7 +395,7 @@ mod tests {
     ) -> (Vec<u32>, Vec<f64>, bool) {
         let dim = N;
         let metric = L2;
-        let ctx = SearchCtx { ds: &pts, metric: &metric, dim, nodes: arena, vind, root_bbox: bbox };
+        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: DynDim(dim), nodes: arena, vind, root_bbox: bbox };
         let mut indices = vec![0u32; k];
         let mut dists = vec![0.0f64; k];
         let count;
@@ -403,7 +417,7 @@ mod tests {
         let metric = L2;
         let mut out: Vec<(u32, f64)> = (0..pts.len())
             .filter_map(|i| {
-                let d = metric.eval(query.as_slice(), &pts, i, dim);
+                let d = metric.eval(query.as_slice(), &pts, i, DynDim(dim));
                 if d < radius { Some((i as u32, d)) } else { None }
             })
             .collect();
@@ -421,7 +435,7 @@ mod tests {
     ) -> Vec<(u32, f64)> {
         let dim = N;
         let metric = L2;
-        let ctx = SearchCtx { ds: &pts, metric: &metric, dim, nodes: arena, vind, root_bbox: bbox };
+        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: DynDim(dim), nodes: arena, vind, root_bbox: bbox };
         let mut items = Vec::new();
         {
             let mut rs = crate::result_set::RadiusResultSet::new(radius, &mut items);
@@ -533,7 +547,7 @@ mod tests {
         let vind: Vec<u32> = Vec::new();
         let bbox: Vec<Interval<f64>> = vec![Interval { low: 0.0, high: 0.0 }; 2];
         let metric = L2;
-        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: 2, nodes: &arena, vind: &vind, root_bbox: &bbox };
+        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: DynDim(2), nodes: &arena, vind: &vind, root_bbox: &bbox };
 
         let mut indices = [99u32; 3];
         let mut dists = [77.0f64; 3];
@@ -580,7 +594,7 @@ mod tests {
         let (vind, arena, bbox) = build_tree(&pts, 10);
         let metric = L2;
         let pts: &[[f64; 1]] = &pts;
-        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: 1, nodes: &arena, vind: &vind, root_bbox: &bbox };
+        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: DynDim(1), nodes: &arena, vind: &vind, root_bbox: &bbox };
 
         let mut indices = [0u32; 5];
         let mut dists = [0.0f64; 5];
@@ -601,7 +615,7 @@ mod tests {
         let (vind, arena, bbox) = build_tree(&pts, 3);
         let metric = L2;
         let pts: &[[f64; 1]] = &pts;
-        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: 1, nodes: &arena, vind: &vind, root_bbox: &bbox };
+        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: DynDim(1), nodes: &arena, vind: &vind, root_bbox: &bbox };
 
         let mut indices = [0u32; 5];
         let mut dists = [0.0f64; 5];
@@ -625,7 +639,7 @@ mod tests {
         let (vind, arena, bbox) = build_tree(&pts, 10);
         let metric = L2;
         let pts: &[[f64; 1]] = &pts;
-        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: 1, nodes: &arena, vind: &vind, root_bbox: &bbox };
+        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: DynDim(1), nodes: &arena, vind: &vind, root_bbox: &bbox };
 
         let mut indices = [0u32; 1];
         let mut dists = [0.0f64; 1];
@@ -648,7 +662,7 @@ mod tests {
         let (vind, arena, bbox) = build_tree(&pts, 10);
         let metric = L2;
         let pts: &[[f64; 2]] = &pts;
-        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: 2, nodes: &arena, vind: &vind, root_bbox: &bbox };
+        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: DynDim(2), nodes: &arena, vind: &vind, root_bbox: &bbox };
 
         let mut items = Vec::new();
         {
@@ -680,7 +694,7 @@ mod tests {
         let (vind, arena, bbox) = build_tree(&pts, 10);
         let metric = L2;
         let pts: &[[f64; 2]] = &pts;
-        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: 2, nodes: &arena, vind: &vind, root_bbox: &bbox };
+        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: DynDim(2), nodes: &arena, vind: &vind, root_bbox: &bbox };
 
         let mut items = Vec::new();
         {
@@ -742,7 +756,7 @@ mod tests {
         let (vind, arena, bbox) = build_tree(&pts, 2);
         let metric = L2;
         let pts: &[[f64; 1]] = &pts;
-        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: 1, nodes: &arena, vind: &vind, root_bbox: &bbox };
+        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: DynDim(1), nodes: &arena, vind: &vind, root_bbox: &bbox };
 
         let mut items = Vec::new();
         {
@@ -790,7 +804,7 @@ mod tests {
         let (vind, arena, bbox) = build_tree(&pts, 1);
         let metric = L2;
         let pts: &[[f64; 1]] = &pts;
-        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: 1, nodes: &arena, vind: &vind, root_bbox: &bbox };
+        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: DynDim(1), nodes: &arena, vind: &vind, root_bbox: &bbox };
 
         let mut rs = AbortAfterN { limit: 3, adds: 0 };
         let mut scratch = [0.0f64; 1];
@@ -823,7 +837,7 @@ mod tests {
         let (vind, arena, bbox) = build_tree(&pts, 4);
         let metric = L2;
         let pts: &[[f64; 3]] = &pts;
-        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: 3, nodes: &arena, vind: &vind, root_bbox: &bbox };
+        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: DynDim(3), nodes: &arena, vind: &vind, root_bbox: &bbox };
 
         let k = 10;
         let mut indices = vec![0u32; k];
@@ -847,7 +861,7 @@ mod tests {
         // naive `(0..3).sum()` can differ by an ULP.
         let mut scored: Vec<(f64, u32)> = (0..pts.len())
             .filter(|&i| i % 2 == 1)
-            .map(|i| (metric.eval(&query, &pts, i, 3), i as u32))
+            .map(|i| (metric.eval(&query, &pts, i, DynDim(3)), i as u32))
             .collect();
         scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap().then(a.1.cmp(&b.1)));
         scored.truncate(k);
@@ -885,7 +899,7 @@ mod tests {
 
         let (vind, arena, bbox) = build_tree(&pts, 10);
         let pts: &[[f64; 2]] = &pts;
-        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: 2, nodes: &arena, vind: &vind, root_bbox: &bbox };
+        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: DynDim(2), nodes: &arena, vind: &vind, root_bbox: &bbox };
 
         let mut indices = [0u32; 1];
         let mut dists = [0.0f64; 1];
@@ -939,7 +953,7 @@ mod tests {
         let (vind, arena, bbox) = build_tree(&pts, 1);
         let metric = L2;
         let pts: &[[f64; 1]] = &pts;
-        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: 1, nodes: &arena, vind: &vind, root_bbox: &bbox };
+        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: DynDim(1), nodes: &arena, vind: &vind, root_bbox: &bbox };
 
         let run = |eps: f32| -> (usize, u32) {
             let filter = CountingFilter(core::cell::Cell::new(0));
@@ -1041,7 +1055,7 @@ mod tests {
         }
 
         let metric = L2;
-        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: 2, nodes: &arena, vind: &vind, root_bbox: &[] };
+        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: DynDim(2), nodes: &arena, vind: &vind, root_bbox: &[] };
         let query = [0.06f64, 0.0];
 
         // Exact (eps_error = 1.0): bypass find_neighbors/compute_initial_distances
@@ -1173,7 +1187,7 @@ mod tests {
         // other=child1=LEFT(index1). cut_dist (for LEFT)=accum_dist(0,-1.0)=
         // (0-(-1.0))^2=1.0=mindist, exactly as designed.
         let metric = L2;
-        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: 1, nodes: &arena, vind: &vind, root_bbox: &[] };
+        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: DynDim(1), nodes: &arena, vind: &vind, root_bbox: &[] };
         let query = [0.0f64];
 
         let run_with_eps_error = |eps_error: f64| -> usize {
@@ -1196,7 +1210,7 @@ mod tests {
         let ctx_with_bbox = SearchCtx {
             ds: &pts,
             metric: &metric,
-            dim: 1,
+            dim: DynDim(1),
             nodes: &arena,
             vind: &vind,
             root_bbox: &[Interval { low: -1.0, high: 0.5 }],
@@ -1427,7 +1441,7 @@ mod tests {
     ) -> Vec<u32> {
         let dim = N;
         let metric = L2;
-        let ctx = SearchCtx { ds: &pts, metric: &metric, dim, nodes: arena, vind, root_bbox: bbox };
+        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: DynDim(dim), nodes: arena, vind, root_bbox: bbox };
         let mut out = Vec::new();
         let count = find_within_box(&ctx, bounds, &mut out);
         assert_eq!(count, out.len(), "find_within_box return value must equal out.len()");
@@ -1638,7 +1652,7 @@ mod tests {
         let pts: Vec<[f64; 2]> = Vec::new();
         let pts: &[[f64; 2]] = &pts;
         let metric = L2;
-        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: 2, nodes: &arena, vind: &vind, root_bbox: &bbox };
+        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: DynDim(2), nodes: &arena, vind: &vind, root_bbox: &bbox };
 
         let bounds = vec![Interval { low: -1.0, high: 1.0 }; 2];
         let mut out = vec![42u32, 43, 44];
