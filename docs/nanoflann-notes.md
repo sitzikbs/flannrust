@@ -158,6 +158,96 @@ for M2+ planning; the repo root `README.md` has the full user-facing story.
 - **Speed:** all four perf gates pass with wide margin; build reached
   parity (ratio 1.018) and `knn_fixed3` closed to a ~4% asm-analyzed residual
   gap (recursive `search_level`/`searchLevel` call overhead, present on both
-  sides — see `docs/benchmarks-m1.md`). A pre-existing dim-32 knn gap
+  sides — see `docs/benchmarks.md`). A pre-existing dim-32 knn gap
   (~1.3-1.45x) was found and is out of M1's scope (dim-3/dim-8 only);
   flagged for M2.
+
+## M2 outcome (2026-08-23)
+
+M2 (the dynamic Bentley–Saxe forest, `KDTreeSingleIndexDynamicAdaptor` +
+its internal sub-tree class `KDTreeSingleIndexDynamicAdaptor_`) is
+complete. Summary for M3+ planning; the repo root `README.md` has the full
+user-facing story (see its "Dynamic adaptor (M2)" section), and
+`docs/benchmarks.md`'s "M2 — dynamic forest" section has the numbers.
+
+- **What was ported**: the forest bookkeeping (`add_points`/`remove_point`,
+  the `first0bit` binary-counter slot-selection rule, the merge-and-rebuild
+  schedule that rebuilds every slot up to the highest one touched — even a
+  no-op call's slot 0 — every single call) plus the forest's own
+  `findNeighbors` (every slot's full sub-tree search against one shared
+  result set, tombstone-filtered). Each slot reuses M1's `SubtreeBuilder`
+  (`base = 0`) and M1's `search::find_neighbors` verbatim — no
+  parallel-search or parallel-build path for the forest exists on either
+  side, so this crate's forest never spawns rayon workers regardless of
+  the `parallel` feature.
+- **The contiguity-contract discovery (a real C++ UB finding, not just a
+  style note)**: nanoflann's `addPoints` indexes its `treeIndex_` array by
+  the running `pointCount_` counter, not by the point index actually being
+  processed — so a genuinely-new point's index MUST equal `pointCount_` at
+  the moment it's added, or `treeIndex_` gets silently corrupted (a wrong
+  slot recorded for a real index, with no error, no crash, just wrong
+  bookkeeping that then propagates into every future merge). Confirmed
+  empirically, not just read off the source: `nanoflann-ref`'s
+  `add_points_misaligned_start_documents_silent_corruption_f32` regression
+  test feeds the C++ oracle a genuinely-new index that doesn't line up with
+  `pointCount_` and observes the corrupted bookkeeping directly. This
+  port's `add_points` instead asserts the alignment per-index (only against
+  genuinely-new indices — reactivations are exempt, since C++'s
+  reactivation branch never touches `pointCount_` either) and panics loudly
+  the instant it would occur — a documented, strictly-safer deviation:
+  identical behavior to C++ on every legal call sequence, a loud panic
+  instead of silent corruption on an illegal one. Full contract, including
+  the exact reactivation exemption and its own oracle-verified regression
+  test (`readd_point_1_reactivates_it_f32`), is in
+  `crates/nanoflann-rs/src/dynamic.rs`'s `add_points` doc comment.
+- **The per-call maxIndex/slot-0-retouch quirk**: nanoflann's rebuild pass
+  after the per-point loop always runs `for (int i = 0; i <= maxIndex; ++i)`
+  where `maxIndex` starts at `0` regardless of what happened in the loop —
+  so slot 0 is unconditionally freed-and-maybe-rebuilt on EVERY
+  `add_points` call, even a fully no-op one (an empty range, or a call that
+  only reactivated already-tombstoned points and touched no slot at all).
+  This port mirrors that exact rebuild schedule (not just final slot
+  membership) — verified structurally correct because the M2 cross-
+  validation suite checks per-slot `vind` order after every op, which would
+  catch a schedule divergence even when final membership happened to agree.
+- **Protected-member access**: like M1's static adaptor, the C++ sub-tree
+  class's fields the port needs (`vAcc_`, node pool, bounding box) are
+  `protected` in the vendored header, reached via the same pure
+  using-subclass pattern the T1 oracle wrapper already used for the static
+  adaptor in M1 — no new access-pattern discovery needed here, M1's
+  approach generalized cleanly.
+- **No `radiusSearch`/`knnSearch` on the forest**: confirmed empirically
+  (not just by reading the header) that the vendored C++ forest class
+  exposes only `findNeighbors`/`addPoints`/`removePoint`/`getAllIndices` —
+  no richer search methods, and no box search at all (only the internal
+  per-slot sub-tree class has those, and they're never called through the
+  forest in any observed C++ call site or example). This port's additive
+  `knn_search`/`rknn_search`/`radius_search` wrappers are composed the same
+  way M1's `KdTree` composes its own convenience wrappers over
+  `find_neighbors` — genuinely additive ergonomics, not upstream parity —
+  and no `box_search` was added, matching the upstream gap exactly rather
+  than inventing API surface nanoflann itself never shipped.
+- **Empty-forest quirk, re-confirmed for the forest** (M1 Corrections #4's
+  same finding, now re-verified at the forest level): a forest with zero
+  occupied slots hits every slot's size-0 early return without ever
+  touching the result set, so `find_neighbors`'s final `.full()` reflects
+  an untouched result set — `false` for knn/rknn, but hardwired `true` for
+  a fresh `RadiusResultSet` regardless of whether anything was ever added.
+  Only observable through the generic `find_neighbors` escape hatch; the
+  additive wrappers return the found count (`0`), where the quirk is
+  invisible.
+- **Parity:** the dynamic op-sequence cross-validation suite
+  (`crates/xval/tests/xval_dynamic.rs`) passes bit-exact across its matrix
+  (dims {2,3,8} × datasets {uniform, 30% duplicates} × leaf {1,10} × 3
+  seeds, 120 generated ops/sequence) — per-op structure equality (every
+  slot's point list, `tree_index`, `removed_len`) plus periodic knn/radius
+  query parity, four scripted scenarios, and mutation canaries that pin the
+  specific field/slot a deliberately-introduced divergence surfaces in. No
+  genuine Rust-vs-C++ divergence was ever found.
+- **Speed:** both new dynamic perf gates pass with wide margin
+  (`dyn_add_20k_dim3_f32` 1.113, `dyn_knn_after_churn_dim3_f32` 0.964); the
+  churned-forest accuracy row is bit-exact (`1.0`/`1.0` at `eps=0`). The
+  pre-existing dim-3 knn residual and dim-32 knn gap flagged at the end of
+  M1 remain open — M2 was scoped to the dynamic adaptor itself, not to
+  closing those; both, plus parallel slot rebuilds for the dynamic
+  adaptor, move to the M2.5 backlog (see `docs/ROADMAP.md`).

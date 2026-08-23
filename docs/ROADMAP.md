@@ -8,11 +8,11 @@ Tracked milestones and standing requirements. Each milestone runs the same pipel
 - The experimental setup must be **fully documented and reproducible**: `docs/EXPERIMENTS.md` records hardware (CPU model, core/thread count, memory), OS/kernel (incl. the WSL2 caveat), toolchain versions (rustc, C++ compiler), all flags on both sides, seeds, run counts, and the exact commands. `report_data` meta must capture CPU model, kernel, compiler versions, and git SHA automatically.
 - Every number that could appear in an announcement traces to a committed artifact (JSON + generator + doc), never to a chat log.
 
-## M2 — Dynamic adaptor (in progress)
+## M2 — Dynamic adaptor (complete)
 
-Plan: `docs/superpowers/plans/2026-08-22-nanoflann-rs-m2-dynamic.md`. Bentley–Saxe forest (`add_points`/`remove_point`) with bit-exact op-sequence cross-validation, dynamic perf gates, report/EXPERIMENTS integration (T5b/T7 in the plan).
+Plan: `docs/superpowers/plans/2026-08-22-nanoflann-rs-m2-dynamic.md`. Bentley–Saxe forest (`add_points`/`remove_point`) with bit-exact op-sequence cross-validation, dynamic perf gates, report/EXPERIMENTS integration (T5b/T7 in the plan) — all landed. Both dynamic perf gates pass (`dyn_add_20k_dim3_f32` 1.113, `dyn_knn_after_churn_dim3_f32` 0.964); the dynamic op-sequence cross-validation suite is bit-exact with no divergence ever found; the suite-generated HTML scorecard (`report_data` → `render_report`) covers both M1 and M2. Full per-task review trail: `.superpowers/sdd/2026-08-22-nanoflann-rs-m2-dynamic/progress.md`. User-facing summary: README's "Dynamic adaptor (M2)" section; source-fact summary: `docs/nanoflann-notes.md`'s "M2 outcome" section.
 
-## M2.5 — Performance deep-dive
+## M2.5 — Performance deep-dive (up next)
 
 - Fixed-dim-3 kNN residual (~4–6%, asm-attributed to recursive call overhead) — candidate: iterative or flattened search descent.
 - Dim-32 kNN gap (~1.3–1.45×, root cause not isolated) — profile first; candidates: explicit SIMD distance kernels, prefetching, batch query API. Anything that changes arithmetic order goes behind a feature flag with parity tests for the default path.

@@ -27,9 +27,9 @@
 //!   eps in {0.0, 0.1, 1.0}. `exact_tie_aware_vs_bruteforce` (per impl) uses
 //!   `xval::score_exact_tie_aware_f32` -- see that function's doc comment,
 //!   and the `"scoring"` line in this file's emitted `meta` object, for the
-//!   exact definition (controller ruling: the plain order-independent
-//!   index-SET match is too strict on duplicate-heavy datasets, where
-//!   multiple points can be genuinely tied at the k-th distance boundary).
+//!   exact definition (the plain order-independent index-SET match is too
+//!   strict on duplicate-heavy datasets, where multiple points can be
+//!   genuinely tied at the k-th distance boundary).
 //!   `mean_dist_rel_error_*`/`max_dist_rel_error_*` are unaffected -- still
 //!   from `xval::score_query_f32`'s `rel_dist_errors`.
 
@@ -56,8 +56,8 @@ const GT_METHODOLOGY_NOTE: &str = "ground-truth distances computed via the libra
 
 /// One-line description of the speed-timing allocation methodology,
 /// embedded verbatim in the emitted JSON's `meta.speed_methodology` field
-/// (controller ruling: state this as the METHODOLOGY, not a caveat -- both
-/// sides are allocation-symmetric, not just Rust).
+/// (stated as the METHODOLOGY, not a caveat -- both sides are
+/// allocation-symmetric, not just Rust).
 const SPEED_METHODOLOGY_NOTE: &str = "both sides zero-allocation per query: out-buffers (Vec<u32>/Vec<T>) are allocated once per timed workload and reused across every query, via knn_search/radius_search (rust) and knn_into/radius_into (nanoflann_ref's caller-buffer methods, backed directly by the raw FFI's out-pointer writes) -- not the allocating knn()/radius() convenience wrappers on either side.";
 
 const RUNS: usize = 7;
@@ -709,8 +709,8 @@ fn dynamic_accuracy_rows() -> Vec<AccuracyRow> {
 // ============================================================================
 // JSON emission -- hand-written, no serde (the RENDERING side,
 // `xval::report::render`, parses this JSON via serde_json -- see that
-// module's doc for the controller ruling on why parsing gets the real
-// dependency and emission doesn't). Every value emitted directly by this
+// module's doc for why parsing gets the real dependency and emission
+// doesn't). Every value emitted directly by this
 // crate's own data (workload names, etc.) is a plain identifier; nothing
 // here ever puts a `"`/`\`/control character into one, so those still
 // need no escaping. Task 5b's new meta fields (`cpu_model`/`kernel`/

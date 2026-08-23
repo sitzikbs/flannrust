@@ -91,13 +91,10 @@ pub(crate) fn first0bit(n: usize) -> usize {
 struct Slot<T: Scalar, D: Dim, Idx: IndexType> {
     vind: Vec<Idx>,
     // NOTE: `nodes`/`root_bbox` don't need `#[allow(dead_code)]` even though
-    // no query method reads them yet (Task 3) -- `add_points`'s rebuild pass
+    // no query method read them before Task 3 -- `add_points`'s rebuild pass
     // already writes AND clears them (`.clear()`, struct-literal init,
     // `slot.root_bbox = bbox`), which is enough for rustc's dead_code
-    // analysis to consider them used. Confirmed by temporarily stripping
-    // `#[allow(dead_code)]` here during self-review: no warning fired for
-    // either field, only for `DynamicKdTree::metric` below (which nothing
-    // in this task reads OR writes after construction).
+    // analysis to consider them used.
     nodes: Vec<Node<T>>,
     root_bbox: D::Array<Interval<T>>,
 }
@@ -400,7 +397,7 @@ where
     /// as C++, where the `for` loop simply never executes) — but see below,
     /// the trailing rebuild pass still always touches slot 0.
     ///
-    /// # Contiguous-append contract (controller ruling, DEVIATION from C++)
+    /// # Contiguous-append contract (DEVIATION from C++)
     ///
     /// nanoflann's `addPoints` writes `treeIndex_[pointCount_] = pos` —
     /// indexed by the running `pointCount_` COUNTER, not by the real point
