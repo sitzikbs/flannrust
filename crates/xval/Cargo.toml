@@ -1,6 +1,7 @@
 [package]
 name = "xval"
 edition = "2021"
+license = "BSD-2-Clause"
 publish = false
 
 [dependencies]

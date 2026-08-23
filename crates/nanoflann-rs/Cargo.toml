@@ -2,6 +2,13 @@
 name = "nanoflann-rs"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.98.0"
+license = "BSD-2-Clause"
+description = "Bit-exact Rust port of nanoflann's static kd-tree (KDTreeSingleIndexAdaptor)"
+# repository = ""  # TODO: fill in once this crate has a public home
+# Not yet published to crates.io -- the crates.io distribution story
+# (versioning, publishing cadence) hasn't been decided yet.
+publish = false
 
 [features]
 default = ["parallel"]
