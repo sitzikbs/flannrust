@@ -9,6 +9,13 @@ nanoflann-rs = { path = "../nanoflann-rs" }
 nanoflann-ref = { path = "../nanoflann-ref" }
 rand = "0.8"
 rand_chacha = "0.3"
+# xval is publish=false test infra (not the library crate); hand-rolled
+# JSON PARSING for `report.rs` (rendering `report_data.rs`'s emitted JSON)
+# is not an acceptable risk, unlike the hand-rolled JSON *emission* in
+# `examples/report_data.rs`, which stays as-is -- controller-approved,
+# see the M2 progress ledger's pre-T5b ruling.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [dev-dependencies]
 criterion = "0.5"
@@ -23,4 +30,8 @@ harness = false
 
 [[bench]]
 name = "bench_radius"
+harness = false
+
+[[bench]]
+name = "bench_dynamic"
 harness = false

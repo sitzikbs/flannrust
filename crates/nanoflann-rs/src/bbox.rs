@@ -2,8 +2,8 @@
 //! dataset-bounding-box scan (`compute_bounding_box`) used to seed the
 //! tree builder's root box.
 
-use crate::scalar::Scalar;
 use crate::data_source::DataSource;
+use crate::scalar::{IndexType, Scalar};
 
 /// One per-dimension `[low, high]` interval (nanoflann's `KDTreeBaseClass::Interval`).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -49,6 +49,56 @@ pub(crate) fn compute_bounding_box<T: Scalar, DS: DataSource<T> + ?Sized>(
     for k in 1..n {
         for i in 0..dim {
             let v = ds.point_component(k, i);
+            if v < bbox[i].low {
+                bbox[i].low = v;
+            }
+            if v > bbox[i].high {
+                bbox[i].high = v;
+            }
+        }
+    }
+}
+
+/// Same scan as [`compute_bounding_box`], but restricted to an explicit
+/// index subset `ind` (dataset indices, not `0..n`) instead of the whole
+/// dataset. Used by the dynamic forest's (`dynamic.rs`) per-slot rebuild,
+/// which mirrors the C++ `KDTreeBaseClass::computeBoundingBox`
+/// (nanoflann.hpp:1215-1233) — the SAME function the static build uses,
+/// but there it scans `vAcc_[0..size_]`, not `0..point_count()` directly;
+/// the two coincide for the static tree only because its `vAcc_` is always
+/// the identity permutation at build time. A dynamic forest slot's `vind`
+/// (= that slot's `vAcc_`) is an arbitrary permuted SUBSET of dataset
+/// indices after a merge, so this restricted scan is required for a
+/// bit-exact port: `ds.fill_bbox` is still tried first (same "quirk" as the
+/// static path — if a `DataSource` overrides it, the DATASET-WIDE bbox it
+/// returns is used verbatim for the slot too, exactly like the C++, even
+/// though it may be far looser than the slot's own points; this only
+/// affects candidate-dimension selection in `middle_split`, never
+/// correctness, since leaf bboxes are always tightened from real
+/// coordinates).
+#[allow(clippy::needless_range_loop)]
+pub(crate) fn compute_bounding_box_over_indices<T, DS, Idx>(
+    ds: &DS,
+    dim: usize,
+    ind: &[Idx],
+    bbox: &mut [Interval<T>],
+) where
+    T: Scalar,
+    DS: DataSource<T> + ?Sized,
+    Idx: IndexType,
+{
+    debug_assert_eq!(bbox.len(), dim);
+    if ds.fill_bbox(bbox) {
+        return;
+    }
+    debug_assert!(!ind.is_empty(), "compute_bounding_box_over_indices on empty ind");
+    for i in 0..dim {
+        let v = ds.point_component(ind[0].to_usize(), i);
+        bbox[i] = Interval { low: v, high: v };
+    }
+    for k in 1..ind.len() {
+        for i in 0..dim {
+            let v = ds.point_component(ind[k].to_usize(), i);
             if v < bbox[i].low {
                 bbox[i].low = v;
             }
@@ -152,5 +202,18 @@ mod tests {
         // Should use fill_bbox result, not scan
         assert_eq!(bbox[0].low, 0.0);
         assert_eq!(bbox[0].high, 100.0);
+    }
+
+    #[test]
+    fn test_compute_bounding_box_over_indices_restricted_subset() {
+        // Full dataset spans much wider than the {1, 3} subset used below —
+        // proves the scan is restricted to `ind`, not the whole dataset
+        // (unlike `compute_bounding_box`, which always scans everything).
+        let points: &[[f64; 2]] = &[[100.0, 100.0], [1.0, 5.0], [-100.0, -100.0], [3.0, 1.0]];
+        let ind: Vec<u32> = vec![1, 3];
+        let mut bbox = [Interval { low: 0.0, high: 0.0 }; 2];
+        compute_bounding_box_over_indices(&points, 2, &ind, &mut bbox);
+        assert_eq!(bbox[0], Interval { low: 1.0, high: 3.0 });
+        assert_eq!(bbox[1], Interval { low: 1.0, high: 5.0 });
     }
 }

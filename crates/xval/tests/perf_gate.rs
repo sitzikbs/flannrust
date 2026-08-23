@@ -24,9 +24,12 @@
 //! `--test-threads=1` (gate timings must not share the machine with a
 //! sibling test's CPU load).
 
-use nanoflann_rs::{ConstDim, KdTreeBuilder, ResultItem, L2};
-use nanoflann_ref::{Metric, RefIndex3F32, RefIndexF32, RefIndexF64};
-use xval::{build_rust_f32, build_rust_f64, cfg_seed, queries, timed_median_ms, to_array3, to_f32, uniform, BuildThreads, RoundRobin, XMetric};
+use nanoflann_rs::{ConstDim, DynDim, DynamicKdTreeBuilder, KdTreeBuilder, ResultItem, L2};
+use nanoflann_ref::{Metric, RefDynIndexF32, RefIndex3F32, RefIndexF32, RefIndexF64};
+use xval::{
+    build_rust_f32, build_rust_f64, cfg_seed, queries, sample_distinct_indices, timed_median_ms, to_array3, to_f32,
+    uniform, BuildThreads, GrowableFlat, RoundRobin, XMetric,
+};
 
 const RUNS: usize = 7;
 const MARGIN: f64 = 1.25;
@@ -263,4 +266,165 @@ fn perf_gate_radius_dim3_f32() {
     });
 
     assert_gate!("perf_gate_radius_dim3_f32", rust_ms, cpp_ms);
+}
+
+// ============================================================================
+// M2 Task 5 -- dynamic (add/remove) gates. Same guard/methodology as the
+// static gates above; workloads mirror `benches/bench_dynamic.rs`'s `dyn_add`
+// and `dyn_knn_after_churn` groups exactly, at gate-friendly sizes (20k
+// instead of 100k for the add gate, so a `PERF_GATE=1` run stays fast) --
+// see `bench_dynamic.rs`'s module doc for why nanoflann's dynamic
+// `addPoints` is inherently O(heavy) per point and why that makes this a
+// same-algorithm, not same-design, comparison.
+// ============================================================================
+
+#[test]
+#[ignore]
+fn perf_gate_dyn_add_20k_dim3_f32() {
+    if should_skip_perf_gate(std::env::var("PERF_GATE")) {
+        println!("PERF_GATE skipped: set PERF_GATE=1");
+        return;
+    }
+    const CAP: usize = 20_000;
+    const DIM: usize = 3;
+    const LEAF: usize = 10;
+    const BATCH: usize = 1000;
+    const BATCHES: usize = 20; // 20 * 1000 = 20k total
+
+    let data = to_f32(&uniform(cfg_seed("perf_gate_dyn_add", &[CAP, DIM]), CAP, DIM));
+
+    let rust_ms = timed_median_ms(RUNS, || {
+        let growable = GrowableFlat::new(&data, DIM);
+        let mut tree = DynamicKdTreeBuilder::new(DynDim(DIM), &growable)
+            .leaf_max_size(LEAF)
+            .maximum_point_count(CAP)
+            .build();
+        let mut start = 0usize;
+        for _ in 0..BATCHES {
+            let end = start + BATCH;
+            growable.set_current_n(end);
+            tree.add_points(start, end - 1);
+            start = end;
+        }
+        std::hint::black_box(tree.tree_count());
+    });
+    let cpp_ms = timed_median_ms(RUNS, || {
+        let mut oracle = RefDynIndexF32::build(&data, DIM, LEAF, CAP);
+        let mut start = 0u32;
+        for _ in 0..BATCHES {
+            let end = start + BATCH as u32;
+            oracle.set_current_n(end as usize);
+            oracle.add_points(start, end - 1);
+            start = end;
+        }
+        std::hint::black_box(oracle.tree_count());
+    });
+
+    assert_gate!("perf_gate_dyn_add_20k_dim3_f32", rust_ms, cpp_ms);
+}
+
+#[test]
+#[ignore]
+fn perf_gate_dyn_knn_after_churn_dim3_f32() {
+    if should_skip_perf_gate(std::env::var("PERF_GATE")) {
+        println!("PERF_GATE skipped: set PERF_GATE=1");
+        return;
+    }
+    // Workload: build BASE points, remove REMOVE of them, re-add only HALF
+    // of those (READD) -- leaving READD-worth of LIVE TOMBSTONES in place
+    // -- then add a fresh CONTIGUOUS growth batch of GROWTH points starting
+    // exactly at BASE (point_count at that moment). A window of GROWTH=5000
+    // consecutive `add_points` increments is larger than 4096 = 2^12, so it
+    // is GUARANTEED (pigeonhole: any 4096 consecutive integers contain
+    // exactly one value congruent to 4095 mod 4096) to pass through a
+    // point_count whose binary representation ends in >= 12 one-bits --
+    // i.e. `first0bit` returns >= 12 for at least one point in the batch,
+    // forcing a REAL cascading merge across slots 0..=11+ (see
+    // `nanoflann_rs::dynamic::DynamicKdTree::add_points`'s doc comment for
+    // the merge/rebuild schedule), which also MIGRATES the still-removed
+    // tombstones' recorded slot. An earlier version of this workload
+    // removed 5k and reactivated all 5k, leaving ZERO tombstones and ZERO
+    // merges at query time -- a provable no-op churn that never exercised
+    // tombstone-filtered search at all. This corrected workload provably
+    // does not have that problem (see the `removed_len() > 0` assert
+    // below, and `docs/EXPERIMENTS.md`'s reproduction section for a RED
+    // capture proving the assert actually fires when the workload
+    // regresses to the old no-op shape).
+    const N: usize = 100_000; // total points after the growth batch
+    const DIM: usize = 3;
+    const LEAF: usize = 10;
+    const BASE: usize = 95_000; // initial contiguous build size
+    const REMOVE: usize = 5_000; // removed from the BASE range
+    const READD: usize = 2_500; // reactivated -- half of REMOVE
+    const GROWTH: usize = N - BASE; // fresh contiguous growth batch (5_000)
+    const K: usize = 10;
+    const N_QUERIES: usize = 10_000;
+    const POOL: usize = 1000;
+
+    let data64 = uniform(cfg_seed("perf_gate_dyn_churn", &[N]), N, DIM);
+    let data = to_f32(&data64);
+    let q64 = queries(cfg_seed("perf_gate_dyn_churn_q", &[N]), &data64, DIM, POOL);
+    let q = to_f32(&q64);
+    let remove_idx = sample_distinct_indices(cfg_seed("perf_gate_dyn_churn_idx", &[BASE, REMOVE]), BASE, REMOVE);
+    let readd_idx = &remove_idx[..READD];
+
+    // Build ONCE, outside timing; churn (REMOVE removes + READD re-adds,
+    // leaving REMOVE-READD live tombstones) then a fresh GROWTH-sized
+    // contiguous growth batch (triggering real merges + tombstone
+    // migrations) ONCE, outside timing -- only the knn query loop below is
+    // timed.
+    let growable = GrowableFlat::new(&data, DIM);
+    let mut rust_tree =
+        DynamicKdTreeBuilder::new(DynDim(DIM), &growable).leaf_max_size(LEAF).maximum_point_count(N).build();
+    growable.set_current_n(BASE);
+    rust_tree.add_points(0, BASE - 1);
+    for &idx in &remove_idx {
+        rust_tree.remove_point(idx);
+    }
+    for &idx in readd_idx {
+        rust_tree.add_points(idx, idx);
+    }
+    growable.set_current_n(N);
+    rust_tree.add_points(BASE, BASE + GROWTH - 1);
+    assert!(
+        rust_tree.removed_len() > 0,
+        "perf_gate_dyn_knn_after_churn_dim3_f32 setup: removed_len() must be > 0 at query \
+         time (workload must leave live tombstones) -- got 0, which means this workload \
+         regressed back to the provable-no-op churn shape this gate was fixed to avoid"
+    );
+
+    let mut cpp_tree = RefDynIndexF32::build(&data, DIM, LEAF, N);
+    cpp_tree.set_current_n(BASE);
+    cpp_tree.add_points(0, (BASE - 1) as u32);
+    for &idx in &remove_idx {
+        cpp_tree.remove_point(idx);
+    }
+    for &idx in readd_idx {
+        cpp_tree.add_points(idx as u32, idx as u32);
+    }
+    cpp_tree.set_current_n(N);
+    cpp_tree.add_points(BASE as u32, (N - 1) as u32);
+
+    let rust_ms = timed_median_ms(RUNS, || {
+        let mut rr = RoundRobin::new(&q, DIM);
+        let mut out_idx = vec![0u32; K];
+        let mut out_dist = vec![0.0f32; K];
+        for _ in 0..N_QUERIES {
+            let query = std::hint::black_box(rr.next());
+            let found = rust_tree.knn_search(query, &mut out_idx, &mut out_dist);
+            std::hint::black_box(found);
+        }
+    });
+    let cpp_ms = timed_median_ms(RUNS, || {
+        let mut rr = RoundRobin::new(&q, DIM);
+        let mut out_idx = vec![0u32; K];
+        let mut out_dist = vec![0.0f32; K];
+        for _ in 0..N_QUERIES {
+            let query = std::hint::black_box(rr.next());
+            let found = cpp_tree.knn_into(query, K, 0.0, &mut out_idx, &mut out_dist);
+            std::hint::black_box(found);
+        }
+    });
+
+    assert_gate!("perf_gate_dyn_knn_after_churn_dim3_f32", rust_ms, cpp_ms);
 }

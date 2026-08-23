@@ -1,4 +1,15 @@
-# M1 benchmark results (Task 14 — performance pass)
+# nanoflann-rs benchmarks
+
+Combined benchmark record for the crate: M1's static kd-tree pass and M2's
+dynamic (Bentley–Saxe forest) pass. This is a straight relocation of M1's
+original `docs/benchmarks-m1.md` (renamed here) plus M2's new dynamic
+numbers underneath — the M1 section's text is unchanged content, only its
+heading levels were demoted so it nests under this file's own title. See
+[`docs/EXPERIMENTS.md`](EXPERIMENTS.md) for the full reproducible
+experimental setup (exact commands, environment, methodology,
+number-provenance table) backing every figure in both sections below.
+
+## M1 — static kd-tree (Task 14 — performance pass)
 
 Machine: WSL2 (Linux 6.6.87.2-microsoft-standard-WSL2), AMD Ryzen 7 9800X3D,
 8 threads visible, `rustc 1.98.0`. All numbers `RUSTFLAGS="-C
@@ -20,7 +31,7 @@ Ratio = rust_ms / cpp_ms; lower is better for Rust; **the milestone success
 criterion (dim-3 knn/build) is ratio ≤ 1.0 (Rust ≥ C++), perf-gate pass is
 ratio ≤ 1.25.**
 
-## Perf gate (four gated workloads)
+### Perf gate (four gated workloads)
 
 | Workload | Before Task 14 (median×3, Step 0 baseline) | After Task 14 (median×7) | Final single run |
 |---|---|---|---|
@@ -35,7 +46,7 @@ milestone's stricter bar — dim-3 f32 knn and build ratios ≤ 1.0 — is now
 knn_fixed3** (1.04-1.05, down from 1.05, a real but partial close — see
 "Remaining gap analysis" below).
 
-### Radius marshalling asymmetry (read `radius_dim3_f32`'s < 1.0 ratio with this in mind)
+#### Radius marshalling asymmetry (read `radius_dim3_f32`'s < 1.0 ratio with this in mind)
 
 `radius_dim3_f32`'s ratio (0.767-0.774, Rust *faster* than C++) is genuine,
 but the two sides pay a different amount of FFI-wrapper bookkeeping inside
@@ -68,9 +79,9 @@ entirely to algorithmic difference — some of it is this crate's own FFI
 wrapper design choice on the C++ side of the harness, not native C++
 nanoflann's actual cost.
 
-## Headline table (criterion, spot-check methodology, `--quick`)
+### Headline table (criterion, spot-check methodology, `--quick`)
 
-### `knn_fixed3` — `ConstDim<3>` + `&[[T;3]]` (rust) vs `RefIndex3F32`/`RefIndex3F64` (cpp)
+#### `knn_fixed3` — `ConstDim<3>` + `&[[T;3]]` (rust) vs `RefIndex3F32`/`RefIndex3F64` (cpp)
 
 | k | scalar | rust | cpp | ratio |
 |---|---|---|---|---|
@@ -90,7 +101,7 @@ methodology (10,000 queries accumulated per timed sample, not one
 sensitivity, which is why it reports ~1.04-1.05 instead. k=10/100 (larger,
 more representative workloads) sit at 0.99-1.07 — close to parity.
 
-### `build_fixed3` — `ConstDim<3>` + `&[[f32;3]]` (rust) vs `RefIndex3F32::build` (cpp)
+#### `build_fixed3` — `ConstDim<3>` + `&[[f32;3]]` (rust) vs `RefIndex3F32::build` (cpp)
 
 | n | rust | cpp | ratio |
 |---|---|---|---|
@@ -99,7 +110,7 @@ more representative workloads) sit at 0.99-1.07 — close to parity.
 
 Both essentially at parity, consistent with the perf-gate's build ratio.
 
-### `knn` — runtime `DynDim` + `FlatSlice` (rust) vs `DIM=-1` (cpp), dim 8 and dim 32
+#### `knn` — runtime `DynDim` + `FlatSlice` (rust) vs `DIM=-1` (cpp), dim 8 and dim 32
 
 | dim | k | scalar | rust | cpp | ratio |
 |---|---|---|---|---|---|
@@ -129,7 +140,7 @@ gap for a future task, not fixed in M1 per this task's explicit scope
 (closing it plausibly needs SIMD/batching to amortize the per-axis L2 kernel
 over a wider dimension — out of scope, see brief).
 
-## Remaining gap analysis: knn_fixed3 (~1.04-1.05x)
+### Remaining gap analysis: knn_fixed3 (~1.04-1.05x)
 
 Asm inspection (`cargo rustc -p xval --release --example report_data --
 --emit asm`, `RUSTFLAGS="-C target-cpu=native"`) of the monomorphized
@@ -213,7 +224,7 @@ with comfortable margin (1.047 ≤ 1.25) and build is now at parity; this is
 recorded as the task's honest final state per the brief's "rigorous
 documented analysis" allowance.
 
-## `leaf_max_size` sweep
+### `leaf_max_size` sweep
 
 Measured via `RUSTFLAGS="-C target-cpu=native" cargo bench -p xval --bench
 bench_build -- leaf_sweep --sample-size 10 --measurement-time 2
@@ -252,7 +263,7 @@ default, and this crate's) remains a good, defensible choice: it sits inside
 the near-parity knn band this sweep identifies, and there is no value in
 this sweep that clearly dominates it on both axes at once.
 
-## Parallel build
+### Parallel build
 
 Measured via `xval::timed_median_ms` (the same median-of-7,
 one-untimed-warmup methodology `tests/perf_gate.rs` and
@@ -282,11 +293,152 @@ table) — this measurement is consistent with that documented difference in
 scheduling strategy translating into a real wall-clock win here, not just a
 "produces the same tree" equivalence.
 
-## Test status
+### Test status (at M1 completion — superseded)
 
-`cargo test --workspace --all-features`: 0 failed (269 passed, 8 ignored)
-after every landed change. `cargo test --workspace --all-features --release
--- --ignored` (heavy 1M-point stress builds/queries + canary mutation
-tests): 0 failed, including the two deepest degenerate-tree constructions
+`cargo test --workspace --all-features` reported 269 passed / 0 failed / 8
+ignored at the point M1 was declared done. This count is specific to the
+M1-only workspace and is **stale now that M2 added a second crate's worth of
+tests** — see the file-level "Test status" section below for the current,
+combined M1+M2 total. The M1-era heavy-suite result it stood alongside
+still holds unchanged: `cargo test --workspace --all-features --release --
+--ignored` (heavy 1M-point stress builds/queries + canary mutation tests)
+was 0 failed, including the two deepest degenerate-tree constructions
 (`heavy_exponential_build_1m` depth ~2115, `heavy_exponential_build_1m_dim8`
-depth ~16794) built with the new bbox scratch pool (Candidate 3).
+depth ~16794) built with the bbox scratch pool (Candidate 3).
+
+## M2 — dynamic forest (Bentley–Saxe `DynamicKdTree`)
+
+Same machine, same methodology as the M1 section above (WSL2, AMD Ryzen 7
+9800X3D, `rustc 1.98.0`, `RUSTFLAGS="-C target-cpu=native"`, release profile
+`codegen-units = 1`/`lto = "thin"`, C++ oracle `-O3 -march=native
+-ffp-contract=off`) — the dynamic forest reuses the exact same perf-gate/
+report-data machinery (`xval::timed_median_ms`, median-of-7, one untimed
+warmup) as the four M1 gates, just against two new workloads. Full command
+lines and environment/toolchain provenance: `docs/EXPERIMENTS.md`.
+
+### Perf gate (two new gated workloads, same 1.25 margin as M1's four)
+
+`dyn_knn_after_churn_dim3_f32`'s workload was corrected during the M2
+final-review fix wave (branch `m2-dynamic`, commit range starting after
+`5f671a0`): the original workload removed 5k points and re-added ALL 5k
+before querying, which is a provable no-op — every tombstone gets
+reactivated and `removed_len() == 0` at query time, so the timed knn loop
+never actually exercised tombstone-filtered search against a forest with
+live tombstones, and no merge triggered by the churn itself was ever timed.
+The corrected workload removes 5k, re-adds only half (2.5k, leaving 2.5k
+LIVE tombstones), then adds a fresh contiguous growth batch of 5k more
+points — large enough (> 4096 = 2^12) to GUARANTEE at least one real
+cascading merge across 12+ slots (pigeonhole: any 4096 consecutive
+`point_count` values contain one ending in 12 one-bits). A plain `assert!
+(removed_len() > 0)` in the setup, on both the Rust and C++ sides' shared
+op sequence, proves the corrected workload actually leaves live tombstones
+at query time; inverting it (reactivating all 5k again) reproduces the RED
+failure this fix was written against — see `docs/EXPERIMENTS.md`'s
+reproduction section for the captured panic. The old (no-op) figure is
+kept below as historical, not comparable to the new one (different
+workload, not a regression):
+
+| Workload | Ratio (recorded at commit `5f671a0`, pre-fix-wave, historical no-op churn) | Ratio (post-fix, corrected live-tombstone workload) |
+|---|---|---|
+| `dyn_add_20k_dim3_f32` (20 batches × 1000 contiguous adds, from empty; workload unchanged by this fix) | 1.113 | 1.106–1.237 (range, see below) |
+| `dyn_knn_after_churn_dim3_f32` (95k built, 5k removed / 2.5k re-added leaving live tombstones, then a 5k fresh growth batch triggering real merges, then 10,000 k=10 knn queries) | 0.964 (old, no-op-churn workload — not comparable) | 0.971–0.976 |
+
+Both pass the 1.25 gate threshold, but the margin is real, not
+"comfortable" — `dyn_add`'s high end (1.237) is only 1.0% below the
+threshold. Re-run four times during this fix wave — twice via the full
+six-gate invocation (`PERF_GATE=1 RUSTFLAGS="-C target-cpu=native" cargo
+test -p xval --release --test perf_gate -- --ignored perf_gate
+--test-threads=1 --nocapture`) and twice via the dynamic-only filter (same
+command with `--ignored perf_gate_dyn`), `crates/xval/tests/perf_gate.rs`;
+full pasted output of all four runs is in `docs/EXPERIMENTS.md`'s
+reproduction-commands section, not repeated here — `dyn_add_20k_dim3_f32`
+ranged **1.106–1.237** (combining this fix wave's four fresh runs with the
+four runs recorded in an earlier documentation round; `dyn_add`'s workload
+itself is unchanged by this fix wave, so both sets of runs measure the
+same thing) and `dyn_knn_after_churn_dim3_f32` (the corrected workload)
+ranged **0.971–0.976** across this fix wave's four fresh runs. Every
+individual run still passes the 1.25 margin, but `dyn_add`'s high end is a
+real, larger-than-typical single-run swing worth knowing about — see
+`docs/EXPERIMENTS.md`'s WSL2 caveat. Not a regression: no code affecting
+`dyn_add`'s workload changed during this fix wave.
+
+`dyn_add`'s ratio (~1.1-1.2×, Rust slightly slower) and
+`dyn_knn_after_churn`'s ratio (~0.97×, Rust slightly faster) both compare
+the SAME algorithm implemented twice, not two different designs:
+nanoflann's dynamic `addPoints` is inherently O(heavy) per point (a
+merge-and-rebuild loop cascading through every slot up to the highest one
+touched, not an amortized-O(1) insert — see `crates/nanoflann-rs/src/dynamic.rs`'s
+`add_points` doc comment for the exact schedule), and this port matches
+that schedule exactly (same `first0bit` slot selection, same "rebuild every
+slot up to the highest touched, even a no-op call's slot 0" quirk) — so any
+speed difference here reflects implementation quality, not an algorithmic
+gap. See `crates/xval/benches/bench_dynamic.rs`'s module doc for the same
+point made at length, plus its criterion-only third benchmark group,
+`dyn_churn` (self-restoring remove-then-reactivate churn on a pre-built
+100k forest, `sample_size(10)` — not gated, criterion spot-check only).
+
+### Churned-forest accuracy row (from `report_data`, reproduced during this task)
+
+A 120-op churn sequence (`xval::dyn_ops`, seeded, capacity 20k, dim 3, f32)
+is applied identically to both implementations, then 2000 k=10 knn queries
+are scored against a brute-force ground truth restricted to the live set
+(`brute_force_knn_l2_live_f32`/`score_exact_tie_aware_live_f32` — see
+`docs/EXPERIMENTS.md`'s methodology section for why a live-set-aware
+scorer is necessary here, unlike the static M1 accuracy rows). Reproduced
+during this task (`RUSTFLAGS="-C target-cpu=native" cargo run -p xval
+--release --example report_data`, live/removed counts from this exact run):
+
+| workload | rust exact-tie-aware | cpp exact-tie-aware | rust==cpp bit-exact | live / removed |
+|---|---|---|---|---|
+| `dyn_churn_dim3_f32_k10_eps0` | 1.0 | 1.0 | true | 2232 / 10 |
+| `dyn_churn_dim3_f32_k10_eps0.1` | 0.6645 | 0.6645 | true | 2232 / 10 |
+
+The `eps=0` row is exact (1.0/1.0) and bit-exact on both sides — no
+divergence. The `eps=0.1` row's identical (not just close) 0.6645 scores
+and identical relative-error statistics between Rust and C++ are the
+signature of genuine bit-exact agreement under an APPROXIMATE (eps-pruned)
+query, not two implementations independently landing on the same number by
+chance — a real eps-pruning divergence would show up as differing scores.
+`dyn_evidence` fields present in the underlying JSON row (`grow_and_add_count
+62`, `remove_count 34`, `readd_count 24`, `tombstone_migrations 33`) confirm
+the churn sequence actually exercised merges/tombstone migrations, not a
+trivially-easy all-live degenerate case.
+
+### Empty-forest quirk (inherited from C++, not a Rust bug)
+
+`DynamicKdTree::find_neighbors`'s generic escape hatch, called directly on
+a forest with zero occupied slots, returns whatever an untouched result set
+naturally reports on `.full()`: `false` for `KnnResultSet`/`RknnResultSet`,
+but **`true`** for `RadiusResultSet` (its `full()` is hardwired `true`
+regardless of whether anything was ever added, mirroring nanoflann.hpp:433
+exactly — see M1's Corrections #4 for the same quirk on the static tree).
+The additive `radius_search`/`radius_search_with` wrappers return the found
+COUNT (`0` in that case), so the quirk is invisible through the wrapper
+API; it is only observable by calling `find_neighbors` directly with a
+fresh, empty `RadiusResultSet`. Not benchmarked separately (it's a
+correctness/API-surface fact, not a perf number), but documented here
+because it's exactly the kind of "why does this return `true` with zero
+results" surprise a reader of this benchmarks doc might otherwise hit while
+writing their own microbenchmark against an empty forest.
+
+## Test status (workspace, current — supersedes both crate-specific counts above)
+
+`cargo test --workspace --all-features` (re-run during the M2 final-review
+fix wave, commit range up to and including that wave's changes): **345
+passed, 0 failed, 15 ignored** (up from M1's 269/0/8, and from 343/0/15 at
+M2's initial completion — the fix wave added two `nanoflann-rs` unit tests
+for the `maximum_point_count` capacity bounds check; M2 itself added the
+`nanoflann-ref` dynamic-oracle tests, `xval`'s dynamic cross-validation
+suite, the report renderer's test file, and the two new dynamic perf
+gates, all counted here). Note: `--all-features` and default features are
+identical invocations here — `parallel` (rayon, on by default) is
+`nanoflann-rs`'s only feature, so `cargo test --workspace` alone (as used
+elsewhere in this repo, e.g. the README) exercises exactly the same code.
+`cargo clippy --workspace --all-targets -- -D warnings`: clean. A forced
+rebuild (`touch` every crate's `src/*.rs` then `cargo build --workspace
+--all-targets`) produced zero warnings, and so does `cargo doc -p
+nanoflann-rs --no-deps` after a forced rebuild. `cargo test --workspace
+--all-features --release -- --ignored --test-threads=1` (heavy suite,
+including M1's two deepest degenerate-tree builds and M2's mutation
+canaries): see `docs/EXPERIMENTS.md`'s reproduction-commands table for the
+exact invocation and this task's captured run.

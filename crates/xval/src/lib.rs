@@ -6,6 +6,9 @@
 //! crate is the judge, not a library: deterministic data generators, ULP-tier
 //! comparators, and thin build helpers so `tests/*.rs` read cleanly. See
 //! `tests/xval_knn.rs`, `tests/xval_radius_box.rs`, `tests/xval_build.rs`.
+//! M2's dynamic (add/remove) op-sequence cross-validation lives in
+//! `tests/xval_dynamic.rs`, backed by this file's `GrowableFlat`/`DynOp`/
+//! `dyn_ops`/`apply_dyn_op_*`/`assert_dyn_structure_equal_*` section below.
 //!
 //! This crate also hosts the project's speed story: `benches/bench_build.rs`,
 //! `benches/bench_knn.rs`, `benches/bench_radius.rs` (criterion, `harness =
@@ -24,6 +27,12 @@ use nanoflann_rs::{
 };
 use rand::Rng;
 use rand::SeedableRng;
+
+/// HTML scorecard renderer for the `report_data` JSON -- see
+/// `examples/render_report.rs` for the CLI wrapper. `render` (this
+/// module's entry point) is re-exported at the crate root for convenience.
+pub mod report;
+pub use report::{render, RenderError};
 use rand_chacha::ChaCha8Rng;
 
 // ============================================================================
@@ -790,8 +799,8 @@ pub struct QueryScore {
     /// a candidate may legitimately return the same k points in a different
     /// order under a different tie rule and still be "exact").
     ///
-    /// NOTE (controller ruling, see `score_exact_tie_aware_f32`/`_f64`'s doc
-    /// comment below): this definition is STILL too strict on
+    /// NOTE (see `score_exact_tie_aware_f32`/`_f64`'s doc comment below):
+    /// this definition is STILL too strict on
     /// duplicate-heavy datasets -- when multiple points are exactly tied at
     /// the k-th distance boundary, "the" index SET is not uniquely defined,
     /// so a candidate that legitimately picks a DIFFERENT (but equally
@@ -853,11 +862,11 @@ impl_score_query!(score_query_f64, f64);
 
 macro_rules! impl_score_exact_tie_aware {
     ($name:ident, $t:ty) => {
-        /// Tie-aware ground-truth exactness check (controller ruling on
+        /// Tie-aware ground-truth exactness check, used by
         /// `examples/report_data.rs`'s accuracy report -- see
         /// `QueryScore::exact`'s doc comment above for why the plain
         /// order-independent set match is too strict on duplicate-heavy
-        /// datasets). A query is EXACT iff BOTH hold:
+        /// datasets. A query is EXACT iff BOTH hold:
         ///
         /// 1. `got`'s distances, taken IN ORDER, are bit-equal to `gt`'s
         ///    distances in order (both are assumed already sorted ascending
@@ -911,6 +920,113 @@ impl_score_exact_tie_aware!(score_exact_tie_aware_f32, f32);
 impl_score_exact_tie_aware!(score_exact_tie_aware_f64, f64);
 
 // ============================================================================
+// M2 Task 5 -- live-set-filter extension. `brute_force_knn_l2_*` and
+// `score_exact_tie_aware_*` above are the RIGHT ground truth / exactness
+// definitions when every dataset index is queryable, but M2's dynamic
+// accuracy report scores knn results after a churn (add/remove/re-add)
+// sequence: a removed (tombstoned) index's coordinates are still physically
+// present in the backing buffer (lazy deletion never touches storage -- see
+// `dynamic.rs`'s module doc), so an UNFILTERED brute-force scan would treat
+// dead points as valid ground-truth neighbors, and an UNFILTERED tie-aware
+// scorer would happily accept a candidate that (erroneously) returns one, as
+// long as its recomputed coordinate-distance happens to be numerically
+// correct (`tie_aware_live_rejects_a_removed_index_even_with_correct_distance`,
+// this module's `#[cfg(test)]`, pins exactly this gap). `live` (length `n =
+// data.len()/dim`, `live[i]` true iff dataset index `i` is currently live)
+// closes it on both ends: ground truth never considers a dead index a
+// candidate neighbor, and the scorer independently rejects any `got` entry
+// whose index is dead, regardless of how "correct" its reported distance
+// looks.
+// ============================================================================
+
+macro_rules! impl_brute_force_knn_live {
+    ($name:ident, $t:ty) => {
+        /// Live-set-restricted variant of `brute_force_knn_l2_*` (see this
+        /// section's module doc) -- identical selection/arithmetic contract
+        /// (same library `L2::eval` kernel, same ascending-distance-then-
+        /// index tie break) except any index `i` with `live[i] == false` is
+        /// excluded from consideration entirely, as if it were not part of
+        /// the dataset. Panics if `dim == 0`, `query.len() != dim`,
+        /// `data.len()` is not a multiple of `dim`, or `live.len() != n`.
+        /// Returns up to `k` pairs (fewer iff fewer than `k` indices are
+        /// live).
+        pub fn $name(data: &[$t], dim: usize, query: &[$t], k: usize, live: &[bool]) -> Vec<(u32, $t)> {
+            assert!(dim > 0, "{}: dim must be > 0", stringify!($name));
+            assert_eq!(query.len(), dim, "{}: query.len() must equal dim", stringify!($name));
+            assert_eq!(data.len() % dim, 0, "{}: data.len() must be a multiple of dim", stringify!($name));
+            let n = data.len() / dim;
+            assert_eq!(live.len(), n, "{}: live.len() ({}) must equal n ({n})", stringify!($name), live.len());
+            let ds = FlatSlice::new(data, dim);
+            let mut all: Vec<(u32, $t)> = (0..n)
+                .filter(|&i| live[i])
+                .map(|i| (i as u32, L2.eval(query, &ds, i, DynDim(dim))))
+                .collect();
+            all.sort_by(|a, b| a.1.partial_cmp(&b.1).expect("brute_force_knn_live: NaN distance").then(a.0.cmp(&b.0)));
+            all.truncate(k.min(all.len()));
+            all
+        }
+    };
+}
+
+impl_brute_force_knn_live!(brute_force_knn_l2_live_f32, f32);
+impl_brute_force_knn_live!(brute_force_knn_l2_live_f64, f64);
+
+macro_rules! impl_score_exact_tie_aware_live {
+    ($name:ident, $t:ty) => {
+        /// Live-set-aware variant of `score_exact_tie_aware_*` (see this
+        /// section's module doc) -- the SAME two conditions (positional
+        /// bit-equal distance list vs `gt`; every returned index's
+        /// recomputed true distance bit-matches its reported distance) PLUS
+        /// a third, independent check: every index in `got` must satisfy
+        /// `live[idx] == true`. This is load-bearing on its own -- lazy
+        /// deletion never touches a tombstoned point's physical storage, so
+        /// a dynamic-forest bug that returns a removed index can still
+        /// report a numerically "correct" distance for it (see
+        /// `tie_aware_live_rejects_a_removed_index_even_with_correct_distance`);
+        /// only the liveness check catches that class of bug. `gt` is
+        /// expected to already be restricted to the live set (e.g. via
+        /// `brute_force_knn_l2_live_*`) -- this function does not itself
+        /// filter `gt`, only `got`. Panics if `dim == 0` or `query.len() !=
+        /// dim` (same preconditions as `score_exact_tie_aware_*`); an
+        /// out-of-range `got` index is treated as dead (`live.get(idx)`
+        /// defaults to `false` via `unwrap_or(false)`) rather than panicking.
+        pub fn $name(
+            data: &[$t],
+            dim: usize,
+            query: &[$t],
+            gt: &[(u32, $t)],
+            got: &[(u32, $t)],
+            live: &[bool],
+        ) -> bool {
+            assert!(dim > 0, "{}: dim must be > 0", stringify!($name));
+            assert_eq!(query.len(), dim, "{}: query.len() must equal dim", stringify!($name));
+            if gt.len() != got.len() {
+                return false;
+            }
+            for i in 0..gt.len() {
+                if got[i].1.to_bits() != gt[i].1.to_bits() {
+                    return false;
+                }
+            }
+            let ds = FlatSlice::new(data, dim);
+            for &(idx, reported_dist) in got {
+                if !live.get(idx as usize).copied().unwrap_or(false) {
+                    return false;
+                }
+                let true_dist: $t = L2.eval(query, &ds, idx as usize, DynDim(dim));
+                if true_dist.to_bits() != reported_dist.to_bits() {
+                    return false;
+                }
+            }
+            true
+        }
+    };
+}
+
+impl_score_exact_tie_aware_live!(score_exact_tie_aware_live_f32, f32);
+impl_score_exact_tie_aware_live!(score_exact_tie_aware_live_f64, f64);
+
+// ============================================================================
 // Median-of-N timing -- shared by `tests/perf_gate.rs` and
 // `examples/report_data.rs` (both use the SAME "median of 7 timed runs,
 // after one untimed warmup" methodology, per the brief).
@@ -962,6 +1078,24 @@ pub fn cfg_seed(tag: &str, parts: &[usize]) -> u64 {
     h
 }
 
+/// Deterministic (seeded) sample of `count` DISTINCT indices from `0..n`, in
+/// shuffled (not sorted) order -- a full Fisher-Yates shuffle of `0..n`
+/// truncated to `count` (`O(n)`, fine for the few-times-per-run call sites
+/// this exists for: `benches/bench_dynamic.rs`'s churn benchmarks and M2
+/// Task 5's `perf_gate.rs`/`report_data.rs` churn workloads, none of which
+/// call this from inside a timed loop). Used to pick a fixed, reproducible
+/// set of dataset indices to remove-then-re-add in a dynamic-forest churn
+/// workload. Panics if `count > n`.
+pub fn sample_distinct_indices(seed: u64, n: usize, count: usize) -> Vec<usize> {
+    assert!(count <= n, "sample_distinct_indices: count ({count}) must be <= n ({n})");
+    use rand::seq::SliceRandom;
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    let mut all: Vec<usize> = (0..n).collect();
+    all.shuffle(&mut rng);
+    all.truncate(count);
+    all
+}
+
 /// Runs `f`; if it panics, re-panics with `ctx` prepended to the original
 /// panic message. The comparators (`assert_knn_equal_*`/`assert_radius_equal_*`)
 /// have no idea what config/seed produced their inputs -- this is how the
@@ -972,8 +1106,22 @@ pub fn cfg_seed(tag: &str, parts: &[usize]) -> u64 {
 /// ORIGINAL panic still prints once via the default hook before this
 /// re-panics with the contextualized message the test harness ultimately
 /// reports.
-pub fn with_ctx<F: FnOnce() + std::panic::UnwindSafe>(ctx: impl std::fmt::Display, f: F) {
-    if let Err(e) = std::panic::catch_unwind(f) {
+///
+/// Takes plain `FnOnce()` -- no `UnwindSafe` bound -- and wraps `f` in
+/// `std::panic::AssertUnwindSafe` internally. This is a deliberate, sound
+/// relaxation: `with_ctx` NEVER resumes using `f`'s captured state after a
+/// caught panic, it only extracts the panic payload's text and immediately
+/// re-panics (aborting the caller's control flow either way), so the usual
+/// hazard `UnwindSafe` guards against -- observing a torn/inconsistent
+/// value through a captured `&`/`&mut` reference after unwinding past it --
+/// can't happen here. Needed for M2's dynamic cross-validation callers
+/// (`tests/xval_dynamic.rs`), which capture `&DynamicKdTree<..>` values
+/// backed by `GrowableFlat`'s interior-mutable `Cell<usize>` -- `Cell` is
+/// never `RefUnwindSafe` by design, so those captures could never satisfy
+/// the old bound even though nothing here actually re-reads them
+/// post-unwind.
+pub fn with_ctx<F: FnOnce()>(ctx: impl std::fmt::Display, f: F) {
+    if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
         let msg = if let Some(s) = e.downcast_ref::<String>() {
             s.clone()
         } else if let Some(s) = e.downcast_ref::<&str>() {
@@ -984,6 +1132,555 @@ pub fn with_ctx<F: FnOnce() + std::panic::UnwindSafe>(ctx: impl std::fmt::Displa
         panic!("{ctx}\n{msg}");
     }
 }
+
+// ============================================================================
+// M2 Task 4 -- dynamic (add/remove) cross-validation helpers. Everything
+// below drives IDENTICAL op sequences through `nanoflann_rs::dynamic::
+// DynamicKdTree` and `nanoflann_ref::RefDynIndexF32/F64` so `tests/
+// xval_dynamic.rs` can compare structure + query results bit-exact after
+// EVERY step. See `nanoflann_ref::RefDynIndexF32`'s doc comment for the
+// contiguous-append contract this module's op generator exists to never
+// violate (the Rust side PANICS on a violation; the C++ side SILENTLY
+// CORRUPTS -- see `nanoflann-ref/tests/oracle_dynamic.rs`'s
+// `add_points_misaligned_start_documents_silent_corruption_f32`).
+// ============================================================================
+
+use nanoflann_ref::{RefDynIndexF32, RefDynIndexF64};
+use nanoflann_rs::{DataSource, DynamicKdTree, Scalar};
+
+/// Fixed backing buffer (`data`, `n_capacity = data.len() / dim` points)
+/// with a growable LOGICAL size -- the Rust-side twin of the oracle's own
+/// mutable-`current_n` adaptor (`RefDynIndexF32`/`RefDynIndexF64`'s
+/// `RowMajorDynAdaptor`, see that type's doc comment), so both sides see
+/// the IDENTICAL dataset view at every step of an op sequence. `data` is
+/// never resized or copied -- only the logical size `DataSource::
+/// point_count()` reports changes, via `set_current_n`.
+///
+/// `current_n` is a `Cell`, not a plain field, so `set_current_n` takes
+/// `&self` rather than `&mut self`: `DataSource<T>` is implemented for
+/// `&GrowableFlat<'_, T>` (a SHARED reference), not for `GrowableFlat` by
+/// value, specifically so a test can build one owned `GrowableFlat`, pass a
+/// shared `&growable` into `DynamicKdTreeBuilder` (which then owns that
+/// reference as its `DS`), and STILL call `growable.set_current_n(n)` on
+/// its own local binding afterward -- both the tree's internal copy of the
+/// reference and the external handle read/write the exact same `Cell`.
+pub struct GrowableFlat<'a, T> {
+    data: &'a [T],
+    dim: usize,
+    current_n: std::cell::Cell<usize>,
+}
+
+impl<'a, T: Scalar> GrowableFlat<'a, T> {
+    /// Starts at logical size 0 (mirrors `RefDynIndexF32::build`/
+    /// `RefDynIndexF64::build`'s starting state exactly -- no points are
+    /// queryable until `set_current_n` grows the logical size AND the
+    /// caller separately drives `DynamicKdTree::add_points`/
+    /// `RefDynIndex*::add_points` to actually insert the newly-visible
+    /// range). Panics if `dim == 0` or `data.len()` is not a multiple of
+    /// `dim`.
+    pub fn new(data: &'a [T], dim: usize) -> Self {
+        assert!(dim > 0, "GrowableFlat::new: dim must be > 0");
+        assert!(
+            data.len().is_multiple_of(dim),
+            "GrowableFlat::new: data.len() ({}) must be a multiple of dim ({dim})",
+            data.len()
+        );
+        Self { data, dim, current_n: std::cell::Cell::new(0) }
+    }
+
+    /// Grows (or shrinks) the logical size `DataSource::point_count()`
+    /// reports (via the `&GrowableFlat` impl below). Panics if `n * dim`
+    /// would exceed the backing buffer's capacity. Mirrors
+    /// `RefDynIndexF32::set_current_n`'s contract exactly, including that
+    /// shrinking has no effect on points already added to a tree built over
+    /// this dataset -- the caller owns keeping subsequent `add_points`/
+    /// `remove_point` calls consistent with whatever `n` it sets (same
+    /// caveat as the oracle side).
+    pub fn set_current_n(&self, n: usize) {
+        assert!(
+            n * self.dim <= self.data.len(),
+            "GrowableFlat::set_current_n: n*dim ({}) exceeds buffer capacity ({})",
+            n * self.dim,
+            self.data.len()
+        );
+        self.current_n.set(n);
+    }
+
+    /// Current logical size -- exposed so op-driving test code can compute
+    /// the next `GrowAndAdd`'s contiguous `start` (`= current_n()`) without
+    /// threading its own separate counter alongside the tree's.
+    pub fn current_n(&self) -> usize {
+        self.current_n.get()
+    }
+}
+
+impl<'a, T: Scalar> DataSource<T> for &GrowableFlat<'a, T> {
+    #[inline]
+    fn point_count(&self) -> usize {
+        self.current_n.get()
+    }
+
+    #[inline]
+    fn point_component(&self, idx: usize, dim: usize) -> T {
+        self.data[idx * self.dim + dim]
+    }
+}
+
+// ----------------------------------------------------------------------
+// Legal op-sequence generator
+// ----------------------------------------------------------------------
+
+/// One legal mutation of a dynamic forest's dataset membership. See
+/// [`dyn_ops`]'s doc comment for the legality model that guarantees every
+/// generated sequence is safe to replay, in order, against BOTH
+/// `DynamicKdTree::add_points`/`remove_point` (which panics on a
+/// contiguous-append violation) and the C++ oracle's `RefDynIndexF32/
+/// F64::add_points` (which silently corrupts on the same violation).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DynOp {
+    /// Grow the logical dataset size by `count` (`1..=64`, capped by
+    /// remaining capacity) and add every one of those brand-new indices in
+    /// one contiguous `add_points` call, starting exactly at the running
+    /// point-count -- the only legal way to introduce a genuinely-new index
+    /// (see `DynamicKdTree::add_points`'s contiguous-append contract doc
+    /// comment).
+    GrowAndAdd { count: usize },
+    /// Lazily remove a currently-LIVE dataset index.
+    Remove { live_idx: usize },
+    /// Reactivate a currently-REMOVED dataset index (`add_points(idx, idx)`
+    /// on both sides -- exempt from the contiguous-append contract).
+    ReAdd { removed_idx: usize },
+}
+
+/// Deterministic (seeded) generator of a LEGAL op sequence: `n_ops`
+/// entries, replayable in order against a fresh forest over a buffer of
+/// capacity `total_capacity` (points) without ever violating either side's
+/// add/remove legality contract. Maintains its own model of forest state
+/// (running point-count, the live index set, the removed index set) purely
+/// to decide what is legal next -- it never touches an actual tree.
+///
+/// Weights ~50/30/20 among `GrowAndAdd`/`Remove`/`ReAdd`, RESTRICTED each
+/// step to whichever op kinds are currently legal (e.g. `Remove` is
+/// excluded entirely once the live set is empty, `GrowAndAdd` once capacity
+/// is exhausted) and renormalized over just those -- so, e.g., the very
+/// first op is always `GrowAndAdd` (nothing exists yet to remove or
+/// re-add). Given enough `n_ops` against a `total_capacity` that comfortably
+/// exceeds 8 (the smallest point-count that forces a slot-2+ merge), the
+/// output naturally contains: multiple simultaneously non-empty slots and
+/// merges (a structural consequence of `first0bit`'s binary-counter pattern
+/// once point-count exceeds a few points -- see `dynamic.rs`'s module doc),
+/// tombstone migrations (any `Remove` followed later by enough `GrowAndAdd`
+/// growth to cross a further merge boundary), and drain-heavy stretches
+/// (runs of `Remove` once the live set is large). See
+/// `dyn_ops_legal_property_many_seeds` and
+/// `dyn_ops_can_produce_merges_tombstone_migrations_and_drain_stretches`
+/// (this module's `#[cfg(test)]`) for the property tests confirming both
+/// claims.
+pub fn dyn_ops(seed: u64, total_capacity: usize, n_ops: usize) -> Vec<DynOp> {
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    let mut point_count = 0usize;
+    let mut live: Vec<usize> = Vec::new();
+    let mut removed: Vec<usize> = Vec::new();
+    let mut ops = Vec::with_capacity(n_ops);
+
+    for _ in 0..n_ops {
+        let can_grow = point_count < total_capacity;
+        let can_remove = !live.is_empty();
+        let can_readd = !removed.is_empty();
+
+        // (weight, kind) pairs restricted to currently-legal kinds only.
+        let mut choices: Vec<(u32, u8)> = Vec::new();
+        if can_grow {
+            choices.push((50, 0));
+        }
+        if can_remove {
+            choices.push((30, 1));
+        }
+        if can_readd {
+            choices.push((20, 2));
+        }
+        assert!(
+            !choices.is_empty(),
+            "dyn_ops: no legal op available (point_count={point_count}, \
+             total_capacity={total_capacity}, live={}, removed={})",
+            live.len(),
+            removed.len()
+        );
+
+        let total_weight: u32 = choices.iter().map(|&(w, _)| w).sum();
+        let mut pick = rng.gen_range(0..total_weight);
+        let mut kind = choices.last().expect("choices is non-empty (asserted above)").1;
+        for &(w, k) in &choices {
+            if pick < w {
+                kind = k;
+                break;
+            }
+            pick -= w;
+        }
+
+        match kind {
+            0 => {
+                let remaining = total_capacity - point_count;
+                let cap = remaining.min(64);
+                let count = rng.gen_range(1..=cap);
+                for i in point_count..point_count + count {
+                    live.push(i);
+                }
+                point_count += count;
+                ops.push(DynOp::GrowAndAdd { count });
+            }
+            1 => {
+                let pick_pos = rng.gen_range(0..live.len());
+                let idx = live.swap_remove(pick_pos);
+                removed.push(idx);
+                ops.push(DynOp::Remove { live_idx: idx });
+            }
+            _ => {
+                let pick_pos = rng.gen_range(0..removed.len());
+                let idx = removed.swap_remove(pick_pos);
+                live.push(idx);
+                ops.push(DynOp::ReAdd { removed_idx: idx });
+            }
+        }
+    }
+
+    ops
+}
+
+/// Independent legality validator for a `DynOp` sequence -- used by
+/// [`dyn_ops`]'s own property tests AND available to any test driving a
+/// hand-written op sequence (e.g. the dedicated scenario tests in
+/// `tests/xval_dynamic.rs`). Walks `ops` with its OWN forest-membership
+/// model (built without reusing `dyn_ops`' internal generator state, so a
+/// bug shared between generation and validation can't hide from this
+/// check) and asserts:
+/// - every `GrowAndAdd`'s new-index range starts exactly at the running
+///   point-count (contiguous-append) and never exceeds `total_capacity`,
+///   and `count` is within `1..=64`;
+/// - `Remove` never targets a dead (already-removed, or never-added) index;
+/// - `ReAdd` never targets a live (or never-added) index.
+///
+/// Panics with the first violation found (including its `ops` index), else
+/// returns quietly.
+pub fn validate_dyn_ops_legal(ops: &[DynOp], total_capacity: usize) {
+    let mut point_count = 0usize;
+    let mut live: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut removed: std::collections::HashSet<usize> = std::collections::HashSet::new();
+
+    for (i, op) in ops.iter().enumerate() {
+        match *op {
+            DynOp::GrowAndAdd { count } => {
+                assert!(
+                    (1..=64).contains(&count),
+                    "op {i}: GrowAndAdd count {count} out of legal range [1,64]"
+                );
+                assert!(
+                    point_count + count <= total_capacity,
+                    "op {i}: GrowAndAdd would exceed capacity: point_count={point_count} \
+                     count={count} total_capacity={total_capacity}"
+                );
+                for j in point_count..point_count + count {
+                    assert!(live.insert(j), "op {i}: GrowAndAdd re-introduces already-live index {j}");
+                }
+                point_count += count;
+            }
+            DynOp::Remove { live_idx } => {
+                assert!(
+                    live.remove(&live_idx),
+                    "op {i}: Remove targets a non-live index {live_idx} (either already \
+                     removed or never added)"
+                );
+                assert!(removed.insert(live_idx), "op {i}: internal validator bug: {live_idx} already in removed set");
+            }
+            DynOp::ReAdd { removed_idx } => {
+                assert!(
+                    removed.remove(&removed_idx),
+                    "op {i}: ReAdd targets a non-removed index {removed_idx} (either still \
+                     live or never added)"
+                );
+                assert!(live.insert(removed_idx), "op {i}: internal validator bug: {removed_idx} already live");
+            }
+        }
+    }
+}
+
+/// Coverage statistics over one `DynOp` sequence: counts of each op kind,
+/// plus `tombstone_migrations` -- the number of times a currently-removed
+/// index's PHYSICAL slot residency changed because a later `GrowAndAdd`'s
+/// merge (`pos = first0bit(point_count)`, same arithmetic as
+/// `DynamicKdTree::add_points`) swallowed the slot it still physically
+/// occupied. ONE shared implementation for two callers that both need this:
+/// `dyn_ops`'s own generic capability property test (below, this module's
+/// `#[cfg(test)]`) and `tests/xval_dynamic.rs`'s per-matrix-sequence
+/// coverage assertions (fix-round-1 item 2) -- keeping this in one place
+/// means the two checks can't silently drift into simulating the
+/// first0bit/slot-migration rule differently.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DynOpStats {
+    pub grow_and_add_count: usize,
+    pub remove_count: usize,
+    pub readd_count: usize,
+    pub tombstone_migrations: usize,
+}
+
+/// Computes [`DynOpStats`] by replaying `ops` against a hand-simulated
+/// slot-residency model (see the struct's doc comment). `first0bit` is
+/// `dynamic.rs`'s private `First0Bit` duplicated here -- it's `pub(crate)`
+/// to `nanoflann-rs`, not part of xval's dependency surface -- purely so
+/// this simulation can determine, from a running `point_count` alone, which
+/// slot a genuinely-new index lands in and which lower slots a merge
+/// swallows.
+pub fn dyn_ops_stats(ops: &[DynOp]) -> DynOpStats {
+    fn first0bit(n: usize) -> usize {
+        let mut num = n;
+        let mut pos = 0usize;
+        while num & 1 == 1 {
+            num >>= 1;
+            pos += 1;
+        }
+        pos
+    }
+
+    let mut stats = DynOpStats::default();
+    let mut point_count = 0usize;
+    // dataset-index -> slot it's physically resident in right now (mirrors
+    // DynamicKdTree::add_points' bookkeeping, ignoring reactivation for
+    // SLOT purposes since lazy deletion never touches physical residency --
+    // only whether an index counts as "removed" for the migration count).
+    let mut slot_of: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    let mut currently_removed: std::collections::HashSet<usize> = std::collections::HashSet::new();
+
+    for op in ops {
+        match *op {
+            DynOp::GrowAndAdd { count } => {
+                stats.grow_and_add_count += 1;
+                for _ in 0..count {
+                    let pos = first0bit(point_count);
+                    if pos > 0 {
+                        // Every index physically resident in slots 0..pos
+                        // migrates to slot `pos`. If any such index is
+                        // currently a tombstone, this is a genuine
+                        // tombstone-slot migration.
+                        for (&i, s) in slot_of.iter_mut() {
+                            if *s < pos {
+                                *s = pos;
+                                if currently_removed.contains(&i) {
+                                    stats.tombstone_migrations += 1;
+                                }
+                            }
+                        }
+                    }
+                    slot_of.insert(point_count, pos);
+                    point_count += 1;
+                }
+            }
+            DynOp::Remove { live_idx } => {
+                stats.remove_count += 1;
+                currently_removed.insert(live_idx);
+            }
+            DynOp::ReAdd { removed_idx } => {
+                stats.readd_count += 1;
+                currently_removed.remove(&removed_idx);
+            }
+        }
+    }
+
+    stats
+}
+
+// ============================================================================
+// Report meta capture -- best-effort machine/toolchain fingerprinting for
+// `examples/report_data.rs`'s emitted `meta` object (see that file's module
+// doc and Task 5b's brief). Every helper here is best-effort: any failure
+// (command not found, file unreadable, non-UTF8 output) falls back to
+// `"unknown"` (or `false` for the WSL flag) rather than panicking -- a
+// report run on an unusual/minimal machine should still emit valid JSON,
+// just with less detail. Factored out of `report_data.rs` (rather than
+// living as private fns there) specifically so they're unit-testable here
+// (see this module's `#[cfg(test)]` smoke test) and reusable by
+// `xval::report::render`'s own tests without spinning up a whole binary.
+// ============================================================================
+
+/// First `model name` line from `/proc/cpuinfo` (the substring after the
+/// first `:`, trimmed). `"unknown"` if the file is missing/unreadable or no
+/// such line exists (e.g. a non-x86 `/proc/cpuinfo` layout, or a non-Linux
+/// host where the file doesn't exist at all).
+pub fn cpu_model() -> String {
+    std::fs::read_to_string("/proc/cpuinfo")
+        .ok()
+        .and_then(|contents| {
+            contents
+                .lines()
+                .find(|l| l.starts_with("model name"))
+                .and_then(|l| l.split_once(':'))
+                .map(|(_, v)| v.trim().to_string())
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// `uname -sr` (kernel name + release), trimmed. `"unknown"` on failure
+/// (e.g. `uname` not on `PATH`).
+pub fn kernel_version() -> String {
+    std::process::Command::new("uname")
+        .args(["-sr"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// First line of `$CXX --version` if the `CXX` env var is set, else `c++
+/// --version` -- best-effort proxy for the compiler `nanoflann-ref`'s
+/// `build.rs` (via the `cc` crate) actually invokes to build the C++
+/// oracle. `"unknown"` on failure.
+pub fn cxx_compiler_version() -> String {
+    let bin = std::env::var("CXX").unwrap_or_else(|_| "c++".to_string());
+    std::process::Command::new(&bin)
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| s.lines().next().map(|l| l.trim().to_string()))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// `git rev-parse --short HEAD`, with a `-dirty` suffix appended when `git
+/// status --porcelain` reports a non-empty working tree. `"unknown"` if
+/// `rev-parse` fails (e.g. running outside a git checkout, such as from a
+/// packaged crate) -- the dirty check is skipped in that case too, since
+/// there is no meaningful SHA to suffix.
+pub fn git_sha() -> String {
+    let sha = std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let Some(sha) = sha else {
+        return "unknown".to_string();
+    };
+
+    let dirty = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| !o.stdout.is_empty())
+        .unwrap_or(false);
+
+    if dirty {
+        format!("{sha}-dirty")
+    } else {
+        sha
+    }
+}
+
+/// `true` iff `/proc/version` contains "microsoft" (case-insensitive) --
+/// the standard WSL kernel-version marker (both WSL1 and WSL2 stamp a
+/// "-microsoft" or "microsoft-standard" tag into `uname -r`/`/proc/
+/// version`). `false` if the file is missing/unreadable (macOS, a
+/// container image without `/proc/version`, etc.) -- absence of evidence
+/// is not evidence of WSL, so this never panics or errors, only reports
+/// `false`.
+pub fn is_wsl() -> bool {
+    std::fs::read_to_string("/proc/version").map(|s| s.to_lowercase().contains("microsoft")).unwrap_or(false)
+}
+
+// ----------------------------------------------------------------------
+// Apply / structure-parity helpers -- one instantiation per scalar type
+// (the dynamic forest is L2-only, see `RefDynIndexF32`'s doc comment, so
+// there is no metric axis to abstract over here, unlike the static
+// `define_rust_index!` macro above).
+// ----------------------------------------------------------------------
+
+macro_rules! define_dyn_apply {
+    ($t:ty, $RefDyn:ident, $apply_fn:ident, $assert_struct_fn:ident) => {
+        /// Applies one `DynOp` identically to the Rust forest (`rust_tree`,
+        /// backed by `growable`) and the oracle (`oracle`) -- SAME
+        /// underlying coordinate buffer on both sides (the caller must have
+        /// built `growable`/`oracle` from the exact same flat buffer), SAME
+        /// op, so a LEGAL op sequence (see [`dyn_ops`]) keeps both sides'
+        /// membership bookkeeping in lockstep at every step.
+        pub fn $apply_fn<'a, 'b>(
+            op: &DynOp,
+            growable: &'b GrowableFlat<'a, $t>,
+            rust_tree: &mut DynamicKdTree<$t, nanoflann_rs::DynDim, &'b GrowableFlat<'a, $t>>,
+            oracle: &mut $RefDyn<'a>,
+        ) {
+            match *op {
+                DynOp::GrowAndAdd { count } => {
+                    let start = growable.current_n();
+                    let new_n = start + count;
+                    growable.set_current_n(new_n);
+                    rust_tree.add_points(start, new_n - 1);
+                    oracle.set_current_n(new_n);
+                    oracle.add_points(start as u32, (new_n - 1) as u32);
+                }
+                DynOp::Remove { live_idx } => {
+                    rust_tree.remove_point(live_idx);
+                    oracle.remove_point(live_idx);
+                }
+                DynOp::ReAdd { removed_idx } => {
+                    rust_tree.add_points(removed_idx, removed_idx);
+                    oracle.add_points(removed_idx as u32, removed_idx as u32);
+                }
+            }
+        }
+
+        /// Structure parity: `tree_count`, every slot's point list
+        /// (element-for-element, EXACT order -- not membership-only), the
+        /// `tree_index()` vector, and `removed_len()`/`removed_count()`.
+        /// Panics with a full dump of both sides on the first mismatch
+        /// found (call through `with_ctx` at the call site to attach
+        /// seed/op-index context).
+        pub fn $assert_struct_fn<'a>(
+            rust_tree: &DynamicKdTree<$t, nanoflann_rs::DynDim, &GrowableFlat<'a, $t>>,
+            oracle: &$RefDyn<'a>,
+        ) {
+            let r_tc = rust_tree.tree_count();
+            let c_tc = oracle.tree_count();
+            assert_eq!(r_tc, c_tc, "tree_count mismatch: rust={r_tc} cpp={c_tc}");
+
+            for slot in 0..r_tc {
+                let r = rust_tree.point_indices_of_slot(slot);
+                let c = oracle.slot_vacc(slot);
+                assert_eq!(
+                    r,
+                    c.as_slice(),
+                    "slot {slot} vind (point list) mismatch: rust={:?} cpp={:?}",
+                    r,
+                    c
+                );
+            }
+
+            let r_ti = rust_tree.tree_index();
+            let c_ti = oracle.tree_index();
+            assert_eq!(
+                r_ti,
+                c_ti.as_slice(),
+                "tree_index mismatch: rust={:?} cpp={:?}",
+                r_ti,
+                c_ti
+            );
+
+            let r_rm = rust_tree.removed_len();
+            let c_rm = oracle.removed_count();
+            assert_eq!(r_rm, c_rm, "removed count mismatch: rust removed_len={r_rm} cpp removed_count={c_rm}");
+        }
+    };
+}
+
+define_dyn_apply!(f32, RefDynIndexF32, apply_dyn_op_f32, assert_dyn_structure_equal_f32);
+define_dyn_apply!(f64, RefDynIndexF64, apply_dyn_op_f64, assert_dyn_structure_equal_f64);
 
 #[cfg(test)]
 mod tests {
@@ -1525,6 +2222,112 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
+    // brute_force_knn_l2_live_f32 / score_exact_tie_aware_live_f32 -- M2
+    // Task 5's live-set-filter extension (TDD, per the task brief: written
+    // BEFORE the implementation exists). Reuses TIE_DATA/TIE_QUERY from the
+    // non-live tests above.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn brute_force_knn_l2_live_excludes_dead_indices_hand_calc() {
+        // dim 1: points at 0, 1, 2, 3 -> squared distances to query [0.0]
+        // are 0, 1, 4, 9 for indices 0, 1, 2, 3. live[1] = false (removed):
+        // must be excluded even though it would otherwise be the 2nd
+        // nearest, so k=2 over the live set is [(0,0),(2,4)], NOT [(0,0),(1,1)].
+        let data = [0.0f32, 1.0, 2.0, 3.0];
+        let live = [true, false, true, true];
+        let got = brute_force_knn_l2_live_f32(&data, 1, &[0.0], 2, &live);
+        assert_eq!(got, vec![(0u32, 0.0f32), (2u32, 4.0f32)]);
+    }
+
+    #[test]
+    fn brute_force_knn_l2_live_all_dead_returns_empty() {
+        let data = [0.0f32, 1.0];
+        let live = [false, false];
+        let got = brute_force_knn_l2_live_f32(&data, 1, &[0.0], 2, &live);
+        assert!(got.is_empty());
+    }
+
+    #[test]
+    fn tie_aware_live_rejects_a_removed_index_even_with_correct_distance() {
+        // p1 (index 1) is REMOVED (live[1] = false). Ground truth over the
+        // live set (via brute_force_knn_l2_live_f32) therefore excludes it:
+        // k=2 -> [(0,0.0),(2,1.0)] (p2, also true-distance 1.0, takes the
+        // rank-1 slot instead).
+        let live = [true, false, true, true];
+        let gt = brute_force_knn_l2_live_f32(&TIE_DATA, 1, &TIE_QUERY, 2, &live);
+        assert_eq!(gt, vec![(0u32, 0.0f32), (2u32, 1.0f32)]);
+
+        // A candidate reports index 1 (removed) with its numerically
+        // CORRECT true distance (1.0) at rank 1 -- the distance LIST is
+        // bit-equal to gt positionally (0.0, 1.0), and index 1's recomputed
+        // true distance does equal 1.0, so the OLD non-live-aware scorer
+        // (sanity-checked below) wrongly accepts this. The live-aware
+        // scorer must reject it because index 1 is dead.
+        let got = [(0u32, 0.0f32), (1u32, 1.0)];
+        assert!(
+            score_exact_tie_aware_f32(&TIE_DATA, 1, &TIE_QUERY, &gt, &got),
+            "sanity: the OLD non-live-aware scorer has no liveness concept and accepts this"
+        );
+        assert!(
+            !score_exact_tie_aware_live_f32(&TIE_DATA, 1, &TIE_QUERY, &gt, &got, &live),
+            "live-aware scorer must reject a removed index even with a numerically correct distance"
+        );
+    }
+
+    #[test]
+    fn tie_aware_live_accepts_a_live_alternate_tie_winner() {
+        // index 2 is LIVE and a legitimate alternate tie winner (mirrors
+        // tie_aware_accepts_a_different_but_legitimate_tie_winner above) --
+        // must still be accepted once a (trivial, nothing-removed) live
+        // filter is threaded through.
+        let live = [true, true, true, true];
+        let gt = [(0u32, 0.0f32), (1u32, 1.0)];
+        let got = [(0u32, 0.0f32), (2u32, 1.0)];
+        assert!(score_exact_tie_aware_live_f32(&TIE_DATA, 1, &TIE_QUERY, &gt, &got, &live));
+    }
+
+    #[test]
+    fn tie_aware_live_rejects_a_genuinely_wrong_neighbor() {
+        // Mirrors tie_aware_rejects_a_genuinely_wrong_neighbor above, with a
+        // trivial (nothing-removed) live filter threaded through -- the
+        // live check must not mask the existing wrong-distance rejection.
+        let live = [true, true, true, true];
+        let gt = [(0u32, 0.0f32), (1u32, 1.0)];
+        let got = [(0u32, 0.0f32), (3u32, 1.0)]; // p3's true distance is 100.0, not 1.0
+        assert!(!score_exact_tie_aware_live_f32(&TIE_DATA, 1, &TIE_QUERY, &gt, &got, &live));
+    }
+
+    // ------------------------------------------------------------------
+    // sample_distinct_indices
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn sample_distinct_indices_is_deterministic_and_distinct() {
+        let a = sample_distinct_indices(7, 100, 20);
+        let b = sample_distinct_indices(7, 100, 20);
+        assert_eq!(a, b, "same seed must reproduce the identical sample");
+        assert_eq!(a.len(), 20);
+        let set: std::collections::BTreeSet<usize> = a.iter().copied().collect();
+        assert_eq!(set.len(), 20, "every sampled index must be distinct");
+        assert!(a.iter().all(|&i| i < 100));
+    }
+
+    #[test]
+    fn sample_distinct_indices_full_count_is_a_permutation_of_0_n() {
+        let a = sample_distinct_indices(3, 10, 10);
+        let mut sorted = a.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, (0..10).collect::<Vec<usize>>());
+    }
+
+    #[test]
+    #[should_panic(expected = "count (5) must be <= n (3)")]
+    fn sample_distinct_indices_count_greater_than_n_panics() {
+        let _ = sample_distinct_indices(1, 3, 5);
+    }
+
+    // ------------------------------------------------------------------
     // median_of / timed_median_ms
     // ------------------------------------------------------------------
 
@@ -1659,5 +2462,237 @@ mod tests {
         let c3 = idx.radius_into(&q, 0.5, true, 0.0, &mut out);
         assert_eq!(c3, 1);
         assert_eq!(out.len(), 1, "buffer must shrink back down, not leave stale entries");
+    }
+
+    // ------------------------------------------------------------------
+    // GrowableFlat -- basic Cell-based interior-mutability contract.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn growable_flat_starts_at_logical_size_zero() {
+        let data = [1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let g = GrowableFlat::new(&data, 2);
+        assert_eq!(g.current_n(), 0);
+        assert_eq!((&g).point_count(), 0);
+    }
+
+    #[test]
+    fn growable_flat_set_current_n_grows_point_count() {
+        let data = [1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let g = GrowableFlat::new(&data, 2);
+        g.set_current_n(3);
+        assert_eq!(g.current_n(), 3);
+        assert_eq!((&g).point_count(), 3);
+        assert_eq!((&g).point_component(2, 1), 6.0);
+    }
+
+    #[test]
+    fn growable_flat_shared_reference_sees_mutation_through_owned_handle() {
+        // The whole point of the Cell: a shared &GrowableFlat (as handed to
+        // DynamicKdTreeBuilder) must observe set_current_n calls made
+        // through the ORIGINAL owned binding afterward.
+        let data = [1.0f64, 2.0, 3.0, 4.0];
+        let g = GrowableFlat::new(&data, 2);
+        let ds_ref: &GrowableFlat<f64> = &g;
+        assert_eq!(ds_ref.point_count(), 0);
+        g.set_current_n(2);
+        assert_eq!(ds_ref.point_count(), 2, "the reference must see the mutation through the Cell");
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeds buffer capacity")]
+    fn growable_flat_set_current_n_panics_past_capacity() {
+        let data = [1.0f64, 2.0, 3.0, 4.0];
+        let g = GrowableFlat::new(&data, 2);
+        g.set_current_n(3); // only 2 points fit in a 4-element, dim-2 buffer
+    }
+
+    // ------------------------------------------------------------------
+    // dyn_ops -- legality-model property tests (written before wiring the
+    // suites, per the task brief's TDD note: these pin the generator's
+    // contract independent of any tree).
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn dyn_ops_legal_property_many_seeds() {
+        let total_capacity = 500usize;
+        let n_ops = 300usize;
+        for seed in 0u64..50 {
+            let ops = dyn_ops(seed, total_capacity, n_ops);
+            assert_eq!(ops.len(), n_ops, "seed {seed}: dyn_ops must return exactly n_ops entries");
+            // Panics (with the seed's op index) on the first illegal op --
+            // an independent model, not a call back into dyn_ops' own state.
+            validate_dyn_ops_legal(&ops, total_capacity);
+        }
+    }
+
+    #[test]
+    fn dyn_ops_is_deterministic_for_a_given_seed() {
+        let a = dyn_ops(12345, 200, 80);
+        let b = dyn_ops(12345, 200, 80);
+        assert_eq!(a, b, "same seed must reproduce the identical op sequence");
+    }
+
+    #[test]
+    fn dyn_ops_first_op_is_always_grow_and_add() {
+        // Nothing exists yet to Remove or ReAdd -- the very first op must
+        // be GrowAndAdd regardless of seed.
+        for seed in 0u64..20 {
+            let ops = dyn_ops(seed, 100, 1);
+            assert_eq!(ops.len(), 1);
+            assert!(
+                matches!(ops[0], DynOp::GrowAndAdd { .. }),
+                "seed {seed}: first op must be GrowAndAdd, got {:?}",
+                ops[0]
+            );
+        }
+    }
+
+    #[test]
+    fn dyn_ops_never_exceeds_total_capacity() {
+        let total_capacity = 37usize; // deliberately small & not a power of two
+        for seed in 0u64..20 {
+            let ops = dyn_ops(seed, total_capacity, 500);
+            let mut point_count = 0usize;
+            for op in &ops {
+                if let DynOp::GrowAndAdd { count } = *op {
+                    point_count += count;
+                    assert!(
+                        point_count <= total_capacity,
+                        "seed {seed}: point_count {point_count} exceeded total_capacity {total_capacity}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dyn_ops_can_produce_merges_tombstone_migrations_and_drain_stretches() {
+        // Statistical capability check across many seeds (not a per-seed
+        // guarantee) -- see dyn_ops' doc comment for why these are expected
+        // to emerge naturally from the weighted, state-restricted model.
+        // Uses `dyn_ops_stats` for the tombstone-migration count -- the SAME
+        // shared simulation `tests/xval_dynamic.rs`'s per-matrix-sequence
+        // coverage assertions use (fix-round-1 item 2), so this generic
+        // capability check and that per-matrix-config check can't silently
+        // drift into simulating the first0bit/slot-migration rule
+        // differently.
+        let mut saw_point_count_past_merge_boundary = false; // > 8 => at least one slot-3+ merge occurred (first0bit structural guarantee)
+        let mut saw_tombstone_migration = false;
+        let mut saw_drain_heavy_stretch = false; // >= 5 consecutive Removes
+
+        for seed in 0u64..30 {
+            let ops = dyn_ops(seed, 200, 150);
+
+            let stats = dyn_ops_stats(&ops);
+            if stats.tombstone_migrations > 0 {
+                saw_tombstone_migration = true;
+            }
+
+            let mut point_count = 0usize;
+            let mut consecutive_removes = 0usize;
+            for op in &ops {
+                match *op {
+                    DynOp::GrowAndAdd { count } => {
+                        point_count += count;
+                        consecutive_removes = 0;
+                        if point_count > 8 {
+                            saw_point_count_past_merge_boundary = true;
+                        }
+                    }
+                    DynOp::Remove { .. } => {
+                        consecutive_removes += 1;
+                        if consecutive_removes >= 5 {
+                            saw_drain_heavy_stretch = true;
+                        }
+                    }
+                    DynOp::ReAdd { .. } => {
+                        consecutive_removes = 0;
+                    }
+                }
+            }
+        }
+
+        assert!(
+            saw_point_count_past_merge_boundary,
+            "no seed's point_count ever exceeded 8 -- needed for a slot-3+ merge (see first0bit)"
+        );
+        assert!(
+            saw_tombstone_migration,
+            "no seed's sequence ever had a tombstoned index physically swallowed by a later \
+             merge -- tombstone-migration scenarios never occurred"
+        );
+        assert!(
+            saw_drain_heavy_stretch,
+            "no seed produced a drain-heavy stretch (>= 5 consecutive Remove ops)"
+        );
+    }
+
+    #[test]
+    fn dyn_ops_stats_counts_op_kinds_correctly_on_a_hand_crafted_sequence() {
+        // Independent hand check of dyn_ops_stats' op-kind counters (the
+        // tombstone_migrations field is exercised by the test above and by
+        // the tombstone_migration scenario's hand-derivation in
+        // dynamic.rs/tests/xval_dynamic.rs -- this just pins the three
+        // trivial counts).
+        let ops = vec![
+            DynOp::GrowAndAdd { count: 4 },
+            DynOp::Remove { live_idx: 0 },
+            DynOp::Remove { live_idx: 1 },
+            DynOp::ReAdd { removed_idx: 0 },
+        ];
+        let stats = dyn_ops_stats(&ops);
+        assert_eq!(stats.grow_and_add_count, 1);
+        assert_eq!(stats.remove_count, 2);
+        assert_eq!(stats.readd_count, 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "Remove targets a non-live index")]
+    fn validate_dyn_ops_legal_catches_a_hand_crafted_illegal_remove() {
+        // Removes index 0 twice in a row -- illegal (already dead the
+        // second time) -- confirms the validator itself actually detects a
+        // violation, not just that legal sequences pass it vacuously.
+        let ops = vec![
+            DynOp::GrowAndAdd { count: 1 },
+            DynOp::Remove { live_idx: 0 },
+            DynOp::Remove { live_idx: 0 },
+        ];
+        validate_dyn_ops_legal(&ops, 10);
+    }
+
+    #[test]
+    #[should_panic(expected = "ReAdd targets a non-removed index")]
+    fn validate_dyn_ops_legal_catches_a_hand_crafted_illegal_readd() {
+        // ReAdds index 0 while it is still live (never removed) -- illegal.
+        let ops = vec![DynOp::GrowAndAdd { count: 1 }, DynOp::ReAdd { removed_idx: 0 }];
+        validate_dyn_ops_legal(&ops, 10);
+    }
+
+    #[test]
+    #[should_panic(expected = "GrowAndAdd would exceed capacity")]
+    fn validate_dyn_ops_legal_catches_a_hand_crafted_capacity_overrun() {
+        let ops = vec![DynOp::GrowAndAdd { count: 5 }, DynOp::GrowAndAdd { count: 5 }];
+        validate_dyn_ops_legal(&ops, 8); // 5 + 5 = 10 > 8
+    }
+
+    // ------------------------------------------------------------------
+    // Report meta capture (Task 5b) -- smoke test on THIS machine: every
+    // best-effort helper must return non-empty ("unknown" is a valid
+    // non-empty fallback), and `is_wsl` must agree with an independent
+    // re-read of `/proc/version` performed right here (not just "trust the
+    // function's own internal logic").
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn meta_capture_helpers_return_non_empty_and_wsl_matches_proc_version() {
+        assert!(!cpu_model().is_empty(), "cpu_model() must never return an empty string");
+        assert!(!kernel_version().is_empty(), "kernel_version() must never return an empty string");
+        assert!(!cxx_compiler_version().is_empty(), "cxx_compiler_version() must never return an empty string");
+        assert!(!git_sha().is_empty(), "git_sha() must never return an empty string");
+
+        let expected_wsl =
+            std::fs::read_to_string("/proc/version").map(|s| s.to_lowercase().contains("microsoft")).unwrap_or(false);
+        assert_eq!(is_wsl(), expected_wsl, "is_wsl() must agree with an independent /proc/version check");
     }
 }

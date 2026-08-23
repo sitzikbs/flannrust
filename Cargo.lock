@@ -676,6 +676,8 @@ dependencies = [
  "nanoflann-rs",
  "rand",
  "rand_chacha",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
