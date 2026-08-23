@@ -138,7 +138,50 @@ where
 /// 10 over 100k points needs depth ~13) with wide headroom; degenerate
 /// trees deeper than this spill onto the heap (see `FrameStack`) — a query
 /// never allocates on its own unless it actually needs a frame past this
-/// depth. Value carried over from the M2.5-T1 prototype measurement.
+/// depth.
+///
+/// **This value (128) is ARBITRARY-WITH-HEADROOM, not derived from a
+/// principled depth-distribution analysis.** Carried over unchanged from
+/// the M2.5-T1 prototype measurement, chosen only as "comfortably above
+/// every depth this crate's own gate/xval workloads produce" (~13-17 for
+/// the standard 100k-point/leaf-10 gate configuration; task 6's own
+/// deliberately-adversarial degenerate-tree stress tests reach depth
+/// ~2 115 and ~16 794 — see `heavy_query_degenerate_trees` below — which
+/// are FAR beyond 128 regardless of what this constant is set to, so no
+/// choice of a "reasonable" inline capacity avoids the spill path for
+/// those trees; 128 was never meant to cover them, only the realistic
+/// case). No sweep over alternative capacities against realistic
+/// (non-adversarial) tree-depth distributions has been done — a future
+/// task that wants to tune this number down (to shrink the fixed
+/// `size_of::<FrameStack>()` stack reservation) or up (to push the spill
+/// boundary further out) should measure first, not assume 128 is load-
+/// bearing. (Reviewer fix-round item 5's one-off A/B did test whether
+/// LOWERING this to 32 recovers the `radius`/`knn_dyn_dim8_f64` losses
+/// documented in `task-2-report.md` §6 — it does NOT: both regressions are
+/// intrinsic to the store/reload + code-size cost of even an inlined
+/// explicit stack vs. register-carried native recursion, not a function of
+/// this constant.)
+///
+/// **Spill heap-churn cost (documented next to the no-stack-overflow
+/// upgrade it trades against):** a query whose tree is deeper than this
+/// constant pays a REAL per-query heap allocation/reallocation cost once
+/// `FrameStack::push` starts routing into `overflow: Vec` (`Vec`'s normal
+/// doubling-growth reallocation, repeated as the query's stack depth grows
+/// past 128, 256, 512, ... frames) — this is new cost that did NOT exist
+/// under the previous native-recursion implementation (which paid zero
+/// heap allocation at any depth, only native call-stack frames). The
+/// trade this constant embodies: bounded, `MaybeUninit`-cheap common-case
+/// behavior plus IMMUNITY to native-stack overflow at arbitrary depth (the
+/// old recursive form could in principle overflow a small worker thread's
+/// stack on a sufficiently degenerate tree — see `heavy_query_degenerate_trees`'s
+/// updated doc comment), in exchange for real, measurable heap churn on
+/// the rare deep-tree query. This is judged a good trade (the M1
+/// degenerate-tree ceiling is real and adversarial-tree-shaped datasets
+/// are exactly the case this crate's own test suite deliberately
+/// stress-tests), but it is a genuine give-back, not a free upgrade, and a
+/// workload that runs MANY queries against a tree deeper than 128 on every
+/// query would pay this repeatedly (once per query, since `FrameStack` is
+/// not reused across queries — see `search_level`'s doc for why).
 const SEARCH_STACK_INLINE_CAPACITY: usize = 128;
 
 /// One interior node's saved "resume" state on `search_level`'s explicit
@@ -151,7 +194,8 @@ const SEARCH_STACK_INLINE_CAPACITY: usize = 128;
 /// logic that follows the SECOND (`other_child`) call" (just the restore).
 /// A frame that gets pruned (no `other_child` visit) is popped directly out
 /// of `Phase::PostBest` and never sees `PostOther`.
-struct Frame<Dist> {
+#[derive(Clone, Copy)]
+struct Frame<Dist: Copy> {
     /// `node.split_dim()` of the interior node this frame belongs to.
     idx: usize,
     /// `dists[idx]` as it was when this node was entered — the recursive
@@ -206,20 +250,57 @@ enum Phase {
 /// inline-`const` array-repeat expression, so it doesn't need `Dist: Copy`
 /// the way a plain `[expr; N]` repeat would — is ordinary safe Rust and
 /// costs nothing at runtime: no element is considered "initialized" until
-/// `push` actually writes one. The INVARIANT this
-/// relies on: `inline[i]` holds a live, `push`-written `Frame` for every `i
-/// < inline_len`, and NEVER for `i >= inline_len` — `inline_len` is the only
-/// place that boundary is adjusted, always in lock-step with a `write`
-/// (`push`) or a consuming read (`pop`/`top_mut`, both of which only ever
-/// touch index `inline_len - 1`, i.e. the slot the most recent `push` wrote
-/// and no `pop` has consumed yet).
-struct FrameStack<Dist> {
+/// `push` actually writes one.
+///
+/// INITIALIZATION invariant: `inline[i]` holds a live, `push`-written
+/// `Frame` for every `i < inline_len`, and NEVER for `i >= inline_len` —
+/// `inline_len` is the only place that boundary is adjusted, always in
+/// lock-step with a `write` (`push`) or a consuming read (`pop`/`top_mut`,
+/// both of which only ever touch index `inline_len - 1`, i.e. the slot the
+/// most recent `push` wrote and no `pop` has consumed yet).
+///
+/// DESTRUCTION/PANIC invariant: `Dist: Copy` (bound on this struct and on
+/// `Frame`) is not just documentation — it is load-bearing for soundness.
+/// `MaybeUninit<T>` never runs `T`'s destructor implicitly (that is
+/// precisely why it costs nothing to leave slots uninitialized), so if
+/// `Frame<Dist>` could be non-`Copy` (i.e. could own a `Drop` resource),
+/// dropping a `FrameStack` with `inline_len > 0` remaining initialized
+/// slots would silently LEAK every one of them — Rust has no way to know
+/// which `inline` slots hold live values without a manual `Drop` impl this
+/// struct does not have. `Dist: Copy` statically forecloses that: a type
+/// cannot implement both `Copy` and `Drop` in Rust, so `Frame<Dist>` (whose
+/// only non-`Copy`-trivial fields are `Dist`-typed) can never have a
+/// destructor to skip. This holds unconditionally — on the ordinary pop-
+/// everything-then-drop path, on early return (an aborted search simply
+/// stops popping, see `search_level`'s three-exit-paths table — again fine,
+/// since there is nothing to run), and on an unwinding panic through
+/// `FrameStack`'s stack frame (same reasoning: no destructor exists to
+/// miss). `M::DistanceType` (this crate's only real-world `Dist`) is
+/// bounded `Copy` by `DistanceValue` already (`scalar.rs`), so this bound
+/// costs nothing at any current call site — it only forecloses a FUTURE
+/// non-`Copy` `Dist` from silently making this struct unsound.
+struct FrameStack<Dist: Copy> {
     inline: [MaybeUninit<Frame<Dist>>; SEARCH_STACK_INLINE_CAPACITY],
     inline_len: usize,
     overflow: Vec<Frame<Dist>>,
+    /// Test-only high-water mark: the largest `inline_len + overflow.len()`
+    /// ever observed by `push`, i.e. the deepest this stack ever actually
+    /// got during ONE query. Exists purely so tests that mean to exercise
+    /// the `overflow` spill path can ASSERT they actually did — reviewer
+    /// fix-round finding: a test that only checks the final knn/radius
+    /// result can pass even when the constructed tree's query path never
+    /// pushes past `SEARCH_STACK_INLINE_CAPACITY` (the tree's overall
+    /// `max_depth` and one SPECIFIC query's push depth are different
+    /// numbers — see `spill_boundary_deep_tree_knn_and_radius_match_brute_force`'s
+    /// updated doc comment for the concrete miss this caught: query index
+    /// 60 only reached inline depth 69, never spilling, while the test's
+    /// assertions still passed on correctness alone). Zero cost outside
+    /// `cfg(test)` — the field doesn't exist in a normal build.
+    #[cfg(test)]
+    max_depth_seen: usize,
 }
 
-impl<Dist> FrameStack<Dist> {
+impl<Dist: Copy> FrameStack<Dist> {
     #[inline]
     fn new() -> Self {
         // `[const { MaybeUninit::uninit() }; N]` (an inline-`const` array
@@ -227,7 +308,13 @@ impl<Dist> FrameStack<Dist> {
         // `Frame<Dist>: Copy` for the array-repeat itself — each element is
         // independently const-evaluated as uninitialized, so this compiles
         // for ANY `Dist` and costs nothing at runtime.
-        Self { inline: [const { MaybeUninit::uninit() }; SEARCH_STACK_INLINE_CAPACITY], inline_len: 0, overflow: Vec::new() }
+        Self {
+            inline: [const { MaybeUninit::uninit() }; SEARCH_STACK_INLINE_CAPACITY],
+            inline_len: 0,
+            overflow: Vec::new(),
+            #[cfg(test)]
+            max_depth_seen: 0,
+        }
     }
 
     #[inline]
@@ -237,6 +324,13 @@ impl<Dist> FrameStack<Dist> {
             self.inline_len += 1;
         } else {
             self.overflow.push(frame);
+        }
+        #[cfg(test)]
+        {
+            let depth = self.inline_len + self.overflow.len();
+            if depth > self.max_depth_seen {
+                self.max_depth_seen = depth;
+            }
         }
     }
 
@@ -269,6 +363,21 @@ impl<Dist> FrameStack<Dist> {
         // written by the most recent `push` and hasn't been popped since.
         Some(unsafe { self.inline[self.inline_len - 1].assume_init_mut() })
     }
+}
+
+// Test-only side channel for `FrameStack::max_depth_seen` (see that
+// field's doc): `search_level`'s `FrameStack` is a purely local variable
+// (deliberately — no per-query allocation on the common path, no public
+// API change), so a test that wants to know how deep a specific query's
+// stack actually got needs somewhere to read that number from after the
+// call returns. Published right before every `search_level` return site
+// via the `record_max_stack_depth!` macro. `thread_local!` (not a plain
+// global `static`) so parallel test execution (`cargo test` runs test
+// functions on multiple threads by default) can't cross-contaminate two
+// tests' readings.
+#[cfg(test)]
+thread_local! {
+    static LAST_SEARCH_STACK_MAX_DEPTH: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
 }
 
 /// Port of `searchLevel` (nanoflann.hpp ~1228-1287) as an EXPLICIT-STACK
@@ -359,6 +468,22 @@ where
 {
     let mut stack: FrameStack<M::DistanceType> = FrameStack::new();
 
+    // Test-only instrumentation: `FrameStack` is a purely local variable
+    // here (by design — see its doc), so a test that wants to assert a
+    // query actually pushed past `SEARCH_STACK_INLINE_CAPACITY` (i.e. truly
+    // exercised the `overflow` spill, not just "the tree is deep") needs a
+    // side channel to read `stack.max_depth_seen` after the call returns.
+    // `record_max_stack_depth!` publishes it into a thread-local right
+    // before every return site (defined just below `search_level`).
+    macro_rules! record_max_stack_depth {
+        () => {
+            #[cfg(test)]
+            {
+                LAST_SEARCH_STACK_MAX_DEPTH.with(|c| c.set(stack.max_depth_seen));
+            }
+        };
+    }
+
     'walk: loop {
         // ---- Descend from `node_idx` to a leaf, pushing one `Frame` per
         // interior node passed through — exactly the recursive function's
@@ -383,6 +508,7 @@ where
                     if dist < result.worst_dist() && !result.add_point(dist, accessor) {
                         // Abort: exit paths (i)/(ii) above — propagate
                         // immediately, no frame's restore runs.
+                        record_max_stack_depth!();
                         return false;
                     }
                 }
@@ -418,6 +544,7 @@ where
         // the stack empties (the whole search is done). ----
         loop {
             let Some(frame) = stack.top_mut() else {
+                record_max_stack_depth!();
                 return true;
             };
             match frame.phase {
@@ -1928,18 +2055,33 @@ mod tests {
     // Spill-boundary test: explicit-stack `search_level` frame storage is a
     // fixed inline array (capacity `SEARCH_STACK_INLINE_CAPACITY`, see the
     // top of this file) with a heap-spill `Vec` fallback for deeper trees.
-    // This builds a tree whose depth crosses that inline capacity (verified
-    // via `max_depth`, the same helper `heavy_query_degenerate_trees` uses)
-    // and checks knn + radius against brute force — i.e. it exercises the
+    // This builds a tree whose depth crosses that inline capacity and
+    // checks knn + radius against brute force — i.e. it exercises the
     // spill path itself, not just "does it not panic".
+    //
+    // Reviewer fix-round finding (do NOT regress this): checking the
+    // TREE's overall `max_depth` (via the same helper
+    // `heavy_query_degenerate_trees` uses) is necessary but NOT sufficient
+    // — a specific query's push depth through that tree can be far
+    // shallower than the tree's deepest leaf. The first version of this
+    // test asserted `max_depth > SEARCH_STACK_INLINE_CAPACITY` and queried
+    // `pts[60]`; the tree's `max_depth` was correctly 140, but that
+    // specific query's `FrameStack` only ever reached depth 69 — the spill
+    // path (`overflow: Vec`, the `pop`ping/reading of it) was NEVER
+    // EXECUTED by this test, despite every assertion passing. Caught only
+    // because `FrameStack::max_depth_seen` (test-only instrumentation, see
+    // that field's doc) makes the actual push depth directly assertable
+    // instead of inferred from the tree's shape. This test now asserts
+    // `max_depth_seen` directly, for BOTH the knn and the radius call
+    // (`pts[135]` measured: knn depth 139, radius depth 135 — both cross
+    // 128 with real margin, not by a hair).
     //
     // `n=150` of the same exponential-spine generator as
     // `heavy_query_degenerate_trees` (just a far smaller `n`) empirically
-    // gives depth 140 (see the depth/n relationship documented on
-    // `heavy_dim1_points`): comfortably above the 128-frame inline capacity
-    // (spill path exercised for ~12 levels) while staying cheap enough to
-    // run in every `cargo test` invocation, unlike the `--ignored` depth
-    // ~16 794 heavy test below.
+    // gives tree depth 140 (see the depth/n relationship documented on
+    // `heavy_dim1_points`) while staying cheap enough to run in every
+    // `cargo test` invocation, unlike the `--ignored` depth ~16 794 heavy
+    // test below.
     // ---------------------------------------------------------------
 
     /// Same exponential-spine shape as `heavy_dim1_points` (each value half
@@ -1995,12 +2137,31 @@ mod tests {
         // A well-separated, non-tied query (same "exact copy of a spine
         // point, mid-spine" trick `heavy_query_degenerate_trees` uses, to
         // sidestep the many-way exact-tie-at-zero methodology trap
-        // documented there) — index 60 is comfortably mid-spine, away from
-        // both the huge-magnitude head (squared-difference overflow risk)
-        // and the all-zero padding tail.
-        let query = pts[60];
+        // documented there). Reviewer fix-round finding: index 60 (an
+        // earlier version of this test) is NOT deep enough — the tree's
+        // OVERALL `max_depth` (140) is dominated by the LATE end of the
+        // spine (peeling proceeds index-by-index, so reaching a leaf near
+        // spine position `p` costs roughly `p` push/pop levels); querying
+        // `pts[60]` only ever pushed the `FrameStack` to depth 69 (measured
+        // — see the `max_depth_seen` assertions below), never spilling past
+        // the 128-frame inline capacity at all. A knn/radius-correctness
+        // assertion alone does not catch this — an unexercised spill path
+        // still returns the right answer, it just never RAN — which is
+        // exactly why `FrameStack::max_depth_seen` (test-only) exists: this
+        // test now asserts the spill actually fired, not just that the
+        // final result was right. `pts[135]` (verified below) pushes deep
+        // enough into the spine's late/deep region to cross 128.
+        let query = pts[135];
 
+        LAST_SEARCH_STACK_MAX_DEPTH.with(|c| c.set(0));
         let (tree_idx, tree_dists, full) = tree_knn(&vind, &arena, &bbox, &pts, &query, 10, 0.0);
+        let knn_max_depth = LAST_SEARCH_STACK_MAX_DEPTH.with(|c| c.get());
+        assert!(
+            knn_max_depth > SEARCH_STACK_INLINE_CAPACITY,
+            "knn query never actually spilled: FrameStack max depth reached was {knn_max_depth}, \
+             capacity is {SEARCH_STACK_INLINE_CAPACITY} — this test would silently stop \
+             discriminating the spill path if the query index above stopped reaching this deep"
+        );
         let (bf_idx, bf_dists) = brute_force_knn(&pts, &query, 10);
         assert_eq!(tree_idx, bf_idx, "knn index mismatch across the spill boundary");
         assert_eq!(tree_dists, bf_dists, "knn dist mismatch across the spill boundary");
@@ -2009,7 +2170,14 @@ mod tests {
         // Radius strictly between the 1st and 2nd nearest distances -> the
         // query's own exact match only, no tie ambiguity.
         let radius = (bf_dists[0] + bf_dists[1]) / 2.0;
+        LAST_SEARCH_STACK_MAX_DEPTH.with(|c| c.set(0));
         let mut tree_r = tree_radius(&vind, &arena, &bbox, &pts, &query, radius);
+        let radius_max_depth = LAST_SEARCH_STACK_MAX_DEPTH.with(|c| c.get());
+        assert!(
+            radius_max_depth > SEARCH_STACK_INLINE_CAPACITY,
+            "radius query never actually spilled: FrameStack max depth reached was {radius_max_depth}, \
+             capacity is {SEARCH_STACK_INLINE_CAPACITY}"
+        );
         tree_r.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap().then(a.0.cmp(&b.0)));
         let bf_r = brute_force_radius(&pts, &query, radius);
         assert_eq!(tree_r, bf_r, "radius mismatch across the spill boundary");

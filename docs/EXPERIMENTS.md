@@ -215,6 +215,34 @@ fixed-size workload, not a full benchmark sweep). `--test-threads=1` is
 load-bearing here, not cosmetic: gate timings must not share the CPU with
 a sibling test's load.
 
+### Miri (undefined-behavior check for `search.rs`'s `unsafe`)
+
+`crates/nanoflann-rs/src/search.rs`'s `FrameStack` (M2.5 task 2, explicit-
+stack iterative `search_level`) is this crate's first and only `unsafe`
+code — two small blocks (`assume_init_read`/`assume_init_mut`) implementing
+a fixed-capacity inline frame buffer with a heap-`Vec` spill. Requires
+`rustup component add miri --toolchain nightly` once; both commands below
+must be run — Stacked Borrows (miri's default aliasing model) and Tree
+Borrows (`-Zmiri-tree-borrows`, a stricter/different model) can each catch
+UB the other misses:
+
+```
+cargo +nightly miri test -p nanoflann-rs --lib -- search
+MIRIFLAGS="-Zmiri-tree-borrows" cargo +nightly miri test -p nanoflann-rs --lib -- search
+```
+
+Expected runtime: **~8 minutes each** (miri interprets every instruction,
+~50-100x slower than native; the `-- search` filter keeps this to
+`search.rs`'s own test module — 35 tests, 34 run + 1 `#[ignore]`d heavy
+test skipped, since miri interpreting a depth-~16 794 degenerate-tree query
+would run for hours). Includes
+`spill_boundary_deep_tree_knn_and_radius_match_brute_force`, which is the
+one test in this filtered set that actually exercises `FrameStack`'s
+`overflow` spill path (see that test's doc comment) — i.e. miri validates
+the `unsafe` blocks under a real spill, not just the common inline-only
+case. **Both re-run for M2.5 task 2's fix round: 34 passed, 0 failed, 1
+ignored, clean under both aliasing models** — no UB detected.
+
 **Re-run 1, all six gates** (during this document's original drafting):
 ```
 PERF_GATE perf_gate_build_100k_dim3_f32_seq: rust=9.128ms cpp=9.254ms ratio=0.986
