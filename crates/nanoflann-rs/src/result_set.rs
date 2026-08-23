@@ -1,3 +1,8 @@
+//! Result-set collectors: the `ResultSet` trait the tree walk feeds
+//! candidates into, its built-in implementations (`KnnResultSet`,
+//! `RknnResultSet`, `RadiusResultSet`), and the `TieBreak` policy that
+//! decides equal-distance ordering.
+
 use core::marker::PhantomData;
 
 use crate::scalar::DistanceValue;
@@ -8,17 +13,23 @@ use crate::scalar::DistanceValue;
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ResultItem<Idx, D> {
+    /// Point index into the dataset.
     pub index: Idx,
+    /// Distance from the query point, in the metric's native scale.
     pub distance: D,
 }
 
 /// Result-set contract used by `find_neighbors` (= nanoflann RESULTSET duck type).
 pub trait ResultSet<D: DistanceValue, Idx: Copy> {
+    /// The worst (largest) distance this set would currently accept — the
+    /// tree walk's per-candidate prune gate (`dist < worst_dist()`).
     fn worst_dist(&self) -> D;
     /// Returns `false` to abort the search (nanoflann.hpp:1245-1250 honors this;
     /// all built-in sets always return `true`).
     fn add_point(&mut self, dist: D, index: Idx) -> bool;
+    /// Whether the set has reached its capacity/coverage limit.
     fn full(&self) -> bool;
+    /// Number of entries currently held.
     fn size(&self) -> usize;
     /// Called by `find_neighbors` when `SearchParams::sorted` (default true).
     /// KNN/RKNN are sorted by construction → default no-op, same as C++.
@@ -136,6 +147,7 @@ pub struct RknnResultSet<'a, D, Idx, TB = KeepInsertionOrder> {
 }
 
 impl<'a, D: DistanceValue, Idx: Copy + PartialOrd, TB: TieBreak> RknnResultSet<'a, D, Idx, TB> {
+    /// Panics if the two buffers differ in length.
     pub fn new(indices: &'a mut [Idx], dists: &'a mut [D], max_radius: D) -> Self {
         assert_eq!(indices.len(), dists.len(), "indices/dists length mismatch");
         Self { indices, dists, count: 0, max_radius, _tb: PhantomData }

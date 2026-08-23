@@ -1,10 +1,15 @@
+//! Scalar traits: coordinate element types (`Scalar`), accumulated distance
+//! values (`DistanceValue`), and point-index types (`IndexType`). `f32`/`f64`
+//! implement `Scalar`/`DistanceValue`; `u32`/`u64`/`usize` implement
+//! `IndexType`.
+
 use core::ops::{Add, Div, Mul, Sub};
 
 /// Element type of dataset coordinates. Implemented for `f32` and `f64` in M1.
 /// `Default` doubles as the zero value (mirrors nanoflann's `ElementType()` zero-init).
 ///
-/// `Mul`/`Div` and `from_f64` are needed starting with the tree builder
-/// (`build.rs`, task 6): nanoflann's `middleSplit_` computes `(1 - EPS) *
+/// `Mul`/`Div` and `from_f64` are needed by the tree builder (`build.rs`):
+/// nanoflann's `middleSplit_` computes `(1 - EPS) *
 /// max_span` and `(low + high) / 2` directly in `ElementType`, and its
 /// constants (`EPS = 0.00001`, the halving divisor, the `-1` spread seed)
 /// need a generic way to materialize as `T`. `from_f64` mirrors
@@ -43,6 +48,7 @@ pub trait DistanceValue:
 {
     /// Sentinel "worst possible" distance (= `std::numeric_limits<T>::max()`).
     const MAX: Self;
+    /// The additive identity (zero distance).
     const ZERO: Self;
     /// Widen a user-supplied `eps` (nanoflann's `SearchParameters::eps` is `float`).
     fn from_f32(v: f32) -> Self;
@@ -60,11 +66,10 @@ impl DistanceValue for f64 {
     fn from_f32(v: f32) -> Self { v as f64 }
 }
 
-/// Public point-index type (promoted from `build.rs`'s crate-private
-/// `IndexAccess`, task 6 — same contract, same method names, now part of the
-/// public API so callers can pick `u32`/`u64`/`usize` via
-/// `KdTreeBuilder::index_type`).
+/// Public point-index type, so callers can pick `u32`/`u64`/`usize` via
+/// `KdTreeBuilder::index_type`.
 pub trait IndexType: Copy + PartialOrd + Send + Sync + 'static {
+    /// Widen to `usize` for indexing into the dataset/permutation vector.
     fn to_usize(self) -> usize;
     /// Panics (via `try_into().unwrap()`) if `v` doesn't fit in `Self`.
     fn from_usize(v: usize) -> Self;

@@ -1,3 +1,7 @@
+//! Dimensionality strategy: compile-time (`ConstDim<N>`) or runtime
+//! (`DynDim`), both implementing the `Dim` trait so the rest of the crate is
+//! generic over which one a tree was built with.
+
 /// Dimension strategy: compile-time (`ConstDim<N>`) or runtime (`DynDim`).
 pub trait Dim: Copy + Send + Sync + 'static {
     /// `[T; N]` for `ConstDim<N>`, `Vec<T>` for `DynDim` — per-dimension scratch/bbox storage.

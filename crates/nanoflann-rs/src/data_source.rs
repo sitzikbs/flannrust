@@ -1,9 +1,14 @@
+//! Zero-copy dataset access: the `DataSource` trait callers implement to
+//! hand their point cloud to a `KdTreeBuilder`, plus two built-in
+//! implementations (`&[[T; N]]` and the row-major `FlatSlice`).
+
 use crate::bbox::Interval;
 use crate::scalar::Scalar;
 
 /// Zero-copy dataset access (nanoflann's DatasetAdaptor duck-type contract:
 /// `kdtree_get_point_count` / `kdtree_get_pt` / `kdtree_get_bbox`).
 pub trait DataSource<T: Scalar> {
+    /// Number of points in the dataset.
     fn point_count(&self) -> usize;
 
     /// Component `dim` of point `idx`. `idx < point_count()`, `dim < dimensionality`.
@@ -40,7 +45,7 @@ impl<'a, T: Scalar> FlatSlice<'a, T> {
     pub fn new(data: &'a [T], dim: usize) -> Self {
         assert!(dim > 0, "FlatSlice dimension must be > 0");
         assert!(
-            data.len() % dim == 0,
+            data.len().is_multiple_of(dim),
             "FlatSlice data length {} is not a multiple of dim {}",
             data.len(),
             dim
@@ -48,6 +53,7 @@ impl<'a, T: Scalar> FlatSlice<'a, T> {
         Self { data, dim }
     }
 
+    /// The dimensionality this `FlatSlice` was constructed with.
     pub fn dim(&self) -> usize {
         self.dim
     }

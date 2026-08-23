@@ -35,6 +35,39 @@ milestone's stricter bar — dim-3 f32 knn and build ratios ≤ 1.0 — is now
 knn_fixed3** (1.04-1.05, down from 1.05, a real but partial close — see
 "Remaining gap analysis" below).
 
+### Radius marshalling asymmetry (read `radius_dim3_f32`'s < 1.0 ratio with this in mind)
+
+`radius_dim3_f32`'s ratio (0.767-0.774, Rust *faster* than C++) is genuine,
+but the two sides pay a different amount of FFI-wrapper bookkeeping inside
+the timed region, and that asymmetry favors Rust — worth reading the number
+with this in mind rather than as a pure "faster algorithm" claim.
+`nanoflann_ref::RefIndexF32::radius_into` (the C++-side benchmark call,
+`crates/nanoflann-ref/src/lib.rs`) uses a two-call `_count`/`_fetch`
+protocol: `_count` runs nanoflann's real `radiusSearch` into an
+internal `std::vector<ResultItem<uint32_t, T>>` scratch buffer (AoS:
+index+distance interleaved), then `_fetch` (`nfr_radius_fetch_impl`,
+`crates/nanoflann-ref/cpp/wrapper.cpp`) walks that scratch buffer
+element-by-element, splitting each `ResultItem` into the separate
+`out_idx[i]`/`out_dist[i]` SoA arrays the Rust FFI caller expects — a plain
+loop of `2 * found` scalar stores that a native C++ caller of nanoflann
+would never pay (they'd just keep using the AoS `std::vector` nanoflann
+itself returns). This split copy runs INSIDE the timed C++ call in the
+benchmark. Rust's `radius_search`/`RadiusResultSet::add` has no analogous
+step: it pushes directly into the caller's `Vec<ResultItem<Idx, D>>`, which
+is already the AoS layout the query needs.
+
+Bounding the likely magnitude: the benchmark's two selectivities return
+~10 and ~1000 items per query respectively; at ~10 items the marshalling
+loop is negligible next to the tree walk, but at ~1000 items (closer to
+"~100 items/query" order of magnitude and up) a `~1000`-iteration scalar
+copy loop is a real, if still probably small (low-single-digit-percent),
+constant addition to the C++ side's measured time that has nothing to do
+with `radiusSearch` itself. This doesn't invalidate Rust's win margin here,
+but the margin should be read as "at least this good," not attributed
+entirely to algorithmic difference — some of it is this crate's own FFI
+wrapper design choice on the C++ side of the harness, not native C++
+nanoflann's actual cost.
+
 ## Headline table (criterion, spot-check methodology, `--quick`)
 
 ### `knn_fixed3` — `ConstDim<3>` + `&[[T;3]]` (rust) vs `RefIndex3F32`/`RefIndex3F64` (cpp)
@@ -112,9 +145,10 @@ leaf scan confirms the eval kernel itself is now optimal post-Task-14:
   under `ConstDim<3>` monomorphization), and the three per-component bounds
   checks collapsed to exactly ONE (`idx < len`) via LLVM's own CSE across the
   now straight-line unrolled code — this happened automatically, without
-  needing the `DataSource::point_row` fast path (Candidate 2), which is why
-  Candidate 2 measured as a net loser (see task-14-report.md) and was
-  reverted.
+  needing a `DataSource::point_row` fast path (returning a whole point at
+  once instead of per-component `point_component` calls) at all — that fast
+  path was tried as a candidate optimization, measured as a net performance
+  loss once the CSE above already closed most of the gap, and reverted.
 
 What's left in the ~4-5% gap is architectural, not a missed optimization in
 the hot kernel:
@@ -178,6 +212,75 @@ SIMD/batching — both out of M1 scope per the brief. The perf gate passes
 with comfortable margin (1.047 ≤ 1.25) and build is now at parity; this is
 recorded as the task's honest final state per the brief's "rigorous
 documented analysis" allowance.
+
+## `leaf_max_size` sweep
+
+Measured via `RUSTFLAGS="-C target-cpu=native" cargo bench -p xval --bench
+bench_build -- leaf_sweep --sample-size 10 --measurement-time 2
+--warm-up-time 1` (a short/quick sweep — 10 samples, 2s measurement window
+per point, vs. the headline tables' longer criterion defaults, so treat this
+as a spot check, not the high-confidence numbers above). `n = 100_000`, dim
+3, f32, uniform data, `leaf_max_size ∈ {1, 4, 10, 16, 32, 50, 128, 1024}`,
+both build and k=10 knn time, for both libraries. Point estimates below are
+criterion's reported median of the 10 samples; ratio = rust/cpp.
+
+| `leaf_max_size` | build rust | build cpp | build ratio | knn rust | knn cpp | knn ratio |
+|---|---|---|---|---|---|---|
+| 1 | 13.585 ms | 14.581 ms | 0.932 | 1.4255 µs | 1.2564 µs | 1.135 |
+| 4 | 11.642 ms | 11.751 ms | 0.991 | 0.9558 µs | 0.9569 µs | 0.999 |
+| 10 (default) | 9.923 ms | 9.722 ms | 1.021 | 0.8192 µs | 0.8168 µs | 1.003 |
+| 16 | 9.080 ms | 8.762 ms | 1.036 | 0.7917 µs | 0.8034 µs | 0.985 |
+| 32 | 7.950 ms | 7.808 ms | 1.018 | 0.8321 µs | 0.8377 µs | 0.993 |
+| 50 | 7.310 ms | 7.118 ms | 1.027 | 0.9445 µs | 0.9435 µs | 1.001 |
+| 128 | 6.252 ms | 6.020 ms | 1.039 | 1.2543 µs | 1.2263 µs | 1.023 |
+| 1024 | 4.459 ms | 4.257 ms | 1.047 | 3.7129 µs | 3.2894 µs | 1.129 |
+
+Honest conclusion from these numbers: build time falls monotonically as
+`leaf_max_size` grows (fewer, bigger leaves means less split/node-allocation
+overhead, on both sides) — expected and not particularly informative for
+picking a default. The knn column is the one that matters for choosing a
+default, and it's a shallow U shape: both very small (`1`) and very large
+(`1024`) leaves cost more per query (ratio 1.13-1.14x against C++ at both
+extremes — small leaves mean more tree levels/recursive-call overhead per
+query, large leaves mean more points to linearly scan per leaf), while
+`leaf_max_size` in roughly `4..50` sits close to parity (ratios 0.985-1.003
+in this run). `leaf_max_size = 4` measured marginally best on both build and
+knn here, but this is a single 10-sample quick run — not enough to
+distinguish it from `10` at this noise level, and reading too much into one
+short sweep would overfit to this run's jitter. `10` (nanoflann's own
+default, and this crate's) remains a good, defensible choice: it sits inside
+the near-parity knn band this sweep identifies, and there is no value in
+this sweep that clearly dominates it on both axes at once.
+
+## Parallel build
+
+Measured via `xval::timed_median_ms` (the same median-of-7,
+one-untimed-warmup methodology `tests/perf_gate.rs` and
+`examples/report_data.rs` use), dim 3, f32, uniform data, `leaf_max_size =
+10`: `BuildThreads::Auto` (rust) vs C++ `n_thread_build = 0` (both mean
+"use the ambient/hardware thread pool" on their respective sides) on this
+machine's 8 visible threads. The `n = 1_000_000` sequential/parallel rows
+mirror `examples/report_data.rs`'s existing `build_1M_dim3_f32_seq`/`_par`
+speed-JSON rows (regenerated here alongside the new `n = 100_000` row, which
+`report_data.rs` does not currently emit); `n = 100_000` was added via a
+throwaway example reusing the same `xval` helpers, run once, then removed.
+
+| n | seq rust | seq cpp | seq ratio | par (Auto/0) rust | par (Auto/0) cpp | par ratio |
+|---|---|---|---|---|---|---|
+| 100,000 | 9.201 ms | 9.643 ms | 0.954 | 2.697 ms | 4.731 ms | 0.570 |
+| 1,000,000 | 120.969 ms | 122.513 ms | 0.987 | 27.159 ms | 47.310 ms | 0.574 |
+
+The sequential ratios (0.954, 0.987) are consistent with the perf gate's
+`build_100k_dim3_f32_seq` figure above. The parallel ratios are the notable
+result: Rust's deterministic rayon-based parallel build (`build_parallel.rs`
+— partition-then-`rayon::join`, task-local arenas merged at the end) runs
+roughly **1.75x faster** than the C++ oracle's own `n_thread_build = 0`
+threaded build on this 8-thread machine, at both sizes tested. This crate's
+`BuildThreads` docs already deviate from claiming exact parity with C++'s
+async per-node thread-gating (see the README's "Deliberate deviations"
+table) — this measurement is consistent with that documented difference in
+scheduling strategy translating into a real wall-clock win here, not just a
+"produces the same tree" equivalence.
 
 ## Test status
 

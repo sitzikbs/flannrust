@@ -5,7 +5,9 @@
 /// a node is visited iff `mindist * (1 + eps) <= worst_dist`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SearchParams {
+    /// Multiplicative slack on the node-bound prune (see the struct doc).
     pub eps: f32,
+    /// Whether results are sorted ascending by distance before returning.
     pub sorted: bool,
 }
 
@@ -38,17 +40,16 @@ impl Default for SearchParams {
 /// carries no `Sync` bound, always compiles, and always builds
 /// (`Sequential` only — it panics on `Auto`/`Threads(_)`, since those
 /// genuinely cannot run without `Sync`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BuildThreads {
+    /// Build on the calling thread only (the default).
+    #[default]
     Sequential,
+    /// Build on rayon's ambient/global thread pool (requires the "parallel" feature).
     Auto,
+    /// Build inside a scoped rayon pool of exactly this many threads
+    /// (requires the "parallel" feature).
     Threads(core::num::NonZeroU32),
-}
-
-impl Default for BuildThreads {
-    fn default() -> Self {
-        Self::Sequential
-    }
 }
 
 #[cfg(test)]

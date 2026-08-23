@@ -1,10 +1,16 @@
+//! Per-dimension `[low, high]` bounding intervals (`Interval`) and the
+//! dataset-bounding-box scan (`compute_bounding_box`) used to seed the
+//! tree builder's root box.
+
 use crate::scalar::Scalar;
 use crate::data_source::DataSource;
 
 /// One per-dimension `[low, high]` interval (nanoflann's `KDTreeBaseClass::Interval`).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Interval<T> {
+    /// Lower bound (inclusive).
     pub low: T,
+    /// Upper bound (inclusive).
     pub high: T,
 }
 
@@ -20,6 +26,11 @@ impl<T: Scalar> Interval<T> {
 /// Fill `bbox` (length = dim) with the dataset's bounds: the dataset's own
 /// `fill_bbox` if it provides one, else a full scan. Same comparison order
 /// as C++ (`< low` then `> high`, two independent ifs).
+// `i` indexes BOTH `bbox` and `ds.point_component(_, i)` (a trait method,
+// not a slice) in lockstep with the C++ source's per-axis loop order --
+// kept as an explicit range loop (not an iterator adaptor over `bbox`
+// alone) for that C++-order fidelity.
+#[allow(clippy::needless_range_loop)]
 pub(crate) fn compute_bounding_box<T: Scalar, DS: DataSource<T> + ?Sized>(
     ds: &DS,
     dim: usize,

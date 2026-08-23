@@ -5,6 +5,7 @@
 
 /// Per-point search filter.
 pub trait PointFilter<Idx: Copy> {
+    /// Whether the point at `idx` should be considered a candidate.
     fn is_active(&self, idx: Idx) -> bool;
 }
 

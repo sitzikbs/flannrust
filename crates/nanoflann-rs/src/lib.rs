@@ -1,3 +1,11 @@
+#![warn(missing_docs)]
+// The internal `(vind, root_bbox, nodes, n)`-shaped build-result tuples
+// (`build_sequential_core` and its parallel-build/test-helper analogs)
+// are crate-private plumbing shared by exactly a handful of call sites;
+// factoring them into a named struct wouldn't make any of those call
+// sites clearer, just add a type to look up. Allowed crate-wide since the
+// pattern recurs in a few private helpers, not just one.
+#![allow(clippy::type_complexity)]
 //! Rust port of nanoflann's static kd-tree; behavioral parity with nanoflann 1.12.1
 //!
 //! # Contracts (see the README for the full list, deviations, and input domain)

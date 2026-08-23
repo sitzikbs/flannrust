@@ -131,9 +131,9 @@ build_matrix_test!(build_matrix_f32, f32, build_rust_f32, RefIndexF32, |v: &Vec<
 /// construction, but starting near `f32::MAX` (`2^127`) and computed
 /// ENTIRELY in f32 arithmetic -- deliberately NOT `to_f32(&exponential_spacing(n))`.
 ///
-/// INVESTIGATION (see task-11-report.md for the full writeup): the naive
-/// `to_f32(&exponential_spacing(n))` composition was tried first and found
-/// to hang/OOM. Root cause: `exponential_spacing`'s spine starts at `2^1023`
+/// INVESTIGATION: the naive `to_f32(&exponential_spacing(n))` composition
+/// was tried first and found to hang/OOM. Root cause: `exponential_spacing`'s
+/// spine starts at `2^1023`
 /// (f64::MAX-ish) to stress f64's dynamic range, per the formula proven
 /// degenerate in nanoflann-rs's `heavy_exponential_build_1m` (an f64-ONLY
 /// test -- no f32 analog exists there). `2^1023` is ~900 orders of magnitude

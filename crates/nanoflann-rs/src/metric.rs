@@ -21,6 +21,7 @@ use crate::scalar::{DistanceValue, Scalar};
 /// L1/L2/L2Simple return SQUARED (L2) / summed-absolute (L1) distances;
 /// SO2 returns an UNsquared wrapped angle of only the last dimension.
 pub trait Distance<T: Scalar>: Send + Sync {
+    /// The metric's accumulated distance/radius type (may differ from `T`).
     type DistanceType: DistanceValue;
 
     /// `d` carries the dimensionality — pass a [`crate::ConstDim`] where the
@@ -28,10 +29,9 @@ pub trait Distance<T: Scalar>: Send + Sync {
     /// path over a `ConstDim<N>`-built tree) so the monomorphized body sees
     /// `d.dim()` constant-fold to `N`, letting the optimizer fully unroll
     /// fixed-width kernels (like `L2`'s 4-wide unroll) and elide bounds
-    /// checks; pass [`crate::DynDim`] for a runtime dimension. **API
-    /// CHANGE**: this parameter used to be a plain `dim: usize` — existing
-    /// external `Distance` implementations must update their `eval` to take
-    /// `d: D` (`D: Dim`) and call `d.dim()` wherever the old `dim` was used.
+    /// checks; pass [`crate::DynDim`] for a runtime dimension. A custom
+    /// `Distance` implementation's `eval` should be generic over `D: Dim`
+    /// and call `d.dim()` wherever a plain dimension count is needed.
     fn eval<DS: DataSource<T> + ?Sized, D: Dim>(
         &self,
         query: &[T],
@@ -40,6 +40,9 @@ pub trait Distance<T: Scalar>: Send + Sync {
         d: D,
     ) -> Self::DistanceType;
 
+    /// Per-axis component distance between two coordinate values on `axis`
+    /// — the tree uses this for split-plane bound checks, so every metric
+    /// MUST be per-axis decomposable.
     fn accum_dist(&self, a: T, b: T, axis: usize) -> Self::DistanceType;
 }
 
@@ -502,6 +505,10 @@ mod tests {
         impl Distance<f64> for WeightedL2 {
             type DistanceType = f64;
 
+            // `d` indexes three independent sources at once (`query`, the
+            // `DataSource` trait method, and `self.weights`) — no single
+            // iterator adaptor covers all three cleanly.
+            #[allow(clippy::needless_range_loop)]
             fn eval<DS: DataSource<f64> + ?Sized, D: Dim>(
                 &self,
                 query: &[f64],

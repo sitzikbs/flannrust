@@ -149,6 +149,12 @@ where
 /// Returns `(index, cutfeat, cutval)`; permutes `ind` (via `plane_split`).
 ///
 /// Port of nanoflann's `middleSplit_` (nanoflann.hpp:1481-1554).
+// The `max_span`/candidate-dims loops below are explicit `for d in
+// 0..dim`/`1..dim` ranges (not `bbox.iter()`) to mirror the C++ source's
+// exact per-axis loop structure (nanoflann.hpp:1489-1494, 1503-1540) --
+// `d` is also threaded into `compute_min_max(ds, ind, d)`, not just used to
+// index `bbox`, so an iterator-only rewrite wouldn't stay a clean 1:1 port.
+#[allow(clippy::needless_range_loop)]
 pub(crate) fn middle_split<T, DS, Idx>(
     ds: &DS,
     dim: usize,
@@ -162,6 +168,18 @@ where
 {
     let count = ind.len();
     // nanoflann.hpp:1486: `const auto EPS = static_cast<DistanceType>(0.00001);`
+    // — the C++ names this constant (and `split_val` below) `DistanceType`,
+    // but computes it from `ElementType` inputs (`bbox`'s bounds, `dim`'s
+    // min/max) and only ever compares it against other `ElementType`
+    // values, so it's really element-type arithmetic wearing a
+    // `DistanceType` label. This port computes `eps`/`split_val` in `T`
+    // (the element/coordinate type) throughout, which is bit-identical to
+    // the C++ for every metric this crate ships (`L1`/`L2`/`L2Simple`/
+    // `SO2`/`SO3` all set `Distance::DistanceType = T`) — this function has
+    // no way to observe a metric's `DistanceType` at all (it isn't generic
+    // over `Distance`), so if a future custom metric ever set
+    // `DistanceType != T`, that distinction still wouldn't matter here: the
+    // TREE STRUCTURE this function builds is metric-independent.
     let eps = T::from_f64(0.00001);
     let one = T::from_f64(1.0);
     let two = T::from_f64(2.0);
@@ -271,6 +289,10 @@ where
     /// helpers — i.e. it produces an identical tree to `divideTree`, just
     /// built with threads; nothing in it changes how a *sequential* subtree
     /// must be built.
+    // The leaf tight-bbox loops below index `sub_bbox`/`self.vind` by an
+    // explicit `d`/`k` range (not an iterator over `sub_bbox` alone) to
+    // mirror nanoflann.hpp:1341-1355's exact per-axis structure.
+    #[allow(clippy::needless_range_loop)]
     pub(crate) fn build(&mut self, bbox: &mut [Interval<T>]) -> u32 {
         assert!(
             !self.vind.is_empty(),
@@ -902,14 +924,13 @@ mod tests {
     #[ignore]
     fn heavy_exponential_build_1m() {
         let n = 1_000_000usize;
-        // BRIEF DISCREPANCY, resolved by measurement (see task-6-report.md
-        // for the full derivation, amended after review): neither of the
-        // brief's two suggested spacings (`0.9999^i`, depth 156;
-        // `2.0^(-i/50.0)`, depth 1092) nor the "obvious" harmonic worst-case
-        // `1/(n-i)` (depth 38 — it self-corrects because the minority
-        // side's size DOUBLES each level once the bbox's stale low bound
-        // stops dominating) reach the brief's suggested `> 10_000` for
-        // ONE-DIMENSIONAL data. Worked out why: every one-sided "peel a
+        // Resolved by direct measurement: neither of two plausible
+        // exponential spacings (`0.9999^i`, depth 156; `2.0^(-i/50.0)`,
+        // depth 1092) nor the "obvious" harmonic worst-case `1/(n-i)` (depth
+        // 38 — it self-corrects because the minority side's size DOUBLES
+        // each level once the bbox's stale low bound stops dominating)
+        // reach a depth > 10_000 for ONE-DIMENSIONAL data. Worked out why:
+        // every one-sided "peel a
         // small chunk, recurse into the big remainder" degenerate chain that
         // `middle_split` can produce on a SINGLE axis is, structurally, a
         // geometric halving of the bbox toward a value anchored at 0 or at

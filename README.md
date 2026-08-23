@@ -7,6 +7,16 @@ parity with the C++ reference implementation and equal-or-better speed.
 incremental rebuilding, and the multithreaded background-rebuild wrapper are
 future milestones (see "Roadmap" below).
 
+## Attribution & license
+
+`nanoflann-rs` is a derivative port of [nanoflann](https://github.com/jlblancoc/nanoflann),
+credited to Jose Luis Blanco-Claraco et al., which itself builds on FLANN by
+Marius Muja and David G. Lowe. This crate is licensed under BSD-2-Clause (see
+[`LICENSE`](LICENSE)); the vendored, unmodified C++ header
+(`crates/nanoflann-ref/cpp/nanoflann.hpp`, used only as a cross-validation and
+benchmark oracle, not part of the Rust library) retains its own original
+copyright notice, reproduced verbatim in `LICENSE`.
+
 This is Milestone 1 (M1). The full design record lives in
 [`docs/superpowers/plans/2026-08-22-nanoflann-rs-m1.md`](docs/superpowers/plans/2026-08-22-nanoflann-rs-m1.md);
 verified nanoflann 1.12.1 source notes (class inventory, stale spots, and
@@ -53,7 +63,12 @@ below says otherwise.
   parameters.
 - **kNN ties keep traversal order by default** (`KeepInsertionOrder`, C++'s
   default behavior); opt into `SmallestIndexWins` for `NANOFLANN_FIRST_MATCH`
-  (fully re-sort ties by ascending index).
+  (fully re-sort ties by ascending index). `SmallestIndexWins`'s rule mirrors
+  `NANOFLANN_FIRST_MATCH`'s documented behavior, but it is **not**
+  oracle-verified by the cross-validation suite: the vendored C++ oracle
+  (`crates/nanoflann-ref`) is compiled with `NANOFLANN_FIRST_MATCH`
+  undefined, so there is no C++ build to cross-validate that tie rule
+  against.
 - **eps**: a node is visited iff `mindist * (1 + eps) <= worst_dist`, where
   `eps` is widened to the distance type **before** the multiply-add (matches
   nanoflann.hpp:1999's `epsError = 1 + static_cast<DistanceType>(eps)` order
@@ -73,7 +88,7 @@ below says otherwise.
 | An unbuilt index is unrepresentable: `KdTreeBuilder::build()` consumes the builder and returns a ready `KdTree` | Replaces C++'s runtime `std::runtime_error` throw from `findNeighbors` etc. on an unbuilt index with a compile-time impossibility — there is no "forgot to call build()" bug class in this API. |
 | Radius results' `sort()` uses Rust's **stable** sort | C++'s `IndexDist_Sorter` uses `std::sort`, which is **unstable** — this is the one place where output order may legally differ between the two implementations, and only among exactly-tied distances. |
 | `BuildThreads::Threads(n)` means "at most `n` rayon workers" | Not C++'s exact async per-node thread-gating (`++thread_count < n_thread_build_`); both produce a tree bit-identical to a sequential build (partition precedes spawning on both sides), so this only affects *how* the work is scheduled, never the result. |
-| No `NANOFLANN_NODE_ALIGNMENT` (16-byte node alignment) | Evaluated as a Task 14 perf candidate and bench-gated, not applied unconditionally as a default — see `docs/benchmarks-m1.md`. |
+| No `NANOFLANN_NODE_ALIGNMENT` (16-byte node alignment) | Evaluated as a bench-gated perf candidate, not applied unconditionally as a default — see `docs/benchmarks-m1.md`. |
 | `KdTree::knn_search_with` accepts a `SearchParams` | C++'s static `knnSearch` takes none — this is additive, not a narrowing. |
 | `BoxResultSet::sort()` not ported | Dead code upstream: nanoflann's own box-search path never calls it (callers own the output `Vec` and can sort it themselves if desired). |
 
@@ -91,7 +106,7 @@ out-of-domain on *both* implementations, not just this port:
   implementations.** An all-`+inf` bounding box has `span = inf - inf = NaN`,
   and NaN fails every `<` comparison used in split-axis/cutval selection, so
   partitioning can never shrink the candidate set. Confirmed during
-  cross-validation testing (Task 11): the C++ oracle **segfaults** (unbounded
+  cross-validation testing: the C++ oracle **segfaults** (unbounded
   native recursion overflows the stack) and the Rust builder **exhausts
   memory** (observed growing past 18 GB RSS before being killed) on
   identical `+inf`-heavy input. This is unsupported — validate coordinates
@@ -148,13 +163,29 @@ subprocess, not a serialized comparison against pre-recorded output.
 - **Mutation canaries**: tests that deliberately perturb a comparator (tie
   rule, distance-bit-equality check) to confirm it actually *can* fail —
   guards against tautological assertions.
-- **Matrix coverage**: `{f32, f64}` scalars, dims `{2, 3, 8, 16, 32}`
-  (runtime `DynDim`) plus `ConstDim<3>`, metrics `{L1, L2, L2Simple, SO3}`
-  (+ `SO2` at dim 2), datasets `{uniform, clustered, 30% duplicates,
-  all-identical, exponential-spacing}`, `leaf_max_size ∈ {1, 10, 64}`, knn
-  `k ∈ {1, 10, 101}` (including `k > n`), 100 seeded queries per case
-  including on-dataset and far-outside points, `eps ∈ {0, 0.1, 1.0}` on both
-  sides, and empty-tree edge cases for every search kind.
+- **Matrix coverage** (`{f32, f64}` scalars throughout; queries are a mix of
+  uniform-random, exact copies of dataset points, and far-outside-bbox
+  points — see `xval::queries`):
+  - **knn/rknn suite**: dims `{2, 3, 8, 16, 32}` (runtime `DynDim`) × metrics
+    `{L1, L2, L2Simple, SO3}` × datasets `{uniform, clustered, 30%
+    duplicates, all-identical}` × `leaf_max_size ∈ {1, 10, 64}` × `k ∈ {1,
+    10}`, 60 seeded queries per case (no exponential-spacing dataset here);
+    `eps ∈ {0, 0.1, 1.0}` is a separate, narrower pass (dims `{3, 16}`, 40
+    queries); rknn is its own pass (dim 3, 30 queries); `k = 101 > n = 50` is
+    a dedicated k>n test, not part of the main matrix; `SO2` gets its own
+    dim-2 pass (leaf `{1, 10}`, k `{1, 10}`, 60 queries); plus a `ConstDim<3>`
+    spot check against the C++ runtime-dim index.
+  - **radius/box suite**: dims `{2, 3, 8}` × datasets `{uniform, 30%
+    duplicates}` × `leaf_max_size ∈ {1, 10}`, `L2` only, 60 seeded queries at
+    two radii (selective and broad) per case; `L1`, `SO2` (dim 3), and
+    `all-identical` are separate, narrower breadth tests, not folded into the
+    main dim×dataset×leaf loop.
+  - **build-parity (`vind`) suite**: the one place exponential-spacing data
+    is exercised, cross-validating the build-time point permutation
+    (`vAcc_`/`point_indices()`) directly against the C++ oracle — build
+    only; degenerate-tree **query** parity against C++ is not covered by any
+    suite.
+  - Empty-tree edge cases are covered for every search kind.
 
 ### Success criteria (binding, from the plan's §5b)
 
@@ -214,9 +245,9 @@ optimization in the hot kernel, and is documented at length in
 Outside the perf gate's covered workloads (dim-3, dim-8) and outside M1's
 success-criterion scope (dim-3 f32/f64 knn and build), dim-32 knn shows a
 real, reproducible **~1.3-1.45x** ratio, while dim-8 sits close to parity
-(0.97-1.00) — confirmed pre-dating Task 14's perf pass by checking out an
+(0.97-1.00) — confirmed pre-dating the M1 performance pass by checking out an
 earlier commit and re-running the identical benchmark, so it isn't something
-Task 14 introduced or regressed. Root cause not yet isolated; the working
+that pass introduced or regressed. Root cause not yet isolated; the working
 hypothesis is that closing it needs SIMD/batching to amortize the per-axis
 L2 kernel over a wider dimension, which is out of scope for M1. Tracked here
 and in the M2 backlog for investigation.

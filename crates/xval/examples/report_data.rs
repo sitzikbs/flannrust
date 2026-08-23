@@ -47,10 +47,9 @@ const SCORING_NOTE: &str = "exact_tie_aware_vs_bruteforce: true iff the k return
 
 /// One-line description of how ground-truth distances are computed,
 /// embedded verbatim in the emitted JSON's `meta.gt_methodology` field
-/// (controller ruling round 2 -- see task-13-report.md's "Investigation"
-/// section: an independently-written summation is not reliably bit-exact
-/// against either tree's internal arithmetic, so GT must route through the
-/// same kernel).
+/// (an independently-written summation is not reliably bit-exact against
+/// either tree's internal arithmetic, so GT must route through the same
+/// kernel).
 const GT_METHODOLOGY_NOTE: &str = "ground-truth distances computed via the library's own L2 metric kernel (nanoflann_rs::L2::eval, the same code path KdTree::knn_search uses internally for leaf points), NOT an independently-written summation; point SELECTION is a dumb linear scan over every index, independent of any tree's traversal order.";
 
 /// One-line description of the speed-timing allocation methodology,
