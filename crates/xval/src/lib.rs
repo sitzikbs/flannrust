@@ -178,7 +178,7 @@ pub fn to_f32(v: &[f64]) -> Vec<f32> {
 /// `flat.len()` is not a multiple of 3.
 pub fn to_array3<T: Copy>(flat: &[T]) -> Vec<[T; 3]> {
     assert_eq!(flat.len() % 3, 0, "to_array3: flat.len() ({}) must be a multiple of 3", flat.len());
-    flat.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect()
+    flat.as_chunks::<3>().0.to_vec()
 }
 
 /// Round-robin iterator over a pre-generated row-major query set (`n*dim`
@@ -206,6 +206,11 @@ impl<'a, T> RoundRobin<'a, T> {
 
     /// The next query slice (length `dim`), advancing the internal counter
     /// modulo `n` (wraps back to index 0 after the last query).
+    // Deliberately not `Iterator::next` (returns `&'a [T]`, not
+    // `Option<&'a [T]>`) -- an infinite wrapping cursor, not a terminating
+    // iterator; renaming would ripple across every bench/perf_gate/
+    // report_data call site for no behavioral benefit.
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> &'a [T] {
         let q = &self.data[self.i * self.dim..(self.i + 1) * self.dim];
         self.i = (self.i + 1) % self.n;
@@ -565,19 +570,19 @@ macro_rules! define_rust_index {
                 let params = SearchParams { eps, sorted };
                 match self {
                     $Name::L1(t) => {
-                        t.radius_search(q, radius, &mut out, &params);
+                        t.radius_search_with(q, radius, &mut out, &params);
                     }
                     $Name::L2(t) => {
-                        t.radius_search(q, radius, &mut out, &params);
+                        t.radius_search_with(q, radius, &mut out, &params);
                     }
                     $Name::L2Simple(t) => {
-                        t.radius_search(q, radius, &mut out, &params);
+                        t.radius_search_with(q, radius, &mut out, &params);
                     }
                     $Name::SO2(t) => {
-                        t.radius_search(q, radius, &mut out, &params);
+                        t.radius_search_with(q, radius, &mut out, &params);
                     }
                     $Name::SO3(t) => {
-                        t.radius_search(q, radius, &mut out, &params);
+                        t.radius_search_with(q, radius, &mut out, &params);
                     }
                 }
                 out.into_iter().map(|ri| (ri.index, ri.distance)).collect()
@@ -586,7 +591,7 @@ macro_rules! define_rust_index {
             /// Zero-(re)allocation `radius`: writes into a caller-owned
             /// `out: &mut Vec<ResultItem<u32, T>>` instead of allocating a
             /// fresh `Vec` (and a second `Vec` for the tuple conversion)
-            /// per call. `KdTree::radius_search` itself `clear()`s `out`
+            /// per call. `KdTree::radius_search_with` itself `clear()`s `out`
             /// and refills it, so reusing the SAME `Vec` across many calls
             /// with similar result sizes reallocates only while growing to
             /// the largest size seen (mirrors
@@ -603,11 +608,11 @@ macro_rules! define_rust_index {
             ) -> usize {
                 let params = SearchParams { eps, sorted };
                 match self {
-                    $Name::L1(t) => t.radius_search(q, radius, out, &params),
-                    $Name::L2(t) => t.radius_search(q, radius, out, &params),
-                    $Name::L2Simple(t) => t.radius_search(q, radius, out, &params),
-                    $Name::SO2(t) => t.radius_search(q, radius, out, &params),
-                    $Name::SO3(t) => t.radius_search(q, radius, out, &params),
+                    $Name::L1(t) => t.radius_search_with(q, radius, out, &params),
+                    $Name::L2(t) => t.radius_search_with(q, radius, out, &params),
+                    $Name::L2Simple(t) => t.radius_search_with(q, radius, out, &params),
+                    $Name::SO2(t) => t.radius_search_with(q, radius, out, &params),
+                    $Name::SO3(t) => t.radius_search_with(q, radius, out, &params),
                 }
             }
 
@@ -719,8 +724,7 @@ define_rust_index!(RustIndexF32, build_rust_f32, f32);
 // correct baseline -- see each function's doc comment for the exact tie
 // rule and error definition (both hand-checked by the unit tests below).
 //
-// DISTANCE ARITHMETIC (controller ruling, round 2 -- see task-13-report.md's
-// "Investigation" section for the full story): distances here are computed
+// DISTANCE ARITHMETIC: distances here are computed
 // via `L2.eval(query, &ds, idx, dim)` -- the LIBRARY'S OWN metric kernel,
 // the exact same trait method `KdTree::knn_search`'s leaf-scan calls
 // internally (`search.rs`'s `ctx.metric.eval(...)`) -- NOT a hand-rolled

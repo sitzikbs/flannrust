@@ -199,6 +199,16 @@ mod raw {
 ///   back-to-back inside one safe method here and the intermediate raw
 ///   `_count`/`_fetch` functions are never exposed outside this module, so
 ///   the pairing contract can't be violated by a caller.
+/// - Every `&self` method below (`knn`, `radius`, `find_within_box`, ...)
+///   mutates C++-side scratch state through `self.handle`'s raw pointer
+///   despite taking `&self`, not `&mut self` (the two-call radius/box
+///   protocol writes into `nfr_index<T>`'s `radius_scratch`/`box_scratch`
+///   fields via a `*mut`/`*const` cast on the C++ side). This is sound only
+///   because `$Name<'a>` is `!Sync` (its only field beside `PhantomData` is
+///   a raw pointer, which is neither `Send` nor `Sync` by default, and nothing
+///   here opts back in) — never add `unsafe impl Sync for` any of these
+///   types; doing so would let two threads call `&self` methods
+///   concurrently and race on that shared C++ scratch state.
 macro_rules! define_ref_index {
     (
         $Name:ident, $t:ty, $Handle:ty,
@@ -251,7 +261,10 @@ macro_rules! define_ref_index {
                         n_thread_build as c_uint,
                     )
                 };
-                assert!(!handle.is_null(), "nanoflann-ref: build() returned a null handle");
+                assert!(
+                    !handle.is_null(),
+                    "nanoflann-ref: C++ index construction failed (exception caught in wrapper)"
+                );
                 Self { handle, dim, _borrow: PhantomData }
             }
 
@@ -420,6 +433,8 @@ macro_rules! define_ref_index {
                 // above, encapsulated entirely within this method.
                 let count = unsafe { $box_count(self.handle, lo.as_ptr(), hi.as_ptr()) };
                 let mut idx = vec![0u32; count];
+                // SAFETY: `idx` is sized to `count`, obtained from the
+                // immediately-preceding `_count` call on this same handle.
                 let returned = unsafe { $box_fetch(self.handle, idx.as_mut_ptr(), count) };
                 debug_assert_eq!(returned, count);
                 idx
@@ -491,7 +506,10 @@ macro_rules! define_ref_index3 {
                 let handle = unsafe {
                     $build(pts.as_ptr(), n, leaf_max_size, n_thread_build as c_uint)
                 };
-                assert!(!handle.is_null(), "nanoflann-ref: build() returned a null handle");
+                assert!(
+                    !handle.is_null(),
+                    "nanoflann-ref: C++ index construction failed (exception caught in wrapper)"
+                );
                 Self { handle, _borrow: PhantomData }
             }
 

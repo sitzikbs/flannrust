@@ -16,6 +16,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>  // std::abort
 #include <cstring>
 #include <utility>
 #include <vector>
@@ -130,7 +131,11 @@ auto dispatch(nfr_index<T>* h, F&& f) -> decltype(f(std::declval<L2Tree<T>&>()))
     // Unreachable: nfr_metric only ever holds one of the 5 values above,
     // assigned from the `metric` argument of the corresponding nfr*_build_*
     // call, which the Rust side constrains to the `Metric` enum's range.
-    return f(*static_cast<L2Tree<T>*>(h->tree));
+    // Abort loudly instead of silently dispatching to the wrong tree type
+    // (a `reinterpret_cast`-style fallback here would be a memory-safety
+    // bug hiding as a correctness one) -- this indicates memory corruption
+    // or a caller that bypassed the Rust `Metric` enum entirely.
+    std::abort();
 }
 
 template <typename T, typename F>
@@ -144,7 +149,8 @@ auto dispatch(const nfr_index<T>* h, F&& f) -> decltype(f(std::declval<const L2T
         case NFR_SO2: return f(*static_cast<const SO2Tree<T>*>(h->tree));
         case NFR_SO3: return f(*static_cast<const SO3Tree<T>*>(h->tree));
     }
-    return f(*static_cast<const L2Tree<T>*>(h->tree));
+    // Unreachable -- see the non-const overload above for the rationale.
+    std::abort();
 }
 
 // ---- Generic (templated on T) entry-point implementations -----------------
@@ -345,75 +351,144 @@ extern "C"
     struct nfr3_index_d;
 }
 
+// A C++ exception unwinding across an `extern "C"` boundary into Rust is
+// undefined behavior -- Rust has no C++ personality routine to continue the
+// unwind through. Every entry point below is therefore wrapped in
+// `try { ... } catch (...) { ... }`:
+// - `nfr*_build_*`: catch returns a null handle. This is a REPORTABLE
+//   failure (allocation failure, an nanoflann-internal throw on
+//   pathological input) with an obvious, already-checked signal on the
+//   Rust side: `RefIndexF32::build`/`RefIndexF64::build`/`RefIndex3*::build`
+//   already `assert!(!handle.is_null(), ...)` on every construction path.
+// - every other entry point: there is no sane per-call recovery once an
+//   index is already live and mid-query state (radius/box scratch buffers)
+//   may be in an inconsistent state, so catch aborts loudly instead of
+//   returning a bogus count/silently corrupting caller state.
 #define NFR_DEFINE_ENTRY_POINTS(T, SUF)                                                          \
     extern "C" nfr_index_##SUF* nfr_build_##SUF(                                                 \
         const T* pts, size_t n, int dim, int metric, size_t leaf_max_size,                        \
         unsigned n_thread_build)                                                                  \
     {                                                                                             \
-        return reinterpret_cast<nfr_index_##SUF*>(                                                \
-            nfr_build_impl<T>(pts, n, dim, metric, leaf_max_size, n_thread_build));                \
+        try {                                                                                     \
+            return reinterpret_cast<nfr_index_##SUF*>(                                            \
+                nfr_build_impl<T>(pts, n, dim, metric, leaf_max_size, n_thread_build));            \
+        } catch (...) {                                                                           \
+            return nullptr;                                                                       \
+        }                                                                                          \
     }                                                                                              \
     extern "C" void nfr_free_##SUF(nfr_index_##SUF* h)                                            \
     {                                                                                              \
-        nfr_free_impl<T>(reinterpret_cast<nfr_index<T>*>(h));                                      \
+        try {                                                                                      \
+            nfr_free_impl<T>(reinterpret_cast<nfr_index<T>*>(h));                                  \
+        } catch (...) {                                                                            \
+            std::abort();                                                                          \
+        }                                                                                          \
     }                                                                                              \
     extern "C" size_t nfr_size_##SUF(const nfr_index_##SUF* h)                                    \
     {                                                                                              \
-        return nfr_size_impl<T>(reinterpret_cast<const nfr_index<T>*>(h));                         \
+        try {                                                                                      \
+            return nfr_size_impl<T>(reinterpret_cast<const nfr_index<T>*>(h));                     \
+        } catch (...) {                                                                            \
+            std::abort();                                                                          \
+        }                                                                                          \
     }                                                                                              \
     extern "C" size_t nfr_used_memory_##SUF(const nfr_index_##SUF* h)                              \
     {                                                                                              \
-        return nfr_used_memory_impl<T>(reinterpret_cast<const nfr_index<T>*>(h));                  \
+        try {                                                                                      \
+            return nfr_used_memory_impl<T>(reinterpret_cast<const nfr_index<T>*>(h));              \
+        } catch (...) {                                                                            \
+            std::abort();                                                                          \
+        }                                                                                          \
     }                                                                                              \
     extern "C" size_t nfr_vind_##SUF(const nfr_index_##SUF* h, uint32_t* out, size_t cap)          \
     {                                                                                              \
-        return nfr_vind_impl<T>(reinterpret_cast<const nfr_index<T>*>(h), out, cap);               \
+        try {                                                                                      \
+            return nfr_vind_impl<T>(reinterpret_cast<const nfr_index<T>*>(h), out, cap);           \
+        } catch (...) {                                                                            \
+            std::abort();                                                                          \
+        }                                                                                          \
     }                                                                                              \
     extern "C" size_t nfr_knn_##SUF(                                                              \
         const nfr_index_##SUF* h, const T* q, size_t k, float eps, uint32_t* out_idx, T* out_dist) \
     {                                                                                              \
-        return nfr_knn_impl<T>(reinterpret_cast<const nfr_index<T>*>(h), q, k, eps, out_idx, out_dist); \
+        try {                                                                                       \
+            return nfr_knn_impl<T>(reinterpret_cast<const nfr_index<T>*>(h), q, k, eps, out_idx, out_dist); \
+        } catch (...) {                                                                             \
+            std::abort();                                                                           \
+        }                                                                                            \
     }                                                                                               \
     extern "C" size_t nfr_rknn_##SUF(                                                              \
         const nfr_index_##SUF* h, const T* q, size_t k, T radius, float eps, uint32_t* out_idx,    \
         T* out_dist)                                                                                \
     {                                                                                               \
-        return nfr_rknn_impl<T>(                                                                    \
-            reinterpret_cast<const nfr_index<T>*>(h), q, k, radius, eps, out_idx, out_dist);        \
+        try {                                                                                        \
+            return nfr_rknn_impl<T>(                                                                 \
+                reinterpret_cast<const nfr_index<T>*>(h), q, k, radius, eps, out_idx, out_dist);     \
+        } catch (...) {                                                                              \
+            std::abort();                                                                            \
+        }                                                                                             \
     }                                                                                                \
     extern "C" size_t nfr_radius_count_##SUF(                                                       \
         nfr_index_##SUF* h, const T* q, T radius, int sorted, float eps)                            \
     {                                                                                                \
-        return nfr_radius_count_impl<T>(reinterpret_cast<nfr_index<T>*>(h), q, radius, sorted, eps); \
+        try {                                                                                         \
+            return nfr_radius_count_impl<T>(reinterpret_cast<nfr_index<T>*>(h), q, radius, sorted, eps); \
+        } catch (...) {                                                                               \
+            std::abort();                                                                             \
+        }                                                                                              \
     }                                                                                                \
     extern "C" size_t nfr_radius_fetch_##SUF(                                                       \
         const nfr_index_##SUF* h, uint32_t* out_idx, T* out_dist, size_t cap)                       \
     {                                                                                                \
-        return nfr_radius_fetch_impl<T>(                                                            \
-            reinterpret_cast<const nfr_index<T>*>(h), out_idx, out_dist, cap);                      \
+        try {                                                                                         \
+            return nfr_radius_fetch_impl<T>(                                                          \
+                reinterpret_cast<const nfr_index<T>*>(h), out_idx, out_dist, cap);                    \
+        } catch (...) {                                                                               \
+            std::abort();                                                                             \
+        }                                                                                              \
     }                                                                                                \
     extern "C" size_t nfr_box_count_##SUF(nfr_index_##SUF* h, const T* lo, const T* hi)             \
     {                                                                                                \
-        return nfr_box_count_impl<T>(reinterpret_cast<nfr_index<T>*>(h), lo, hi);                    \
+        try {                                                                                         \
+            return nfr_box_count_impl<T>(reinterpret_cast<nfr_index<T>*>(h), lo, hi);                 \
+        } catch (...) {                                                                               \
+            std::abort();                                                                             \
+        }                                                                                              \
     }                                                                                                \
     extern "C" size_t nfr_box_fetch_##SUF(const nfr_index_##SUF* h, uint32_t* out_idx, size_t cap)  \
     {                                                                                                \
-        return nfr_box_fetch_impl<T>(reinterpret_cast<const nfr_index<T>*>(h), out_idx, cap);        \
+        try {                                                                                         \
+            return nfr_box_fetch_impl<T>(reinterpret_cast<const nfr_index<T>*>(h), out_idx, cap);     \
+        } catch (...) {                                                                               \
+            std::abort();                                                                             \
+        }                                                                                              \
     }                                                                                                \
     extern "C" nfr3_index_##SUF* nfr3_build_##SUF(                                                  \
         const T* pts, size_t n, size_t leaf_max_size, unsigned n_thread_build)                       \
     {                                                                                                \
-        return reinterpret_cast<nfr3_index_##SUF*>(                                                  \
-            nfr3_build_impl<T>(pts, n, leaf_max_size, n_thread_build));                              \
+        try {                                                                                         \
+            return reinterpret_cast<nfr3_index_##SUF*>(                                               \
+                nfr3_build_impl<T>(pts, n, leaf_max_size, n_thread_build));                           \
+        } catch (...) {                                                                               \
+            return nullptr;                                                                           \
+        }                                                                                              \
     }                                                                                                \
     extern "C" void nfr3_free_##SUF(nfr3_index_##SUF* h)                                             \
     {                                                                                                \
-        nfr3_free_impl<T>(reinterpret_cast<nfr3_index<T>*>(h));                                      \
+        try {                                                                                         \
+            nfr3_free_impl<T>(reinterpret_cast<nfr3_index<T>*>(h));                                   \
+        } catch (...) {                                                                               \
+            std::abort();                                                                             \
+        }                                                                                              \
     }                                                                                                \
     extern "C" size_t nfr3_knn_##SUF(                                                                \
         const nfr3_index_##SUF* h, const T* q, size_t k, uint32_t* out_idx, T* out_dist)             \
     {                                                                                                \
-        return nfr3_knn_impl<T>(reinterpret_cast<const nfr3_index<T>*>(h), q, k, out_idx, out_dist); \
+        try {                                                                                         \
+            return nfr3_knn_impl<T>(reinterpret_cast<const nfr3_index<T>*>(h), q, k, out_idx, out_dist); \
+        } catch (...) {                                                                               \
+            std::abort();                                                                             \
+        }                                                                                              \
     }
 
 NFR_DEFINE_ENTRY_POINTS(float, f)

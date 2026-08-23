@@ -60,7 +60,14 @@ where
     if ctx.nodes.is_empty() {
         return false;
     }
-    debug_assert!(query.len() >= ctx.dim.dim(), "query vector shorter than dim");
+    // Release-mode check (mirrors `find_within_box`'s bounds assert in
+    // `tree.rs`): one check per query, off the leaf-scan hot loop.
+    assert!(
+        query.len() >= ctx.dim.dim(),
+        "query vector length {} is shorter than dim {}",
+        query.len(),
+        ctx.dim.dim()
+    );
     debug_assert_eq!(dists_scratch.len(), ctx.dim.dim(), "dists_scratch.len() != dim");
 
     // C++ (nanoflann.hpp:1999): `DistanceType epsError = 1 + static_cast<DistanceType>(searchParams.eps);`
@@ -177,10 +184,8 @@ where
             // Functionally equivalent (worst_dist only changes via
             // add_point), but we mirror the exact call site per task
             // instructions.
-            if dist < result.worst_dist() {
-                if !result.add_point(dist, accessor) {
-                    return false;
-                }
+            if dist < result.worst_dist() && !result.add_point(dist, accessor) {
+                return false;
             }
         }
         return true;
@@ -212,10 +217,10 @@ where
     let dst = dists[idx];
     mindist = mindist + cut_dist - dst;
     dists[idx] = cut_dist;
-    if mindist * eps_error <= result.worst_dist() {
-        if !search_level(ctx, result, query, other_child, mindist, dists, eps_error, filter) {
-            return false;
-        }
+    if mindist * eps_error <= result.worst_dist()
+        && !search_level(ctx, result, query, other_child, mindist, dists, eps_error, filter)
+    {
+        return false;
     }
     dists[idx] = dst;
     true
@@ -304,6 +309,9 @@ where
 /// iff EVERY dimension's coordinate satisfies `Interval::contains` (the
 /// C++-parity inclusive `point < low || point > high` -> reject predicate,
 /// see `bbox.rs`).
+// `i` indexes BOTH `bounds` and `ctx.ds.point_component(_, i)` (a trait
+// method, not a slice) in the same per-axis order as nanoflann.hpp:2182-2192.
+#[allow(clippy::needless_range_loop)]
 fn contains_point<T, D, DS, M, Idx>(ctx: &SearchCtx<'_, T, D, DS, M, Idx>, bounds: &[Interval<T>], idx: Idx) -> bool
 where
     T: Scalar,
@@ -459,15 +467,15 @@ mod tests {
         let pts: Vec<[f64; N]> = (0..n)
             .map(|_| {
                 let mut p = [0.0f64; N];
-                for d in 0..N {
-                    p[d] = rng.next_f64() * 200.0 - 100.0;
+                for v in p.iter_mut() {
+                    *v = rng.next_f64() * 200.0 - 100.0;
                 }
                 p
             })
             .collect();
         let mut query = [0.0f64; N];
-        for d in 0..N {
-            query[d] = rng.next_f64() * 200.0 - 100.0;
+        for v in query.iter_mut() {
+            *v = rng.next_f64() * 200.0 - 100.0;
         }
 
         let (vind, arena, bbox) = build_tree(&pts, leaf_max_size);
@@ -487,7 +495,7 @@ mod tests {
             let dim_choice = case % 3;
             let mut rng = Lcg(seed ^ 0xABCD);
             let n = 1 + (rng.next_f64() * 200.0) as usize;
-            let n = n.min(200).max(1);
+            let n = n.clamp(1, 200);
             let k_max = n.min(20);
             let k = 1 + (rng.next_f64() * (k_max as f64)) as usize;
             let k = k.min(k_max).max(1);
@@ -983,10 +991,9 @@ mod tests {
         assert_eq!(nearest_large, 1, "eps=10 should still find the correct nearest point in the one visited leaf");
     }
 
-    // BRIEF DISCREPANCY, resolved by proof (see task-8-report.md for the
-    // full write-up): the brief asks for "a crafted dim-1 dataset where the
-    // pruned branch holds the true nearest" to exercise the eps-approximate
-    // bound for k=1. This is UNCONSTRUCTIBLE in dim-1.
+    // A dim-1 dataset where the pruned branch holds the true nearest (to
+    // exercise the eps-approximate bound for k=1) is UNCONSTRUCTIBLE in
+    // dim-1 — proof below.
     //
     // Proof sketch: at any interior node, `div_low` is the ACTUAL max
     // coordinate of a real point in the left subtree (build.rs's
@@ -1050,10 +1057,16 @@ mod tests {
         // vind = [1, 0]: leaf-left (arena idx 1) = vind[0..1] = [1] (P1);
         // leaf-right (arena idx 2) = vind[1..2] = [0] (P0).
         let vind: Vec<u32> = vec![1, 0];
-        let mut arena: Vec<Node<f64>> = Vec::new();
-        arena.push(Node::split(0, -0.3, 0.35)); // root, will patch children below
-        arena.push(Node::leaf(0, 1)); // left leaf: P1
-        arena.push(Node::leaf(1, 2)); // right leaf: P0
+        // Pushed one at a time (not a `vec![]` literal) so each node's
+        // arena-index role can carry its own inline comment.
+        #[allow(clippy::vec_init_then_push)]
+        let mut arena: Vec<Node<f64>> = {
+            let mut arena = Vec::new();
+            arena.push(Node::split(0, -0.3, 0.35)); // root, will patch children below
+            arena.push(Node::leaf(0, 1)); // left leaf: P1
+            arena.push(Node::leaf(1, 2)); // right leaf: P0
+            arena
+        };
         {
             // Node has no public setter accessible from outside build.rs's
             // module boundary other than what's already pub(crate); reuse
@@ -1160,8 +1173,8 @@ mod tests {
     /// where the prune gate `mindist * eps_error <= worst_dist` sits exactly
     /// between the two constants (mindist=1.0 exactly, worst_dist mocked to
     /// the exact midpoint of the two eps_error values via `FixedWorstDist`),
-    /// so the CORRECT constant visits the other branch and the OLD (buggy)
-    /// constant prunes it — a genuinely discriminating test.
+    ///   so the CORRECT constant visits the other branch and the OLD (buggy)
+    ///   constant prunes it — a genuinely discriminating test.
     #[test]
     fn eps_error_widen_first_parity() {
         let eps = 0.1f32;
@@ -1581,20 +1594,20 @@ mod tests {
         let pts: Vec<[f64; N]> = (0..n)
             .map(|_| {
                 let mut p = [0.0f64; N];
-                for d in 0..N {
-                    p[d] = rng.next_f64() * 200.0 - 100.0;
+                for v in p.iter_mut() {
+                    *v = rng.next_f64() * 200.0 - 100.0;
                 }
                 p
             })
             .collect();
 
         let mut bounds = vec![Interval { low: 0.0, high: 0.0 }; N];
-        for d in 0..N {
+        for b in bounds.iter_mut() {
             let a = rng.next_f64() * 200.0 - 100.0;
-            let b = rng.next_f64() * 200.0 - 100.0;
-            let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+            let b2 = rng.next_f64() * 200.0 - 100.0;
+            let (lo, hi) = if a <= b2 { (a, b2) } else { (b2, a) };
             // ~1-in-5 chance of collapsing this axis to a degenerate point.
-            bounds[d] = if rng.next_f64() < 0.2 { Interval { low: lo, high: lo } } else { Interval { low: lo, high: hi } };
+            *b = if rng.next_f64() < 0.2 { Interval { low: lo, high: lo } } else { Interval { low: lo, high: hi } };
         }
 
         let (vind, arena, bbox) = build_tree(&pts, leaf_max_size);
@@ -1634,8 +1647,8 @@ mod tests {
             let pts: Vec<[f64; 3]> = (0..n)
                 .map(|_| {
                     let mut p = [0.0f64; 3];
-                    for d in 0..3 {
-                        p[d] = rng.next_f64() * 200.0 - 100.0;
+                    for v in &mut p {
+                        *v = rng.next_f64() * 200.0 - 100.0;
                     }
                     p
                 })

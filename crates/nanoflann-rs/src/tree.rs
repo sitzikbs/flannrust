@@ -9,8 +9,7 @@
 //! runtime throw (`std::runtime_error` from `findNeighbors` etc. when the
 //! index was never built): the invalid state simply cannot be constructed in
 //! Rust's type system, so there is nothing to test with a `compile_fail`
-//! doctest either (the milestone plan's suggestion of one is satisfied
-//! vacuously — there is no unbuilt-index misuse to demonstrate).
+//! doctest either — there is no unbuilt-index misuse to demonstrate.
 //!
 //! A8 (nanoflann's dead `size_at_index_build_` field is deliberately NOT
 //! ported — see `docs/nanoflann-notes.md`): `KdTree` snapshots `vind`/`size`
@@ -67,6 +66,22 @@ where
     /// Defaults: `L2` metric, `u32` indices, insertion-order ties,
     /// `leaf_max_size` 10 (nanoflann's default), `threads`
     /// `BuildThreads::Sequential` (nanoflann's default `n_thread_build` 1).
+    ///
+    /// `dim` and `dataset` are independent, un-checked-against-each-other
+    /// parameters — nothing here verifies that `dim`'s dimensionality
+    /// actually matches how many coordinates `dataset` holds per point.
+    /// Getting them out of sync is a footgun with two different failure
+    /// modes depending on which side is "too big":
+    /// - `DynDim(3)` over a `DataSource` whose points actually have 5
+    ///   coordinates (e.g. a dim-5 `FlatSlice`) silently uses only the first
+    ///   3 of each point — no panic, no error, just a tree built over the
+    ///   wrong subset of each point's coordinates.
+    /// - `ConstDim::<5>` over `&[[T; 3]]` (a `DataSource` impl whose own
+    ///   `point_component` only has 3 valid `dim` values per point) panics
+    ///   at build/query time on an out-of-bounds array index.
+    ///
+    /// Always pass a `dim` that matches `dataset`'s actual per-point
+    /// coordinate count.
     pub fn new(dim: D, dataset: DS) -> Self {
         Self {
             dim,
@@ -118,6 +133,10 @@ where
         self
     }
 
+    /// Selects the point-index type stored in query results (`u32`, `u64`,
+    /// or `usize`). Default `u32`. Leaf offsets inside the tree's internal
+    /// node arena are always `u32` regardless of this choice — see the
+    /// "Index types" section of the crate docs.
     pub fn index_type<Idx2: IndexType>(self) -> KdTreeBuilder<T, D, DS, M, Idx2, TB> {
         KdTreeBuilder {
             dim: self.dim,
@@ -129,6 +148,9 @@ where
         }
     }
 
+    /// Selects the kNN/RKNN equal-distance tie policy — see
+    /// [`crate::result_set::KeepInsertionOrder`] (default) and
+    /// [`crate::result_set::SmallestIndexWins`].
     pub fn tie_break<TB2: TieBreak>(self) -> KdTreeBuilder<T, D, DS, M, Idx, TB2> {
         KdTreeBuilder {
             dim: self.dim,
@@ -253,13 +275,15 @@ where
     /// dataset yields an empty index whose searches return 0/false. Panics
     /// if `point_count() > u32::MAX as usize` (leaf offsets are `u32`).
     ///
-    /// `Sequential` uses the existing iterative `SubtreeBuilder` path.
-    /// `Auto` builds on rayon's ambient/global thread pool. `Threads(n)`
-    /// builds inside a scoped `n`-thread rayon pool — DEVIATION
-    /// (documented on [`BuildThreads`]): this guarantees "at most `n` rayon
-    /// workers", not C++'s exact async-gating behavior. Both non-sequential
-    /// paths produce a tree BIT-IDENTICAL to `Sequential` — see
-    /// `build_parallel.rs`'s module doc for the determinism argument.
+    /// `Sequential` routes through the same [`build_sequential_core`] helper
+    /// [`KdTreeBuilder::build_sequential`] uses — one true sequential-build
+    /// sequence, not a second inline copy. `Auto` builds on rayon's
+    /// ambient/global thread pool. `Threads(n)` builds inside a scoped
+    /// `n`-thread rayon pool — DEVIATION (documented on [`BuildThreads`]):
+    /// this guarantees "at most `n` rayon workers", not C++'s exact
+    /// async-gating behavior. Both non-sequential paths produce a tree
+    /// BIT-IDENTICAL to `Sequential` — see `build_parallel.rs`'s module doc
+    /// for the determinism argument.
     pub fn build(self) -> KdTree<T, D, DS, M, Idx, TB> {
         let KdTreeBuilder {
             dim,
@@ -269,6 +293,24 @@ where
             threads,
             ..
         } = self;
+
+        // `Sequential` is handled entirely by `build_sequential_core` (same
+        // helper `build_sequential()` calls) rather than duplicating its
+        // n==0/vind/bbox/SubtreeBuilder sequence inline here.
+        if let BuildThreads::Sequential = threads {
+            let (vind, root_bbox, nodes, n) = build_sequential_core(dim, &dataset, leaf_max_size);
+            return KdTree {
+                dataset,
+                metric,
+                dim,
+                vind,
+                nodes,
+                root_bbox,
+                leaf_max_size,
+                size: n,
+                _marker: PhantomData,
+            };
+        }
 
         let n = dataset.point_count();
 
@@ -292,22 +334,7 @@ where
         compute_bounding_box(&dataset, dim_n, root_bbox.as_mut());
 
         let nodes: Vec<Node<T>> = match threads {
-            BuildThreads::Sequential => {
-                let mut nodes: Vec<Node<T>> = Vec::new();
-                let root = {
-                    let mut builder = SubtreeBuilder {
-                        ds: &dataset,
-                        dim: dim_n,
-                        leaf_max_size,
-                        base: 0,
-                        vind: &mut vind,
-                        arena: &mut nodes,
-                    };
-                    builder.build(root_bbox.as_mut())
-                };
-                debug_assert_eq!(root, 0, "root is expected to always be arena index 0");
-                nodes
-            }
+            BuildThreads::Sequential => unreachable!("Sequential is handled above, before this point"),
             BuildThreads::Auto => crate::build_parallel::build_tree_parallel(
                 &dataset,
                 dim_n,
@@ -438,10 +465,12 @@ where
         self.size
     }
 
+    /// The tree's dimensionality.
     pub fn dim(&self) -> usize {
         self.dim.dim()
     }
 
+    /// The `leaf_max_size` this tree was built with.
     pub fn leaf_max_size(&self) -> usize {
         self.leaf_max_size
     }
@@ -504,8 +533,12 @@ where
         rs.size()
     }
 
-    /// `radius` is in the metric's scale: SQUARED for L2-family. Strict `<`
-    /// at the full-set boundary per RKNN semantics.
+    /// `radius` is in the metric's scale: SQUARED for L2-family. Strictness
+    /// matters at two different boundaries: while fewer than `k` points have
+    /// been found, the cutoff IS `radius` (strict `<`: a point at exactly
+    /// `radius` is excluded); once `k` points have been found, the effective
+    /// cutoff tightens to the k-th smallest distance found so far (same
+    /// strict `<`), exactly like [`Self::knn_search`] from that point on.
     pub fn rknn_search(
         &self,
         query: &[T],
@@ -516,6 +549,7 @@ where
         self.rknn_search_with(query, radius, out_indices, out_dists, &SearchParams::default())
     }
 
+    /// Same as [`Self::rknn_search`] with explicit params.
     pub fn rknn_search_with(
         &self,
         query: &[T],
@@ -536,9 +570,19 @@ where
         rs.size()
     }
 
-    /// Clears `out`. STRICTLY `dist < radius`. Sorted by distance iff
-    /// `params.sorted`. Returns the found count.
+    /// Clears `out`. STRICTLY `dist < radius`. `eps = 0`, sorted — like
+    /// [`Self::knn_search`]'s defaults.
     pub fn radius_search(
+        &self,
+        query: &[T],
+        radius: M::DistanceType,
+        out: &mut Vec<ResultItem<Idx, M::DistanceType>>,
+    ) -> usize {
+        self.radius_search_with(query, radius, out, &SearchParams::default())
+    }
+
+    /// Same as [`Self::radius_search`] with explicit params.
+    pub fn radius_search_with(
         &self,
         query: &[T],
         radius: M::DistanceType,
@@ -603,8 +647,8 @@ mod tests {
         (0..n)
             .map(|_| {
                 let mut p = [0.0f64; N];
-                for d in 0..N {
-                    p[d] = rng.next_f64() * scale;
+                for v in p.iter_mut() {
+                    *v = rng.next_f64() * scale;
                 }
                 p
             })
@@ -700,7 +744,7 @@ mod tests {
 
         let mut out = vec![ResultItem { index: 999u32, distance: 12345.0f64 }];
         let params = SearchParams::default();
-        let found = tree.radius_search(&[0.0, 0.0], 100.0, &mut out, &params);
+        let found = tree.radius_search_with(&[0.0, 0.0], 100.0, &mut out, &params);
 
         assert_eq!(found, 2);
         assert!(!out.iter().any(|r| r.index == 999), "pre-populated junk must be cleared");
@@ -721,13 +765,13 @@ mod tests {
 
         let mut unsorted = Vec::new();
         let unsorted_params = SearchParams { eps: 0.0, sorted: false };
-        tree.radius_search(&[0.4], 200.0, &mut unsorted, &unsorted_params);
+        tree.radius_search_with(&[0.4], 200.0, &mut unsorted, &unsorted_params);
         let order: Vec<u32> = unsorted.iter().map(|r| r.index).collect();
         assert_eq!(order, vec![0, 1, 3, 2], "sorted=false must yield raw traversal order");
 
         let mut sorted = Vec::new();
         let sorted_params = SearchParams { eps: 0.0, sorted: true };
-        tree.radius_search(&[0.4], 200.0, &mut sorted, &sorted_params);
+        tree.radius_search_with(&[0.4], 200.0, &mut sorted, &sorted_params);
         let dists: Vec<f64> = sorted.iter().map(|r| r.distance).collect();
         let mut ascending = dists.clone();
         ascending.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -742,12 +786,12 @@ mod tests {
         let params = SearchParams::default();
 
         let mut out = Vec::new();
-        tree.radius_search(&[0.0, 0.0], 4.0, &mut out, &params);
+        tree.radius_search_with(&[0.0, 0.0], 4.0, &mut out, &params);
         assert!(!out.iter().any(|r| r.index == 0), "exact-boundary point must be excluded");
 
         let radius_next_up = f64::from_bits(4.0f64.to_bits() + 1);
         let mut out2 = Vec::new();
-        tree.radius_search(&[0.0, 0.0], radius_next_up, &mut out2, &params);
+        tree.radius_search_with(&[0.0, 0.0], radius_next_up, &mut out2, &params);
         assert!(out2.iter().any(|r| r.index == 0), "next_up(4.0) must include the boundary point");
     }
 
@@ -854,7 +898,7 @@ mod tests {
 
         let mut radius_out = Vec::new();
         assert_eq!(
-            tree.radius_search(&[0.0, 0.0, 0.0], 100.0, &mut radius_out, &SearchParams::default()),
+            tree.radius_search_with(&[0.0, 0.0, 0.0], 100.0, &mut radius_out, &SearchParams::default()),
             0
         );
         assert!(radius_out.is_empty());
@@ -959,6 +1003,10 @@ mod tests {
     impl Distance<f64> for WeightedL2 {
         type DistanceType = f64;
 
+        // `d` indexes three independent sources at once (`query`, the
+        // `DataSource` trait method, and `self.weights`) — no single
+        // iterator adaptor covers all three cleanly.
+        #[allow(clippy::needless_range_loop)]
         fn eval<Ds: DataSource<f64> + ?Sized, D: Dim>(&self, query: &[f64], ds: &Ds, idx: usize, dim: D) -> f64 {
             let dim = dim.dim();
             let mut result = 0.0;
@@ -1211,6 +1259,50 @@ mod tests {
 
         assert_eq!(via_build.point_indices(), via_build_sequential.point_indices());
         assert_eq!(via_build.size(), via_build_sequential.size());
+    }
+
+    // ---------------------------------------------------------------
+    // Test 15 (I9): `index_type` actually instantiated for u64/usize —
+    // knn results must match the default u32 tree exactly (indices equal as
+    // usize, distances bit-equal).
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn index_type_u64_and_usize_match_default_u32_tree() {
+        let pts = seeded_points::<3>(0x1D57E, 250, 60.0);
+
+        let u32_tree = KdTreeBuilder::new(ConstDim::<3>, pts.as_slice()).build();
+        let u64_tree = KdTreeBuilder::new(ConstDim::<3>, pts.as_slice()).index_type::<u64>().build();
+        let usize_tree = KdTreeBuilder::new(ConstDim::<3>, pts.as_slice()).index_type::<usize>().build();
+
+        let mut rng = Lcg(0xC0DE_1D5E);
+        for _ in 0..30 {
+            let query = [rng.next_f64() * 60.0, rng.next_f64() * 60.0, rng.next_f64() * 60.0];
+            let k = 6;
+
+            let mut u32_idx = vec![0u32; k];
+            let mut u32_dist = vec![0.0f64; k];
+            let u32_found = u32_tree.knn_search(&query, &mut u32_idx, &mut u32_dist);
+
+            let mut u64_idx = vec![0u64; k];
+            let mut u64_dist = vec![0.0f64; k];
+            let u64_found = u64_tree.knn_search(&query, &mut u64_idx, &mut u64_dist);
+
+            let mut usize_idx = vec![0usize; k];
+            let mut usize_dist = vec![0.0f64; k];
+            let usize_found = usize_tree.knn_search(&query, &mut usize_idx, &mut usize_dist);
+
+            assert_eq!(u32_found, u64_found);
+            assert_eq!(u32_found, usize_found);
+
+            let u32_idx_as_usize: Vec<usize> = u32_idx.iter().map(|&i| i as usize).collect();
+            let u64_idx_as_usize: Vec<usize> = u64_idx.iter().map(|&i| i as usize).collect();
+            assert_eq!(u32_idx_as_usize, u64_idx_as_usize, "u64 indices must match u32 tree's (as usize)");
+            assert_eq!(u32_idx_as_usize, usize_idx, "usize indices must match u32 tree's (as usize)");
+
+            assert_eq!(u32_dist, u64_dist, "u64 tree distances must be bit-equal to u32 tree's");
+            assert_eq!(u32_dist, usize_dist, "usize tree distances must be bit-equal to u32 tree's");
+        }
     }
 }
 
