@@ -244,9 +244,14 @@ user-facing story (see its "Dynamic adaptor (M2)" section), and
   query parity, four scripted scenarios, and mutation canaries that pin the
   specific field/slot a deliberately-introduced divergence surfaces in. No
   genuine Rust-vs-C++ divergence was ever found.
-- **Speed:** both new dynamic perf gates pass with wide margin
-  (`dyn_add_20k_dim3_f32` 1.113, `dyn_knn_after_churn_dim3_f32` 0.964); the
-  churned-forest accuracy row is bit-exact (`1.0`/`1.0` at `eps=0`). The
+- **Speed:** both new dynamic perf gates pass, though the margin is not
+  wide — `dyn_add_20k_dim3_f32` has ranged **1.106–1.237** across repeated
+  re-runs (within 1.1% of the 1.25 threshold at its high end) and
+  `dyn_knn_after_churn_dim3_f32` (a workload with LIVE tombstones and real
+  cross-slot merges, not a self-cancelling churn) has ranged **0.971–0.976**
+  — see `docs/benchmarks.md`'s "M2 — dynamic forest" section for the single
+  source of these numbers. The churned-forest accuracy row is bit-exact
+  (`1.0`/`1.0` at `eps=0`). The
   pre-existing dim-3 knn residual and dim-32 knn gap flagged at the end of
   M1 remain open — M2 was scoped to the dynamic adaptor itself, not to
   closing those; both, plus parallel slot rebuilds for the dynamic

@@ -10,7 +10,7 @@ Tracked milestones and standing requirements. Each milestone runs the same pipel
 
 ## M2 — Dynamic adaptor (complete)
 
-Plan: `docs/superpowers/plans/2026-08-22-nanoflann-rs-m2-dynamic.md`. Bentley–Saxe forest (`add_points`/`remove_point`) with bit-exact op-sequence cross-validation, dynamic perf gates, report/EXPERIMENTS integration (T5b/T7 in the plan) — all landed. Both dynamic perf gates pass (`dyn_add_20k_dim3_f32` 1.113, `dyn_knn_after_churn_dim3_f32` 0.964); the dynamic op-sequence cross-validation suite is bit-exact with no divergence ever found; the suite-generated HTML scorecard (`report_data` → `render_report`) covers both M1 and M2. Full per-task review trail: `.superpowers/sdd/2026-08-22-nanoflann-rs-m2-dynamic/progress.md`. User-facing summary: README's "Dynamic adaptor (M2)" section; source-fact summary: `docs/nanoflann-notes.md`'s "M2 outcome" section.
+Plan: `docs/superpowers/plans/2026-08-22-nanoflann-rs-m2-dynamic.md`. Bentley–Saxe forest (`add_points`/`remove_point`) with bit-exact op-sequence cross-validation, dynamic perf gates, report/EXPERIMENTS integration — all landed. Both dynamic perf gates pass, though not by a wide margin — see `docs/benchmarks.md`'s "M2 — dynamic forest" section for the honest ranges (`dyn_add_20k_dim3_f32` and the tombstone/merge-exercising `dyn_knn_after_churn_dim3_f32`), the single source for these figures; the dynamic op-sequence cross-validation suite is bit-exact with no divergence ever found; the suite-generated HTML scorecard (`report_data` → `render_report`) covers both M1 and M2. User-facing summary: README's "Dynamic adaptor (M2)" section; source-fact summary: `docs/nanoflann-notes.md`'s "M2 outcome" section.
 
 ## M2.5 — Performance deep-dive (up next)
 

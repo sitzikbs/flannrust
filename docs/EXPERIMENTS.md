@@ -26,7 +26,25 @@ toolchain check, both re-run for this document:
 | rustc | `rustc 1.98.0 (88d9e12ae 2026-08-18)` | `rustc --version` |
 | C++ compiler | `c++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0` | `$CXX --version`, falls back to `c++ --version` (`cxx_compiler_version()`) |
 | nanoflann (C++) version | 1.12.1, commit `7812aa0` | vendored tag, `crates/nanoflann-ref/cpp/nanoflann.hpp` |
-| git SHA at time of writing | `b90fa57` (branch `m2-dynamic` HEAD immediately before this task's two commits) | `git rev-parse --short HEAD` + `git status --porcelain` dirty check (`git_sha()`) |
+| git SHA at time of writing | `b90fa57` (branch `m2-dynamic` HEAD immediately before the prior documentation round's three commits, `3e9b8d6`/`3cc1f5b`/`5f671a0`); this document's M2 final-review fix wave starts from `5f671a0` | `git rev-parse --short HEAD` + `git status --porcelain` dirty check (`git_sha()`) |
+
+### Vendored C++ header provenance
+
+`crates/nanoflann-ref/cpp/nanoflann.hpp` is byte-identical (after CRLF/LF
+line-ending normalization) to upstream nanoflann's tag `1.12.1`, verified
+by hashing a fresh clone of that exact tag and comparing against the
+vendored file's own hash:
+
+```
+git clone --depth 1 --branch 1.12.1 https://github.com/jlblancoc/nanoflann.git /tmp/nanoflann-1.12.1
+sed -e 's/\r$//' /tmp/nanoflann-1.12.1/include/nanoflann.hpp | sha256sum
+sed -e 's/\r$//' crates/nanoflann-ref/cpp/nanoflann.hpp | sha256sum
+```
+Both commands print the same digest:
+`8918fc2b1492e1f5b790915e1555141125adfe27786434d391cf6f071d42ca7a`. This is
+the byte-identity guarantee the whole cross-validation methodology in this
+document rests on — the C++ oracle is genuinely upstream nanoflann 1.12.1,
+not a modified or hand-edited copy.
 
 ### WSL2 measurement-noise caveat (read every number in this repo with this in mind)
 
@@ -34,25 +52,42 @@ toolchain check, both re-run for this document:
 was measured inside WSL2** (Windows Subsystem for Linux 2), a virtualized
 environment sharing the host's scheduler with the Windows side. WSL2
 introduces real run-to-run scheduler/thermal jitter — M1's own measurement
-found roughly **±5-10% on individual runs**. Four re-runs of the dynamic
-gates across this task and its fix round (§3 has all four complete pasted
-outputs — two full six-gate runs plus two dedicated `perf_gate_dyn`-only
-runs) show this concretely on this exact machine: `dyn_add_20k_dim3_f32`
-ratio 1.113 (recorded at commit `ec9b581`) vs. **1.106**, **1.230**,
-**1.113**, and **1.117** across the four re-runs — the 1.230 figure
-sitting noticeably closer to the 1.25 gate margin than any other recorded
-or re-run figure in this repo, purely from run-to-run noise, not a code
-change (nothing in `crates/` changed across any of these runs).
-`dyn_knn_after_churn_dim3_f32` ratio 0.964 (recorded) vs. **0.945**,
-**0.946**, **0.964**, and **0.972** across the same four re-runs —
-comparatively tighter. Observed range across all four: `dyn_add`
-**1.106–1.230** (~11.2% spread), `dyn_knn_after_churn` **0.945–0.972**
-(~2.9% spread). The perf gates'
-1.25 margin and the median-of-7 methodology (below) both exist
-specifically to absorb this noise, not to paper over a real regression —
-but it is still noise, not a bare-metal-quality measurement, and this
-task's own `dyn_add` swing up to 1.230 is a concrete illustration of why
-the margin isn't set tighter.
+found roughly **±5-10% on individual runs**.
+
+**`dyn_add_20k_dim3_f32`** (workload unchanged by the M2 final-review fix
+wave): eight re-runs total across two documentation rounds — four from an
+earlier round (§3 has the pasted outputs) plus four fresh runs from this
+fix wave (§3, "M2 final-review fix wave" subsection below) — show this
+concretely on this exact machine: ratio 1.113 (recorded at commit
+`ec9b581`) vs. **1.106**, **1.230**, **1.113**, **1.117** (earlier round)
+and **1.108**, **1.237**, **1.134**, **1.137** (this fix wave). Observed
+range across all eight: **1.106–1.237** (~11.8% spread) — the 1.237 figure
+sitting closer to the 1.25 gate margin than any other recorded or re-run
+figure in this repo, purely from run-to-run noise, not a code change
+(`dyn_add`'s workload is untouched by this fix wave, and nothing else in
+`crates/` changed between any of these eight runs).
+
+**`dyn_knn_after_churn_dim3_f32`**: this workload WAS changed by the M2
+final-review fix wave (see the "Corrected `dyn_knn_after_churn` workload"
+subsection below) — the OLD (no-op-churn) and NEW (live-tombstone,
+real-merge) numbers are not comparable and are kept separate. Old workload,
+four re-runs from the earlier round: ratio 0.964 (recorded) vs. **0.945**,
+**0.946**, **0.964**, **0.972** — range **0.945–0.972** (~2.9% spread),
+kept here only as historical context for the noise-band discussion, not as
+a currently-accurate figure (that workload was a provable no-op and is no
+longer what `perf_gate.rs`/`bench_dynamic.rs` measure). New (corrected)
+workload, four fresh runs from this fix wave: **0.975**, **0.972**,
+**0.971**, **0.976** — range **0.971–0.976** (~0.5% spread), noticeably
+TIGHTER than the old workload's spread, though that is almost certainly
+because these four runs happened close together in one sitting rather than
+across two documentation rounds, not evidence the corrected workload is
+inherently less noisy.
+
+The perf gates' 1.25 margin and the median-of-7 methodology (below) both
+exist specifically to absorb this noise, not to paper over a real
+regression — but it is still noise, not a bare-metal-quality measurement,
+and `dyn_add`'s swing up to 1.237 is a concrete illustration of why the
+margin isn't set tighter.
 
 **Before any public announcement, `docs/ROADMAP.md`'s M-pub milestone
 requires a bare-metal Linux re-run** of the full evaluation, with only
@@ -124,8 +159,11 @@ cc::Build::new()
 
 `export PATH="$HOME/.cargo/bin:$PATH"` first if `cargo`/`rustc` aren't
 already on `PATH` (this repo's own dev environment needs it). Every command
-below was run during this documentation task; output is summarized inline,
-full transcripts are in this task's report.
+below was actually run at least once, across either the documentation round
+that originally wrote this section or the subsequent M2 final-review fix
+wave (which corrected the `dyn_knn_after_churn` workload, see below);
+output is summarized inline, full transcripts are pasted directly in this
+document.
 
 ### Full test suite
 
@@ -133,14 +171,20 @@ full transcripts are in this task's report.
 cargo test --workspace --all-features
 ```
 Expected runtime: a few seconds (debug build, no heavy/perf-gated tests —
-those are `#[ignore]`d). **Re-run for this document: 343 passed, 0 failed,
-15 ignored**, including doctests (2, both in `nanoflann-rs`: the crate-doc
-example and `DynamicKdTree`'s doc example). This supersedes M1's own
-269-passed/8-ignored count recorded at M1 completion (see
-`docs/benchmarks.md`'s M1 "Test status" subsection, now marked superseded)
+those are `#[ignore]`d). **Re-run at the M2 final-review fix wave: 345
+passed, 0 failed, 15 ignored**, including doctests (2, both in
+`nanoflann-rs`: the crate-doc example and `DynamicKdTree`'s doc example).
+This supersedes both M1's own 269-passed/8-ignored count recorded at M1
+completion (see `docs/benchmarks.md`'s M1 "Test status" subsection, now
+marked superseded) and M2's own 343-passed count at its initial completion
 — M2 added `nanoflann-ref`'s dynamic-oracle tests, `xval`'s dynamic
 cross-validation suite, the report renderer's own test file, and the two
-new dynamic perf gates, all counted in the new total.
+new dynamic perf gates; the M2 final-review fix wave added two more
+`nanoflann-rs` unit tests (`maximum_point_count`'s new capacity bounds
+check and its `n == 0` panic), all counted in the new total. `cargo test
+--workspace` (default features, no `--all-features`) is an identical
+invocation to the command above: `parallel` (on by default) is
+`nanoflann-rs`'s only feature.
 
 ### Heavy / `--ignored` suite (release; includes canary mutation tests)
 
@@ -235,6 +279,103 @@ exact same four-run range.)
 To run only the two dynamic gates yourself: append `_dyn` to the filter
 (`--ignored perf_gate_dyn`, as used for the two dedicated re-runs above).
 
+### M2 final-review fix wave: corrected `dyn_knn_after_churn` workload
+
+The `dyn_knn_after_churn_dim3_f32` figures above (0.964 recorded, 0.945–0.972
+re-run range) were measured against a workload that is a **provable no-op**:
+it removed 5,000 points, then reactivated ALL 5,000 of them before the timed
+knn loop ran. Since every removal was undone, `removed_len() == 0` at query
+time — the timed loop never once ran tombstone-filtered search against a
+forest with any live tombstones, and no `add_points` call in the setup ever
+triggered a merge deep enough to matter (reactivation never touches slot
+membership at all, see `nanoflann_rs::dynamic::DynamicKdTree::add_points`'s
+doc comment). This was fixed in both `crates/xval/tests/perf_gate.rs` and
+`crates/xval/benches/bench_dynamic.rs`: the corrected workload builds 95,000
+points, removes 5,000, reactivates only half (2,500 — leaving 2,500 LIVE
+tombstones), then adds a fresh CONTIGUOUS growth batch of 5,000 more points
+(starting exactly at 95,000, the running `point_count`) to reach 100,000
+total. That growth batch is deliberately sized past 4,096 = 2^12, which by
+the pigeonhole principle GUARANTEES it passes through at least one
+`point_count` value whose binary representation ends in 12 or more one-bits
+— i.e. `first0bit` returns >= 12 somewhere in the batch, forcing a real
+cascading merge across 12+ slots, which also migrates the still-removed
+tombstones' recorded slot (the exact mechanism `add_points`'s doc comment
+describes). The setup asserts `removed_len() > 0` on the Rust side, plain
+`assert!` (not `debug_assert!`, since perf gates run `--release` without
+`debug-assertions = true`), right before the timed loop starts, on BOTH the
+Rust and C++ sides driven through the identical op sequence.
+
+**RED capture** — proving the assert actually fires, not just decoration:
+temporarily set `READD` back to `REMOVE` (5,000, i.e. reactivate every
+removed point again, reproducing the OLD no-op shape) and re-run the single
+gate test:
+```
+$ PERF_GATE=1 RUSTFLAGS="-C target-cpu=native" cargo test -p xval --release \
+    --test perf_gate perf_gate_dyn_knn_after_churn_dim3_f32 -- --ignored --exact --nocapture
+
+thread 'perf_gate_dyn_knn_after_churn_dim3_f32' panicked at crates/xval/tests/perf_gate.rs:389:5:
+perf_gate_dyn_knn_after_churn_dim3_f32 setup: removed_len() must be > 0 at query time (workload must leave live tombstones) -- got 0, which means this workload regressed back to the provable-no-op churn shape this gate was fixed to avoid
+test perf_gate_dyn_knn_after_churn_dim3_f32 ... FAILED
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.02s
+```
+`READD` was then restored to `2_500` and the suite re-verified green before
+any of the runs below were captured.
+
+**Re-run 1, all six gates** (`PERF_GATE=1 RUSTFLAGS="-C target-cpu=native"
+cargo test -p xval --release --test perf_gate -- --ignored perf_gate
+--test-threads=1 --nocapture`):
+```
+PERF_GATE perf_gate_build_100k_dim3_f32_seq: rust=8.987ms cpp=9.118ms ratio=0.986
+PERF_GATE perf_gate_dyn_add_20k_dim3_f32: rust=3.829ms cpp=3.455ms ratio=1.108
+PERF_GATE perf_gate_dyn_knn_after_churn_dim3_f32: rust=30.034ms cpp=30.800ms ratio=0.975
+PERF_GATE perf_gate_knn_dim3_f32_k10: rust=7.170ms cpp=6.770ms ratio=1.059
+PERF_GATE perf_gate_knn_dyn_dim8_f64_k10: rust=170.867ms cpp=179.698ms ratio=0.951
+PERF_GATE perf_gate_radius_dim3_f32: rust=4.595ms cpp=5.932ms ratio=0.775
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 3.80s
+```
+
+**Re-run 2, all six gates** (same command, minutes later, no code changes
+in between):
+```
+PERF_GATE perf_gate_build_100k_dim3_f32_seq: rust=10.178ms cpp=10.136ms ratio=1.004
+PERF_GATE perf_gate_dyn_add_20k_dim3_f32: rust=4.222ms cpp=3.413ms ratio=1.237
+PERF_GATE perf_gate_dyn_knn_after_churn_dim3_f32: rust=29.655ms cpp=30.523ms ratio=0.972
+PERF_GATE perf_gate_knn_dim3_f32_k10: rust=7.099ms cpp=6.730ms ratio=1.055
+PERF_GATE perf_gate_knn_dyn_dim8_f64_k10: rust=170.512ms cpp=179.753ms ratio=0.949
+PERF_GATE perf_gate_radius_dim3_f32: rust=4.583ms cpp=5.925ms ratio=0.774
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 3.80s
+```
+
+**Re-run, dynamic gates only** (`--ignored perf_gate_dyn` filter), two more
+consecutive invocations, minutes apart:
+```
+PERF_GATE perf_gate_dyn_add_20k_dim3_f32: rust=4.292ms cpp=3.786ms ratio=1.134
+PERF_GATE perf_gate_dyn_knn_after_churn_dim3_f32: rust=29.589ms cpp=30.485ms ratio=0.971
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.58s
+```
+```
+PERF_GATE perf_gate_dyn_add_20k_dim3_f32: rust=3.870ms cpp=3.405ms ratio=1.137
+PERF_GATE perf_gate_dyn_knn_after_churn_dim3_f32: rust=29.820ms cpp=30.543ms ratio=0.976
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.57s
+```
+
+All eight gate invocations pass the 1.25 margin (six-gate runs run all six
+gates each; dyn-only runs run two each — twelve total gate PASS lines
+across the four invocations). Across these four fresh runs:
+`dyn_knn_after_churn_dim3_f32` (corrected workload) ranged **0.971–0.976**
+— tight, and clearly a different population from the old workload's
+0.945–0.972 (expected: different workload, not comparable). `dyn_add`
+(workload unchanged by this fix wave) ranged **1.108–1.237** in these four
+fresh runs; combined with the four runs recorded in the earlier
+documentation round (1.106, 1.230, 1.113, 1.117), the honest range across
+all eight `dyn_add` measurements taken to date is **1.106–1.237** — wider
+than the 1.106–1.230 this repo previously documented, purely because an
+additional four runs were taken, not because anything regressed (`dyn_add`
+gate code is byte-identical before and after this fix wave). This is
+exactly the kind of range-widening honest re-measurement is expected to
+produce, and is reported as measured rather than rounded down to match a
+previously-published figure.
+
 ### Criterion benches (full sweep — ~15 minutes; smoke forms below for a quick check)
 
 ```
@@ -271,9 +412,8 @@ version — use one style or the other per invocation, not both, as shown
 above.) All four smoke commands exited 0 and produced the expected
 benchmark-group output; none of the four bench binaries has bit-rotted.
 The headline numbers quoted in `docs/benchmarks.md` come from the full,
-un-truncated sweep run during M1's Task 14 / M2's Task 5 (see each task's
-own report for the captured full-sweep transcripts), not from these
-smoke commands — the smoke commands exist only to prove the *commands*
+un-truncated sweep run during M1's and M2's own performance passes, not
+from these smoke commands — the smoke commands exist only to prove the *commands*
 still work, not to re-derive the headline figures.
 
 ### The two-command report chain
@@ -287,11 +427,11 @@ three static + one dynamic brute-force ground-truth computations, each
 O(n_queries × n) — the slowest is 2000 queries × 50,000 points); `report.json`
 is regenerated fully every run, not incrementally, so there is no cheaper
 partial-update path.  `render_report` itself is near-instant (pure
-string/template work over an already-computed JSON). **Re-run for this
-fix round** (exact byte counts via `wc -c`, not the block-rounded `du -h`
-figures an earlier task report used): both exited 0; `report.json` was
-**6495 bytes** (~6.3KB) and `report.html` was **14179 bytes** (~13.9KB);
-verdict tiles computed live from the data read:
+string/template work over an already-computed JSON). **Re-run during the
+prior documentation round** (exact byte counts via `wc -c`, not the
+block-rounded `du -h` figures used earlier still): both exited 0;
+`report.json` was **6495 bytes** (~6.3KB) and `report.html` was **14179
+bytes** (~13.9KB); verdict tiles computed live from the data read:
 
 ```
 Accuracy @ eps=0:  ✓ 100% exact @ eps=0
@@ -406,8 +546,8 @@ one of the commands in §3 and one field/line in its output, as follows.
 | `knn_fixed3_dim3_f32_k10` ratio 1.042 | Perf gate command, §3 | `PERF_GATE perf_gate_knn_dim3_f32_k10: ... ratio=...` |
 | `knn_dyn_dim8_f64_k10` ratio 0.973 | Perf gate command, §3 | `PERF_GATE perf_gate_knn_dyn_dim8_f64_k10: ... ratio=...` |
 | `radius_dim3_f32` ratio 0.767 | Perf gate command, §3 | `PERF_GATE perf_gate_radius_dim3_f32: ... ratio=...` |
-| `dyn_add_20k_dim3_f32` ratio 1.113 (README "Dynamic adaptor (M2)", `docs/benchmarks.md`) | Perf gate command with `perf_gate_dyn` filter, §3 | `PERF_GATE perf_gate_dyn_add_20k_dim3_f32: ... ratio=...` |
-| `dyn_knn_after_churn_dim3_f32` ratio 0.964 | Perf gate command with `perf_gate_dyn` filter, §3 | `PERF_GATE perf_gate_dyn_knn_after_churn_dim3_f32: ... ratio=...` |
+| `dyn_add_20k_dim3_f32` range 1.106–1.237 (README "Dynamic adaptor (M2)", `docs/benchmarks.md`) | Perf gate command with `perf_gate_dyn` filter, §3 | `PERF_GATE perf_gate_dyn_add_20k_dim3_f32: ... ratio=...` |
+| `dyn_knn_after_churn_dim3_f32` range 0.971–0.976 (corrected live-tombstone workload, README "Dynamic adaptor (M2)", `docs/benchmarks.md`) | Perf gate command with `perf_gate_dyn` filter, §3, "M2 final-review fix wave" subsection | `PERF_GATE perf_gate_dyn_knn_after_churn_dim3_f32: ... ratio=...` |
 | Churned-forest accuracy row (1.0/1.0/bit-exact at eps=0) | Report chain, §3 | `report.json`'s `accuracy[].workload == "dyn_churn_dim3_f32_k10_eps0"`: `rust_exact_tie_aware_vs_bruteforce`, `cpp_exact_tie_aware_vs_bruteforce`, `rust_eq_cpp_bitexact` |
 | Static accuracy rows (uniform/with_duplicates, eps ∈ {0, 0.1, 1}) | Report chain, §3 | `report.json`'s `accuracy[]` array, one row per `{dataset}_dim{d}_f32_k10_eps{e}` workload |
 | `knn_fixed3` headline table (k=1/10/100, f32/f64) | Full criterion sweep (§3; smoke form shown covers `k10/f32`) | `bench_knn.rs`'s `knn_fixed3/{lib}/{scalar}/k{k}` groups |
@@ -419,7 +559,7 @@ one of the commands in §3 and one field/line in its output, as follows.
 | Test-status counts (343 passed / 0 failed / 15 ignored) | Full test suite, §3 | terminal `test result:` line summed across all binaries — see `docs/benchmarks.md`'s "Test status (workspace, current)" section |
 | Heavy-suite pass (0 failed, incl. depth ~2115/~16794 builds and mutation canaries) | Heavy/`--ignored` suite, §3 | terminal `test result:` line per binary |
 | CPU model / kernel / compiler / git SHA / WSL flag (this doc's §1 table) | Report chain, §3, or `report_data` alone | `report.json`'s `meta.{cpu_model,kernel,cxx_compiler,git_sha,wsl}` |
-| `--bad`/`--good` verdict tiles, HTML scorecard | Report chain, §3 | `report.html`'s `<div class="tiles">` block, computed live from `report.json` — never hardcoded (see M2 Task 5b's report for the `render_report` test suite proving this) |
+| `--bad`/`--good` verdict tiles, HTML scorecard | Report chain, §3 | `report.html`'s `<div class="tiles">` block, computed live from `report.json` — never hardcoded (see `crates/xval/tests/render_report_test.rs` for the test suite proving this) |
 
 ## 6. See also
 

@@ -266,14 +266,15 @@ M1 was defined as done only when all four hold — current status:
    ~16794) pass in release; empty/`k > n`/duplicate edge cases covered.
    **Met**.
 4. **Hygiene** — `cargo test --workspace` green with zero warnings (forced
-   rebuild), `--no-default-features` builds, doctests pass. **Met**.
+   rebuild, including `cargo doc -p nanoflann-rs --no-deps`),
+   `--no-default-features` builds, doctests pass. **Met**.
 
 M2 (dynamic adaptor) was held to the same bar — bit-exact structure and
 query parity across its own op-sequence matrix, both dynamic perf gates
 passing, `cargo test --workspace` still green with zero warnings — also
 **Met**; see this file's "Dynamic adaptor (M2)" section above for the
-numbers and `.superpowers/sdd/2026-08-22-nanoflann-rs-m2-dynamic/progress.md`
-for the full per-task review trail.
+numbers and [`docs/nanoflann-notes.md`](docs/nanoflann-notes.md)'s "M2
+outcome" section for the full source-fact record.
 
 ## Benchmarks (M1 — static kd-tree)
 
@@ -417,16 +418,22 @@ through the normal API — it only surfaces if you reach for
 
 ### Performance
 
-Both new dynamic perf gates (same 1.25-ratio pass bar as M1's four static
-gates) pass with comfortable margin: `dyn_add_20k_dim3_f32` (contiguous
-adds from empty) at **1.113**, `dyn_knn_after_churn_dim3_f32` (knn after a
-realistic remove/re-add churn) at **0.964**. The churned-forest accuracy
-row is bit-exact against the C++ oracle (`1.0`/`1.0`/bit-exact at `eps=0`
-on a live-set-restricted brute-force ground truth). Full numbers, the
+Both new dynamic perf gates pass (same 1.25-ratio pass bar as M1's four
+static gates), but the margin is real, not "comfortable": across repeated
+re-runs on this WSL2 host (see [`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md)
+for every pasted run), `dyn_add_20k_dim3_f32` (contiguous adds from empty)
+has ranged **1.106–1.237** — 1.237 is only
+1.1% below the 1.25 threshold — and `dyn_knn_after_churn_dim3_f32` (knn
+against a forest with LIVE tombstones and real cross-slot merges, not a
+self-cancelling churn — see `docs/benchmarks.md` for why the workload was
+corrected) has ranged **0.971–0.976**. The churned-forest accuracy row is
+bit-exact against the C++ oracle (`1.0`/`1.0`/bit-exact at `eps=0` on a
+live-set-restricted brute-force ground truth). Full numbers, the
 `dyn_add`/`dyn_churn`/`dyn_knn_after_churn` criterion benchmarks, and why
 nanoflann's dynamic `addPoints` is inherently O(heavy)-per-point rather
 than amortized O(1) (on both sides, by design — not a Rust regression):
-[`docs/benchmarks.md`](docs/benchmarks.md)'s "M2 — dynamic forest" section.
+[`docs/benchmarks.md`](docs/benchmarks.md)'s "M2 — dynamic forest" section,
+the single source for these numbers (not repeated in more detail here).
 
 Cross-validated the same way M1's static tree is (bit-exact, in-process,
 against the vendored C++ oracle) — the dynamic-specific op-sequence suite

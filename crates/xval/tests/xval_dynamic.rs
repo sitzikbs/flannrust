@@ -637,8 +637,10 @@ fn mutation_canary_skipped_remove_breaks_structure_parity() {
         let capacity = 200usize;
         let data64 = uniform(cfg_seed("mutation_canary_f64", &[0]), capacity, dim);
         let growable = GrowableFlat::new(&data64, dim);
-        let mut rust_tree =
-            DynamicKdTreeBuilder::new(DynDim(dim), &growable).maximum_point_count(capacity).build();
+        let mut rust_tree = DynamicKdTreeBuilder::new(DynDim(dim), &growable)
+            .leaf_max_size(10)
+            .maximum_point_count(capacity)
+            .build();
         let mut oracle = RefDynIndexF64::build(&data64, dim, 10, capacity);
 
         let ops = dyn_ops(cfg_seed("mutation_canary_ops_f64", &[0]), capacity, 60);
@@ -687,8 +689,10 @@ fn mutation_canary_skipped_remove_breaks_structure_parity() {
         let data64 = uniform(cfg_seed("mutation_canary_f32", &[0]), capacity, dim);
         let data: Vec<f32> = to_f32(&data64);
         let growable = GrowableFlat::new(&data, dim);
-        let mut rust_tree =
-            DynamicKdTreeBuilder::new(DynDim(dim), &growable).maximum_point_count(capacity).build();
+        let mut rust_tree = DynamicKdTreeBuilder::new(DynDim(dim), &growable)
+            .leaf_max_size(10)
+            .maximum_point_count(capacity)
+            .build();
         let mut oracle = RefDynIndexF32::build(&data, dim, 10, capacity);
 
         let ops = dyn_ops(cfg_seed("mutation_canary_ops_f32", &[0]), capacity, 60);
@@ -754,8 +758,10 @@ fn mutation_canary_doctored_slot_order_breaks_per_slot_comparison() {
         let capacity = 16usize;
         let data64 = uniform(cfg_seed("mutation_canary_slot_order_f64", &[0]), capacity, dim);
         let growable = GrowableFlat::new(&data64, dim);
-        let mut rust_tree =
-            DynamicKdTreeBuilder::new(DynDim(dim), &growable).maximum_point_count(capacity).build();
+        let mut rust_tree = DynamicKdTreeBuilder::new(DynDim(dim), &growable)
+            .leaf_max_size(10)
+            .maximum_point_count(capacity)
+            .build();
         let mut oracle = RefDynIndexF64::build(&data64, dim, 10, capacity);
 
         // Add 8 points: same first0bit trace as the tombstone_migration
@@ -812,8 +818,10 @@ fn mutation_canary_doctored_slot_order_breaks_per_slot_comparison() {
         let data64 = uniform(cfg_seed("mutation_canary_slot_order_f32", &[0]), capacity, dim);
         let data: Vec<f32> = to_f32(&data64);
         let growable = GrowableFlat::new(&data, dim);
-        let mut rust_tree =
-            DynamicKdTreeBuilder::new(DynDim(dim), &growable).maximum_point_count(capacity).build();
+        let mut rust_tree = DynamicKdTreeBuilder::new(DynDim(dim), &growable)
+            .leaf_max_size(10)
+            .maximum_point_count(capacity)
+            .build();
         let mut oracle = RefDynIndexF32::build(&data, dim, 10, capacity);
 
         let op = DynOp::GrowAndAdd { count: 8 };

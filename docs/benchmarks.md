@@ -318,34 +318,56 @@ lines and environment/toolchain provenance: `docs/EXPERIMENTS.md`.
 
 ### Perf gate (two new gated workloads, same 1.25 margin as M1's four)
 
-| Workload | Ratio (recorded at M2 Task 5, commit `ec9b581`) |
-|---|---|
-| `dyn_add_20k_dim3_f32` (20 batches × 1000 contiguous adds, from empty) | 1.113 |
-| `dyn_knn_after_churn_dim3_f32` (100k built, 5k removed + 5k re-added, then 10,000 k=10 knn queries) | 0.964 |
+`dyn_knn_after_churn_dim3_f32`'s workload was corrected during the M2
+final-review fix wave (branch `m2-dynamic`, commit range starting after
+`5f671a0`): the original workload removed 5k points and re-added ALL 5k
+before querying, which is a provable no-op — every tombstone gets
+reactivated and `removed_len() == 0` at query time, so the timed knn loop
+never actually exercised tombstone-filtered search against a forest with
+live tombstones, and no merge triggered by the churn itself was ever timed.
+The corrected workload removes 5k, re-adds only half (2.5k, leaving 2.5k
+LIVE tombstones), then adds a fresh contiguous growth batch of 5k more
+points — large enough (> 4096 = 2^12) to GUARANTEE at least one real
+cascading merge across 12+ slots (pigeonhole: any 4096 consecutive
+`point_count` values contain one ending in 12 one-bits). A plain `assert!
+(removed_len() > 0)` in the setup, on both the Rust and C++ sides' shared
+op sequence, proves the corrected workload actually leaves live tombstones
+at query time; inverting it (reactivating all 5k again) reproduces the RED
+failure this fix was written against — see `docs/EXPERIMENTS.md`'s
+reproduction section for the captured panic. The old (no-op) figure is
+kept below as historical, not comparable to the new one (different
+workload, not a regression):
 
-Both pass with comfortable margin against the 1.25 gate threshold. Re-run
-four times across this documentation task and its fix round — twice via
-the full six-gate invocation (`PERF_GATE=1 RUSTFLAGS="-C target-cpu=native"
-cargo test -p xval --release --test perf_gate -- --ignored perf_gate
+| Workload | Ratio (recorded at commit `5f671a0`, pre-fix-wave, historical no-op churn) | Ratio (post-fix, corrected live-tombstone workload) |
+|---|---|---|
+| `dyn_add_20k_dim3_f32` (20 batches × 1000 contiguous adds, from empty; workload unchanged by this fix) | 1.113 | 1.106–1.237 (range, see below) |
+| `dyn_knn_after_churn_dim3_f32` (95k built, 5k removed / 2.5k re-added leaving live tombstones, then a 5k fresh growth batch triggering real merges, then 10,000 k=10 knn queries) | 0.964 (old, no-op-churn workload — not comparable) | 0.971–0.976 |
+
+Both pass the 1.25 gate threshold, but the margin is real, not
+"comfortable" — `dyn_add`'s high end (1.237) is only 1.0% below the
+threshold. Re-run four times during this fix wave — twice via the full
+six-gate invocation (`PERF_GATE=1 RUSTFLAGS="-C target-cpu=native" cargo
+test -p xval --release --test perf_gate -- --ignored perf_gate
 --test-threads=1 --nocapture`) and twice via the dynamic-only filter (same
 command with `--ignored perf_gate_dyn`), `crates/xval/tests/perf_gate.rs`;
 full pasted output of all four runs is in `docs/EXPERIMENTS.md`'s
 reproduction-commands section, not repeated here — `dyn_add_20k_dim3_f32`
-ranged **1.106–1.230** and `dyn_knn_after_churn_dim3_f32` ranged
-**0.945–0.972** across those four runs. Every individual run still
-passes the 1.25 margin by a comfortable amount, but `dyn_add`'s high end
-(1.230) is a real, larger-than-typical single-run swing worth knowing
-about — see `docs/EXPERIMENTS.md`'s WSL2 caveat, which uses this exact
-swing as its concrete illustration of why the gate margin isn't set
-tighter. Not a regression: no code in `crates/` changed between the
-recorded run and any of the four re-runs.
+ranged **1.106–1.237** (combining this fix wave's four fresh runs with the
+four runs recorded in an earlier documentation round; `dyn_add`'s workload
+itself is unchanged by this fix wave, so both sets of runs measure the
+same thing) and `dyn_knn_after_churn_dim3_f32` (the corrected workload)
+ranged **0.971–0.976** across this fix wave's four fresh runs. Every
+individual run still passes the 1.25 margin, but `dyn_add`'s high end is a
+real, larger-than-typical single-run swing worth knowing about — see
+`docs/EXPERIMENTS.md`'s WSL2 caveat. Not a regression: no code affecting
+`dyn_add`'s workload changed during this fix wave.
 
-`dyn_add`'s ratio (~1.1×, Rust slightly slower) and `dyn_knn_after_churn`'s
-ratio (~0.95-0.96×, Rust slightly faster) both compare the SAME algorithm
-implemented twice, not two different designs: nanoflann's dynamic
-`addPoints` is inherently O(heavy) per point (a merge-and-rebuild loop
-cascading through every slot up to the highest one touched, not an
-amortized-O(1) insert — see `crates/nanoflann-rs/src/dynamic.rs`'s
+`dyn_add`'s ratio (~1.1-1.2×, Rust slightly slower) and
+`dyn_knn_after_churn`'s ratio (~0.97×, Rust slightly faster) both compare
+the SAME algorithm implemented twice, not two different designs:
+nanoflann's dynamic `addPoints` is inherently O(heavy) per point (a
+merge-and-rebuild loop cascading through every slot up to the highest one
+touched, not an amortized-O(1) insert — see `crates/nanoflann-rs/src/dynamic.rs`'s
 `add_points` doc comment for the exact schedule), and this port matches
 that schedule exactly (same `first0bit` slot selection, same "rebuild every
 slot up to the highest touched, even a no-op call's slot 0" quirk) — so any
@@ -401,14 +423,21 @@ writing their own microbenchmark against an empty forest.
 
 ## Test status (workspace, current — supersedes both crate-specific counts above)
 
-`cargo test --workspace --all-features` (re-run during this documentation
-task, commit range up to and including this task's changes): **343 passed,
-0 failed, 15 ignored** (up from M1's 269/0/8 — M2 added the `nanoflann-ref`
-dynamic-oracle tests, `xval`'s dynamic cross-validation suite, the report
-renderer's test file, and the two new dynamic perf gates, all counted
-here). `cargo clippy --workspace --all-targets -- -D warnings`: clean. A
-forced rebuild (`touch` every crate's `src/*.rs` then `cargo build
---workspace --all-targets`) produced zero warnings. `cargo test --workspace
+`cargo test --workspace --all-features` (re-run during the M2 final-review
+fix wave, commit range up to and including that wave's changes): **345
+passed, 0 failed, 15 ignored** (up from M1's 269/0/8, and from 343/0/15 at
+M2's initial completion — the fix wave added two `nanoflann-rs` unit tests
+for the `maximum_point_count` capacity bounds check; M2 itself added the
+`nanoflann-ref` dynamic-oracle tests, `xval`'s dynamic cross-validation
+suite, the report renderer's test file, and the two new dynamic perf
+gates, all counted here). Note: `--all-features` and default features are
+identical invocations here — `parallel` (rayon, on by default) is
+`nanoflann-rs`'s only feature, so `cargo test --workspace` alone (as used
+elsewhere in this repo, e.g. the README) exercises exactly the same code.
+`cargo clippy --workspace --all-targets -- -D warnings`: clean. A forced
+rebuild (`touch` every crate's `src/*.rs` then `cargo build --workspace
+--all-targets`) produced zero warnings, and so does `cargo doc -p
+nanoflann-rs --no-deps` after a forced rebuild. `cargo test --workspace
 --all-features --release -- --ignored --test-threads=1` (heavy suite,
 including M1's two deepest degenerate-tree builds and M2's mutation
 canaries): see `docs/EXPERIMENTS.md`'s reproduction-commands table for the

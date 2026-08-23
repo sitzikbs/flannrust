@@ -275,7 +275,7 @@ where
     /// dataset yields an empty index whose searches return 0/false. Panics
     /// if `point_count() > u32::MAX as usize` (leaf offsets are `u32`).
     ///
-    /// `Sequential` routes through the same [`build_sequential_core`] helper
+    /// `Sequential` routes through the same `build_sequential_core` helper
     /// [`KdTreeBuilder::build_sequential`] uses — one true sequential-build
     /// sequence, not a second inline copy. `Auto` builds on rayon's
     /// ambient/global thread pool. `Threads(n)` builds inside a scoped
@@ -609,7 +609,11 @@ where
     }
 
     /// Generic escape hatch (= C++ `findNeighbors`). Returns
-    /// `result.full()`.
+    /// `result.full()`. **Empty-tree quirk** (mirrors the dynamic forest's,
+    /// see `dynamic`'s module doc): with zero points, `result.full()`
+    /// reflects an untouched result set — `false` for `KnnResultSet`/
+    /// `RknnResultSet`, but **`true`** for `RadiusResultSet` (hardwired,
+    /// nanoflann.hpp:433) regardless of whether anything was ever added.
     pub fn find_neighbors<R: ResultSet<M::DistanceType, Idx>>(
         &self,
         result: &mut R,

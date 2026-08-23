@@ -2,25 +2,24 @@
 //! `KDTreeSingleIndexDynamicAdaptor` (nanoflann.hpp:2521-2718) plus the
 //! sub-tree class it wraps, `KDTreeSingleIndexDynamicAdaptor_`
 //! (nanoflann.hpp:2248-2504, in particular its `buildIndex()` at
-//! nanoflann.hpp:2345-2367). M2 Task 2 built the FOREST BOOKKEEPING —
-//! `add_points`/`remove_point`/the merge-and-rebuild schedule. M2 Task 3
-//! (this revision) adds SEARCH: [`DynamicKdTree::find_neighbors`] (= C++'s
-//! forest `findNeighbors`, nanoflann.hpp:2704-2713) plus the additive
-//! `knn_search`/`rknn_search`/`radius_search` wrappers, all tombstone-
-//! filtered via [`TombstoneFilter`].
+//! nanoflann.hpp:2345-2367). This module provides the FOREST BOOKKEEPING —
+//! `add_points`/`remove_point`/the merge-and-rebuild schedule — and SEARCH:
+//! [`DynamicKdTree::find_neighbors`] (= C++'s forest `findNeighbors`,
+//! nanoflann.hpp:2704-2713) plus the additive `knn_search`/`rknn_search`/
+//! `radius_search` wrappers, all tombstone-filtered via `TombstoneFilter`.
 //!
 //! # The forest idea
 //!
 //! `tree_count` independent static kd-trees ("slots"), indexed 0..tree_count.
 //! Each newly-added point walks a binary-counter pattern
-//! ([`first0bit`]) to decide which slot absorbs it: slot `pos` absorbs
+//! (`first0bit`) to decide which slot absorbs it: slot `pos` absorbs
 //! every LOWER slot's entire current point list plus the new point itself,
 //! and every lower slot becomes empty. This is exactly incrementing a
 //! binary counter by one (`pos` = position of the counter's lowest unset
 //! bit) — after `n` sequential adds with no removals, the set of non-empty
 //! slots is exactly the set bits of `n`'s binary representation, each
-//! holding `2^slot` points. A slot is REBUILT FROM SCRATCH (M1's
-//! [`SubtreeBuilder`], `base = 0`) every time its point list changes, and
+//! holding `2^slot` points. A slot is REBUILT FROM SCRATCH (the static
+//! builder's `SubtreeBuilder`, `base = 0`) every time its point list changes, and
 //! — critically — every time ANY slot up to the highest-touched slot
 //! changes, per nanoflann.hpp:2670-2675's `for (int i = 0; i <= maxIndex;
 //! ++i)` rebuild loop (see [`DynamicKdTree::add_points`]'s doc comment).
@@ -86,15 +85,15 @@ pub(crate) fn first0bit(n: usize) -> usize {
 /// time any slot up to the highest slot touched this call changes — see
 /// [`DynamicKdTree::add_points`]). An empty slot (`vind.is_empty()`) has an
 /// empty `nodes` arena and a stale/never-written `root_bbox` (never read:
-/// search — Task 3 — always checks `vind.is_empty()` first, mirroring
-/// nanoflann's `size(*this) == 0` early-return, nanoflann.hpp:2380).
+/// search always checks `vind.is_empty()` first, mirroring nanoflann's
+/// `size(*this) == 0` early-return, nanoflann.hpp:2380).
 struct Slot<T: Scalar, D: Dim, Idx: IndexType> {
     vind: Vec<Idx>,
     // NOTE: `nodes`/`root_bbox` don't need `#[allow(dead_code)]` even though
-    // no query method read them before Task 3 -- `add_points`'s rebuild pass
-    // already writes AND clears them (`.clear()`, struct-literal init,
-    // `slot.root_bbox = bbox`), which is enough for rustc's dead_code
-    // analysis to consider them used.
+    // no query method reads them until a search actually runs --
+    // `add_points`'s rebuild pass already writes AND clears them (`.clear()`,
+    // struct-literal init, `slot.root_bbox = bbox`), which is enough for
+    // rustc's dead_code analysis to consider them used.
     nodes: Vec<Node<T>>,
     root_bbox: D::Array<Interval<T>>,
 }
@@ -143,7 +142,14 @@ impl<'a, Idx: IndexType> PointFilter<Idx> for TombstoneFilter<'a> {
 /// Sequential-only build (parity: the C++ forest ctor has no parallel
 /// slot-rebuild path — `n_thread_build` only ever reaches the PER-SLOT
 /// `buildIndex()`, and this crate's forest always rebuilds slots one at a
-/// time on the calling thread, matching every observed C++ call site).
+/// time on the calling thread, matching every observed C++ call site). One
+/// consequence: unlike [`crate::tree::KdTreeBuilder::build`] (which, under
+/// the default `parallel` feature, requires `DataSource: Sync` because it
+/// genuinely shares `&DS` across rayon worker threads), [`Self::build`]
+/// never needs a `Sync` bound at all — there is no parallel path here to
+/// need one, so a non-`Sync` dataset (e.g. `Rc<Cell<_>>`-backed interior
+/// mutability) works out of the box, with no `build_sequential`-style
+/// escape hatch required.
 pub struct DynamicKdTreeBuilder<T, D, DS, M = L2, Idx = u32, TB = KeepInsertionOrder>
 where
     T: Scalar,
@@ -209,8 +215,15 @@ where
 
     /// Bounds `tree_count` via `tree_count = floor(log2(maximum_point_count)) + 1`
     /// (nanoflann.hpp:2610, see [`DynamicKdTree::tree_count`]'s doc comment
-    /// for the exact cast). Default 1_000_000_000 (30 slots).
+    /// for the exact cast). Default 1_000_000_000 (30 slots). This is a real
+    /// capacity, not a hint: `add_points` panics (naming
+    /// `maximum_point_count` in its message) if the number of points ever
+    /// added would require a slot beyond `tree_count`, so pass a value big
+    /// enough for the largest total point count the forest will ever hold.
+    /// Panics if `n == 0` (a zero-capacity forest with no slots at all can
+    /// never legally add a point).
     pub fn maximum_point_count(mut self, n: usize) -> Self {
+        assert!(n >= 1, "maximum_point_count: n must be >= 1");
         self.maximum_point_count = n;
         self
     }
@@ -227,8 +240,9 @@ where
         }
     }
 
-    /// Selects the kNN/RKNN equal-distance tie policy (consumed by Task 3's
-    /// search methods; stored now so the type parameter is fixed at build time).
+    /// Selects the kNN/RKNN equal-distance tie policy (consumed by
+    /// [`DynamicKdTree`]'s search methods; stored here so the type parameter
+    /// is fixed at build time).
     pub fn tie_break<TB2: TieBreak>(self) -> DynamicKdTreeBuilder<T, D, DS, M, Idx, TB2> {
         DynamicKdTreeBuilder {
             dim: self.dim,
@@ -286,6 +300,20 @@ where
 /// kd-tree slots plus the bookkeeping (`tree_index`/`removed`/
 /// `point_count`) that decides which slot each dataset point currently
 /// lives in. See the module doc for the overall scheme.
+///
+/// # API symmetry with the static [`crate::tree::KdTree`]
+///
+/// This type deliberately does NOT offer a `size()`/`used_memory_bytes()`-
+/// style accessor, even though [`crate::tree::KdTree`] has both: for a
+/// forest, "size" is ambiguous between "points ever added" (`point_count`,
+/// the C++ `pointCount_` counter, which removal never decrements) and
+/// "currently live points" ([`Self::active_count`], additive over C++). The
+/// C++ forest itself picks neither consistently across its own surface, so
+/// rather than port that ambiguity, this crate exposes only the
+/// unambiguous [`Self::active_count`]/[`Self::tree_index`]/
+/// [`Self::removed_len`] accessors and leaves a size-parity decision (which
+/// semantics, if any, `size()` should report) to a future roadmap item
+/// rather than guessing now.
 ///
 /// # Example
 ///
@@ -415,11 +443,14 @@ where
     /// `point_count`. This is real, oracle-verified C++ behavior — see
     /// `nanoflann-ref`'s `readd_point_1_reactivates_it_f32`, which calls
     /// `add_points(1, 1)` to reactivate index 1 while `pointCount_` is
-    /// already 4. (NOTE: the M2 Task 2 brief's literal text proposes a
-    /// blanket `assert_eq!(start, self.point_count)` at the top of this
-    /// method; that would PANIC on this exact legal, oracle-verified
-    /// sequence, so it is not what's implemented — see the "Brief-vs-source
-    /// discrepancies" section of this task's report.)
+    /// already 4. A stricter BLANKET `assert_eq!(start, self.point_count)`
+    /// at the top of this method would PANIC on exactly that legal,
+    /// oracle-verified sequence — reactivation-only calls routinely start
+    /// well below the current `point_count`, and that is not a bug. The
+    /// per-index invariant actually implemented below asserts only against
+    /// GENUINELY-NEW indices, which is precisely the case nanoflann's own
+    /// bookkeeping silently corrupts on misalignment — narrower than a
+    /// blanket check, but correct for every legal call shape.
     ///
     /// So: where C++ silently corrupts `treeIndex_` when a genuinely-new
     /// index doesn't line up with `pointCount_` (see `nanoflann-ref`'s
@@ -457,7 +488,7 @@ where
     /// `max_index` is the highest `pos` reached by any genuinely-new index
     /// this call, defaulting to 0 even if the call did nothing at all — see
     /// below) is rebuilt: its arena is freed, and if its `vind` is
-    /// non-empty, [`crate::build::SubtreeBuilder`] rebuilds it FROM THE
+    /// non-empty, `crate::build::SubtreeBuilder` rebuilds it FROM THE
     /// SLOT'S OWN CURRENT `vind` ORDER (not reset to identity — mirrors
     /// `KDTreeSingleIndexDynamicAdaptor_::buildIndex()`,
     /// nanoflann.hpp:2345-2367, which calls `computeBoundingBox`/
@@ -493,6 +524,13 @@ where
             );
 
             let pos = first0bit(self.point_count);
+            assert!(
+                pos < self.slots.len(),
+                "add_points: point_count ({}) has outgrown this forest's capacity ({} slots) \
+                 -- construct the forest with a larger DynamicKdTreeBuilder::maximum_point_count",
+                self.point_count,
+                self.slots.len()
+            );
             if pos > max_index {
                 max_index = pos;
             }
@@ -575,7 +613,7 @@ where
     /// = C++ forest `findNeighbors` (nanoflann.hpp:2704-2713): calls every
     /// slot's FULL sub-tree `findNeighbors` (nanoflann.hpp:2400-2417) in
     /// turn, slots in ASCENDING order, against the SAME shared `result`,
-    /// tombstone-filtered via [`TombstoneFilter`]. Reuses M1's
+    /// tombstone-filtered via `TombstoneFilter`. Reuses the static builder's
     /// `search::find_neighbors` verbatim per slot — that function already
     /// re-zeroes its `dists_scratch` argument at the top of every call
     /// (checked against both the vendored C++, whose sub-tree
@@ -1281,6 +1319,28 @@ mod tests {
         let mut tree = DynamicKdTreeBuilder::new(ConstDim::<1>, ds).maximum_point_count(1000).build();
         // First-ever call, but starts at 1 instead of 0 -- point_count is 0.
         tree.add_points(1, 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "outgrown this forest's capacity")]
+    fn add_points_panics_when_point_count_outgrows_maximum_point_count() {
+        // maximum_point_count(1) -> tree_count() = floor(log2(1)) + 1 = 1
+        // (a single slot 0). The first point (pos = first0bit(0) = 0) fits;
+        // the second (pos = first0bit(1) = 1) needs slot 1, which doesn't
+        // exist -- must panic naming the capacity, not silently
+        // index-out-of-bounds panic on `self.slots[pos]`.
+        let ds = Ungated(vec![[10.0], [20.0]]);
+        let mut tree = DynamicKdTreeBuilder::new(ConstDim::<1>, ds).maximum_point_count(1).build();
+        assert_eq!(tree.tree_count(), 1);
+        tree.add_points(0, 1);
+    }
+
+    #[test]
+    fn maximum_point_count_zero_panics() {
+        let result = std::panic::catch_unwind(|| {
+            DynamicKdTreeBuilder::new(ConstDim::<1>, Ungated::<1>(vec![])).maximum_point_count(0)
+        });
+        assert!(result.is_err(), "maximum_point_count(0) must panic, not silently accept an unusable capacity");
     }
 
     #[test]

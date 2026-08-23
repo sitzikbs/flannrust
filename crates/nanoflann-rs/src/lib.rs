@@ -6,7 +6,11 @@
 // sites clearer, just add a type to look up. Allowed crate-wide since the
 // pattern recurs in a few private helpers, not just one.
 #![allow(clippy::type_complexity)]
-//! Rust port of nanoflann's static kd-tree; behavioral parity with nanoflann 1.12.1
+//! Rust port of nanoflann: a STATIC kd-tree ([`tree::KdTree`],
+//! `KDTreeSingleIndexAdaptor`) and a DYNAMIC Bentley-Saxe forest
+//! ([`dynamic::DynamicKdTree`], `KDTreeSingleIndexDynamicAdaptor`)
+//! supporting point add/remove after construction; behavioral parity with
+//! nanoflann 1.12.1.
 //!
 //! # Contracts (see the README for the full list, deviations, and input domain)
 //!
@@ -26,7 +30,19 @@
 //!   domain (see the README's "Input domain" section).
 //! - Under the default `parallel` feature, `KdTreeBuilder::build()` requires
 //!   `DataSource: Sync`; non-`Sync` data sources use
-//!   [`tree::KdTreeBuilder::build_sequential`] instead.
+//!   [`tree::KdTreeBuilder::build_sequential`] instead. [`dynamic::DynamicKdTreeBuilder::build`]
+//!   never needs `Sync` at all (the dynamic forest has no parallel build path).
+//! - [`dynamic::DynamicKdTree::add_points`]'s contiguous-append contract
+//!   (DEVIATION from C++): a genuinely-new (non-reactivation) point index
+//!   must equal the forest's running `point_count` at the moment it is
+//!   processed — nanoflann silently corrupts its bookkeeping on a
+//!   misaligned call, this port panics instead. Reactivating a
+//!   previously-removed index is exempt (legally any `start`/`end`).
+//! - [`dynamic::DynamicKdTree::find_neighbors`]'s empty-forest quirk
+//!   (inherited from C++): with zero occupied slots, `result.full()`
+//!   reflects an untouched result set — `false` for knn/rknn, but
+//!   hardwired `true` for [`result_set::RadiusResultSet`] regardless of
+//!   whether anything was ever added.
 //!
 //! # Example
 //!
