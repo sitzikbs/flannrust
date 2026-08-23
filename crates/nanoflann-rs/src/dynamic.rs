@@ -587,10 +587,25 @@ mod tests {
     /// Hand-derived First0Bit sequence for point_count 0,1,2,3 (before each
     /// point is placed): first0bit(0)=0, first0bit(1)=1, first0bit(2)=0,
     /// first0bit(3)=2. Tracing the merge rule (see `add_points`'s doc
-    /// comment): point 0 -> slot 0; point 1 -> slot 1 (absorbs slot 0's
-    /// [0]); point 2 -> slot 0; point 3 -> slot 2 (absorbs slot 0's [2] AND
-    /// slot 1's [0,1]). All four points therefore end up in slot 2, with
-    /// slots 0 and 1 left empty.
+    /// comment), including the exact APPEND ORDER (lower slots ascending,
+    /// within a slot in its current `vind` order, then the new idx last):
+    /// - idx=0: pos=0 -> slot0.vind = [0].
+    /// - idx=1: pos=1 -> merge slot0 (`[0]`) into slot1, then push 1 ->
+    ///   slot1.vind = [0, 1]; slot0 cleared.
+    /// - idx=2: pos=0 -> slot0.vind = [2].
+    /// - idx=3: pos=2 -> merge slot0 (`[2]`) THEN slot1 (`[0, 1]`) into
+    ///   slot2 (ascending slot order: slot0 before slot1), then push 3 ->
+    ///   slot2.vind = [2, 0, 1, 3]; slot0/slot1 cleared.
+    ///
+    /// With `leaf_max_size` 10 (the default) and only 4 points, the
+    /// rebuild pass's `SubtreeBuilder::build` never calls `middle_split`/
+    /// `plane_split` at all (`count(4) <= leaf_max_size(10)` makes it an
+    /// immediate single leaf, nanoflann.hpp:1335 / `build.rs`'s `if count
+    /// <= self.leaf_max_size` branch) — the leaf's `vind` slice is used
+    /// AS-IS, unpermuted. So the exact post-rebuild slot 2 order is the
+    /// merge-append order itself: `[2, 0, 1, 3]`. (A rebuild that DOES
+    /// permute is covered separately below by
+    /// `permuting_rebuild_with_leaf_max_size_one_matches_hand_derived_sort`.)
     #[test]
     fn add_4_points_one_batch_matches_first0bit_slot_occupancy() {
         let ds = Ungated(vec![[10.0], [20.0], [30.0], [40.0]]);
@@ -602,12 +617,22 @@ mod tests {
 
         assert!(tree.point_indices_of_slot(0).is_empty(), "slot 0 must be empty");
         assert!(tree.point_indices_of_slot(1).is_empty(), "slot 1 must be empty");
-        let mut slot2: Vec<u32> = tree.point_indices_of_slot(2).to_vec();
-        slot2.sort_unstable();
-        assert_eq!(slot2, vec![0, 1, 2, 3], "slot 2 must hold all 4 points");
+
+        // EXACT append order (not just membership) -- this is the signal
+        // T4's per-slot cross-validation against the C++ oracle's vAcc_
+        // depends on; a single-leaf rebuild (count <= leaf_max_size) never
+        // permutes, so this must equal the raw merge-append order exactly.
+        assert_eq!(
+            tree.point_indices_of_slot(2),
+            &[2u32, 0, 1, 3],
+            "slot 2 must hold the EXACT merge-append order, not just the right membership"
+        );
 
         assert_eq!(tree.tree_index(), &[2, 2, 2, 2]);
 
+        // Separate membership-only check (order-independent), kept
+        // alongside the exact-order assertion above rather than instead of
+        // it.
         let mut union: Vec<u32> = (0..tree.tree_count())
             .flat_map(|s| tree.point_indices_of_slot(s).iter().copied())
             .collect();
@@ -622,15 +647,23 @@ mod tests {
     /// Sequence (hand-traced against nanoflann.hpp:2629-2676):
     /// - `add_points(0, 1)`: point 0 -> slot 0 (pos=first0bit(0)=0); point 1
     ///   -> slot 1 (pos=first0bit(1)=1), absorbing slot 0's [0] ->
-    ///   `tree_index[0] = 1`.
+    ///   `tree_index[0] = 1`. `leaf_max_size` 10 (default) >= count(2), so
+    ///   this call's rebuild is a single leaf: slot1.vind stays exactly
+    ///   `[0, 1]` (append order, unpermuted -- same "count <=
+    ///   leaf_max_size never permutes" reasoning as the previous test).
     /// - `remove_point(0)`: `removed = {0: 1}`, `tree_index[0] = -1`.
-    /// - `add_points(2, 2)`: point 2 -> slot 0 (pos=first0bit(2)=0).
+    /// - `add_points(2, 2)`: point 2 -> slot 0 (pos=first0bit(2)=0);
+    ///   slot0.vind = `[2]`.
     /// - `add_points(3, 3)`: point 3 -> slot 2 (pos=first0bit(3)=2),
-    ///   absorbing slot 0's [2] (tree_index[2] live -> tree_index[2]=2) AND
-    ///   slot 1's [0 or 1 in whatever order the earlier rebuild left them]:
-    ///   for the entry that is index 0 (`tree_index[0] == -1`, a tombstone),
-    ///   the `else` branch fires -- `removed[0]` MIGRATES from `1` to `2`.
-    ///   For the entry that is index 1 (live), `tree_index[1] = 2`.
+    ///   merging slot0 (`[2]`) THEN slot1 (`[0, 1]`, exactly the order the
+    ///   PRIOR single-leaf rebuild left it in) into slot2, ascending slot
+    ///   order, within-slot vind order preserved, then pushing 3 last:
+    ///   slot2.vind = `[2, 0, 1, 3]`. During the slot1 merge, the entry
+    ///   that is index 0 (`tree_index[0] == -1`, a tombstone) takes the
+    ///   `else` branch -- `removed[0]` MIGRATES from `1` to `2`. The entry
+    ///   that is index 1 (live) takes the `if` branch: `tree_index[1] =
+    ///   2`. `count(4) <= leaf_max_size(10)` again -> single leaf, no
+    ///   permutation -> slot2.vind stays exactly `[2, 0, 1, 3]`.
     #[test]
     fn merge_migrates_a_tombstones_recorded_slot() {
         let ds = Ungated(vec![[10.0], [20.0], [30.0], [40.0]]);
@@ -653,11 +686,166 @@ mod tests {
         assert_eq!(tree.tree_index()[2], 2);
         assert_eq!(tree.tree_index()[3], 2);
 
-        // Slot 2 physically holds all 4 (including the tombstoned 0 --
-        // lazy deletion never removes from `vind`).
-        let mut slot2: Vec<u32> = tree.point_indices_of_slot(2).to_vec();
-        slot2.sort_unstable();
-        assert_eq!(slot2, vec![0, 1, 2, 3]);
+        // EXACT append order (including the tombstoned 0 -- lazy deletion
+        // never removes from `vind`): [2, 0, 1, 3], per the hand-derivation
+        // above.
+        assert_eq!(
+            tree.point_indices_of_slot(2),
+            &[2u32, 0, 1, 3],
+            "slot 2 must hold the EXACT merge-append order"
+        );
+
+        // Separate membership-only check.
+        let mut slot2_sorted: Vec<u32> = tree.point_indices_of_slot(2).to_vec();
+        slot2_sorted.sort_unstable();
+        assert_eq!(slot2_sorted, vec![0, 1, 2, 3]);
+    }
+
+    // ---------------------------------------------------------------
+    // Test 3b: a rebuild that actually PERMUTES (parity item 5's whole
+    // point) -- `leaf_max_size(1)` forces `SubtreeBuilder` to run real
+    // `middle_split`/`plane_split` splits over a merged 8-point slot,
+    // instead of the previous two tests' single-leaf (count <=
+    // leaf_max_size) pass-through.
+    // ---------------------------------------------------------------
+
+    /// dim=2 dataset, dim1 held CONSTANT (100.0) for every point so it can
+    /// never be a `middle_split` candidate axis (its bbox span is always
+    /// exactly 0, unconditionally below `threshold = (1-EPS)*max_span` at
+    /// every recursion level, since `max_span` is dim0's genuinely positive
+    /// span) -- this pins the split axis to dim0 at EVERY level, without
+    /// needing to hand-trace candidate-axis selection at each step, while
+    /// still genuinely exercising `dim >= 2` (a real 2-D dataset, not a
+    /// 1-D one wearing a `ConstDim::<2>` label).
+    ///
+    /// dim0 values (index -> value): 0->70, 1->10, 2->60, 3->20, 4->50,
+    /// 5->30, 6->80, 7->40 -- all distinct, chosen so the FINAL fully-sorted
+    /// order (see below) is neither ascending-by-index `[0..7]` nor the raw
+    /// merge-append order `[6,4,5,2,0,1,3,7]` derived next.
+    ///
+    /// # Step 1: merge-append order (bookkeeping only, no splits yet)
+    ///
+    /// Single call `add_points(0, 7)` (first0bit sequence for point_count
+    /// 0..7: 0,1,0,2,0,1,0,3 -- same binary-counter pattern as tests 2/3,
+    /// extended two more "carries"):
+    /// - idx0: pos=0 -> slot0=[0].
+    /// - idx1: pos=1 -> merge slot0([0]) into slot1, push 1 -> slot1=[0,1]; slot0=[].
+    /// - idx2: pos=0 -> slot0=[2].
+    /// - idx3: pos=2 -> merge slot0([2]) then slot1([0,1]) into slot2, push 3
+    ///   -> slot2=[2,0,1,3]; slot0=[],slot1=[].
+    /// - idx4: pos=0 -> slot0=[4].
+    /// - idx5: pos=1 -> merge slot0([4]) into slot1, push 5 -> slot1=[4,5]; slot0=[].
+    /// - idx6: pos=0 -> slot0=[6].
+    /// - idx7: pos=3 -> merge slot0([6]) then slot1([4,5]) then slot2([2,0,1,3])
+    ///   into slot3 (ascending slot order 0,1,2), push 7 ->
+    ///   slot3 = [6, 4, 5, 2, 0, 1, 3, 7]; slots 0,1,2 = [].
+    ///
+    /// Because this is ONE `add_points` call, the per-index bookkeeping
+    /// loop runs to completion for all 8 indices BEFORE the rebuild pass
+    /// runs even once (see `add_points`'s doc comment) -- so slot1/slot2's
+    /// TRANSIENT intermediate contents above (e.g. slot2's `[2,0,1,3]`
+    /// after idx3) are never independently rebuilt; only slot3's FINAL
+    /// content is ever fed to `SubtreeBuilder`, with `max_index = 3`
+    /// (slots 0..3 freed, only slot3 non-empty).
+    ///
+    /// # Step 2: `SubtreeBuilder::build` over slot3 = `[6,4,5,2,0,1,3,7]`,
+    /// `leaf_max_size = 1` (dim0 values by position: 80,50,30,60,70,10,20,40)
+    ///
+    /// bbox: dim0=`[10,80]` (min idx1=10, max idx6=80), dim1=`[100,100]`.
+    /// `max_span = 70`, `threshold ~= 69.9993`; dim1's span (0) is below
+    /// threshold (never a candidate); dim0 is the ONLY candidate ->
+    /// `cutfeat=0`. `cutval = clamp((10+80)/2=45, [10,80]) = 45`.
+    ///
+    /// `plane_split(cutfeat=0, cutval=45)` over `[6,4,5,2,0,1,3,7]`
+    /// (values 80,50,30,60,70,10,20,40), traced swap-for-swap exactly like
+    /// `build.rs`'s `plane_split_exact_permutation_hand_simulated`:
+    /// ```text
+    /// left=0 mid=0 right=7
+    /// mid=0: v(6)=80 > 45      -> swap(0,7); right=6        [7,4,5,2,0,1,3,6]
+    /// mid=0: v(7)=40 < 45      -> swap(0,0); left=1; mid=1  (no-op)
+    /// mid=1: v(4)=50 > 45      -> swap(1,6); right=5        [7,3,5,2,0,1,4,6]
+    /// mid=1: v(3)=20 < 45      -> swap(1,1); left=2; mid=2  (no-op)
+    /// mid=2: v(5)=30 < 45      -> swap(2,2); left=3; mid=3  (no-op)
+    /// mid=3: v(2)=60 > 45      -> swap(3,5); right=4        [7,3,5,1,0,2,4,6]
+    /// mid=3: v(1)=10 < 45      -> swap(3,3); left=4; mid=4  (no-op)
+    /// mid=4: v(0)=70 > 45      -> swap(4,4); right=3        (no-op)
+    /// mid(4) <= right(3)? no -> loop ends
+    /// ```
+    /// Final array `[7,3,5,1,0,2,4,6]`; `lim1=left=4`, `lim2=mid=4`
+    /// (no equal-to-cutval middle band). `count=8`, `half=4`: `lim1(4) >
+    /// half(4)`? no. `lim2(4) < half(4)`? no. `index = half = 4`. LEFT =
+    /// `[7,3,5,1]` (values 40,20,30,10, all < 45); RIGHT = `[0,2,4,6]`
+    /// (values 70,60,50,80, all > 45).
+    ///
+    /// # Step 3: recurse (one more level shown concretely; the rest follow
+    /// by the same argument)
+    ///
+    /// LEFT half `[7,3,5,1]` (values 40,20,30,10): bbox dim0=`[10,45]`
+    /// (inherited loose upper bound from the parent clip), `cutval =
+    /// clamp((10+45)/2=27.5, [10,40]) = 27.5`. `plane_split`:
+    /// ```text
+    /// left=0 mid=0 right=3
+    /// mid=0: v(7)=40 > 27.5 -> swap(0,3); right=2   [1,3,5,7]
+    /// mid=0: v(1)=10 < 27.5 -> swap(0,0); left=1; mid=1  (no-op)
+    /// mid=1: v(3)=20 < 27.5 -> swap(1,1); left=2; mid=2  (no-op)
+    /// mid=2: v(5)=30 > 27.5 -> swap(2,2); right=1   (no-op)
+    /// mid(2) <= right(1)? no -> loop ends
+    /// ```
+    /// `[1,3,5,7]`, `lim1=lim2=2=half` -> LEFT-LEFT=`[1,3]` (10,20),
+    /// LEFT-RIGHT=`[5,7]` (30,40). With `leaf_max_size=1`, each 2-element
+    /// pair takes exactly one more identical split (single candidate axis,
+    /// two distinct values, cutval strictly between them) into two
+    /// singleton leaves in ascending order: `[1,3]` -> `[1],[3]`; `[5,7]`
+    /// -> `[5],[7]`. LEFT subtree's final leaf order: `[1, 3, 5, 7]`
+    /// (ascending by dim0 value: 10,20,30,40) -- matching LEFT half's
+    /// values sorted ascending, exactly.
+    ///
+    /// By the identical argument (single always-candidate axis + all
+    /// distinct values -> a spatial-median 3-way partition with a strict
+    /// `<`/`>` boundary and no possible cross-contamination between sides,
+    /// applied recursively down to singleton leaves, is exactly a
+    /// comparison sort by that axis -- this is what steps 2-3 verify
+    /// concretely for 8 and 4 elements), RIGHT half `[0,2,4,6]` (values
+    /// 70,60,50,80) sorts ascending to `[4, 2, 0, 6]` (50,60,70,80).
+    ///
+    /// # Final derived vind
+    ///
+    /// `slot3.vind = [1, 3, 5, 7, 4, 2, 0, 6]` -- differs from BOTH the
+    /// merge-append order `[6,4,5,2,0,1,3,7]` and ascending-index order
+    /// `[0,1,2,3,4,5,6,7]`, as required.
+    #[test]
+    fn permuting_rebuild_with_leaf_max_size_one_matches_hand_derived_sort() {
+        let ds = Ungated(vec![
+            [70.0, 100.0], // 0
+            [10.0, 100.0], // 1
+            [60.0, 100.0], // 2
+            [20.0, 100.0], // 3
+            [50.0, 100.0], // 4
+            [30.0, 100.0], // 5
+            [80.0, 100.0], // 6
+            [40.0, 100.0], // 7
+        ]);
+        let mut tree = DynamicKdTreeBuilder::new(ConstDim::<2>, ds)
+            .leaf_max_size(1)
+            .maximum_point_count(1000)
+            .build();
+
+        tree.add_points(0, 7);
+
+        assert!(tree.point_indices_of_slot(0).is_empty());
+        assert!(tree.point_indices_of_slot(1).is_empty());
+        assert!(tree.point_indices_of_slot(2).is_empty());
+        assert_eq!(
+            tree.point_indices_of_slot(3),
+            &[1u32, 3, 5, 7, 4, 2, 0, 6],
+            "leaf_max_size=1 must fully sort slot 3 by dim0 -- a genuinely PERMUTING rebuild, \
+             not just a membership-preserving pass-through"
+        );
+
+        for &v in tree.tree_index() {
+            assert_eq!(v, 3, "all 8 points must live in slot 3");
+        }
+        assert_eq!(tree.active_count(), 8);
     }
 
     // ---------------------------------------------------------------
