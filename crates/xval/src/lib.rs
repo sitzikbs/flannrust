@@ -27,6 +27,12 @@ use nanoflann_rs::{
 };
 use rand::Rng;
 use rand::SeedableRng;
+
+/// HTML scorecard renderer for the `report_data` JSON -- see
+/// `examples/render_report.rs` for the CLI wrapper. `render` (this
+/// module's entry point) is re-exported at the crate root for convenience.
+pub mod report;
+pub use report::{render, RenderError};
 use rand_chacha::ChaCha8Rng;
 
 // ============================================================================
@@ -1482,6 +1488,113 @@ pub fn dyn_ops_stats(ops: &[DynOp]) -> DynOpStats {
     stats
 }
 
+// ============================================================================
+// Report meta capture -- best-effort machine/toolchain fingerprinting for
+// `examples/report_data.rs`'s emitted `meta` object (see that file's module
+// doc and Task 5b's brief). Every helper here is best-effort: any failure
+// (command not found, file unreadable, non-UTF8 output) falls back to
+// `"unknown"` (or `false` for the WSL flag) rather than panicking -- a
+// report run on an unusual/minimal machine should still emit valid JSON,
+// just with less detail. Factored out of `report_data.rs` (rather than
+// living as private fns there) specifically so they're unit-testable here
+// (see this module's `#[cfg(test)]` smoke test) and reusable by
+// `xval::report::render`'s own tests without spinning up a whole binary.
+// ============================================================================
+
+/// First `model name` line from `/proc/cpuinfo` (the substring after the
+/// first `:`, trimmed). `"unknown"` if the file is missing/unreadable or no
+/// such line exists (e.g. a non-x86 `/proc/cpuinfo` layout, or a non-Linux
+/// host where the file doesn't exist at all).
+pub fn cpu_model() -> String {
+    std::fs::read_to_string("/proc/cpuinfo")
+        .ok()
+        .and_then(|contents| {
+            contents
+                .lines()
+                .find(|l| l.starts_with("model name"))
+                .and_then(|l| l.split_once(':'))
+                .map(|(_, v)| v.trim().to_string())
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// `uname -sr` (kernel name + release), trimmed. `"unknown"` on failure
+/// (e.g. `uname` not on `PATH`).
+pub fn kernel_version() -> String {
+    std::process::Command::new("uname")
+        .args(["-sr"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// First line of `$CXX --version` if the `CXX` env var is set, else `c++
+/// --version` -- best-effort proxy for the compiler `nanoflann-ref`'s
+/// `build.rs` (via the `cc` crate) actually invokes to build the C++
+/// oracle. `"unknown"` on failure.
+pub fn cxx_compiler_version() -> String {
+    let bin = std::env::var("CXX").unwrap_or_else(|_| "c++".to_string());
+    std::process::Command::new(&bin)
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| s.lines().next().map(|l| l.trim().to_string()))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// `git rev-parse --short HEAD`, with a `-dirty` suffix appended when `git
+/// status --porcelain` reports a non-empty working tree. `"unknown"` if
+/// `rev-parse` fails (e.g. running outside a git checkout, such as from a
+/// packaged crate) -- the dirty check is skipped in that case too, since
+/// there is no meaningful SHA to suffix.
+pub fn git_sha() -> String {
+    let sha = std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let Some(sha) = sha else {
+        return "unknown".to_string();
+    };
+
+    let dirty = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| !o.stdout.is_empty())
+        .unwrap_or(false);
+
+    if dirty {
+        format!("{sha}-dirty")
+    } else {
+        sha
+    }
+}
+
+/// `true` iff `/proc/version` contains "microsoft" (case-insensitive) --
+/// the standard WSL kernel-version marker (both WSL1 and WSL2 stamp a
+/// "-microsoft" or "microsoft-standard" tag into `uname -r`/`/proc/
+/// version`). `false` if the file is missing/unreadable (macOS, a
+/// container image without `/proc/version`, etc.) -- absence of evidence
+/// is not evidence of WSL, so this never panics or errors, only reports
+/// `false`.
+pub fn is_wsl() -> bool {
+    std::fs::read_to_string("/proc/version").map(|s| s.to_lowercase().contains("microsoft")).unwrap_or(false)
+}
+
 // ----------------------------------------------------------------------
 // Apply / structure-parity helpers -- one instantiation per scalar type
 // (the dynamic forest is L2-only, see `RefDynIndexF32`'s doc comment, so
@@ -2561,5 +2674,25 @@ mod tests {
     fn validate_dyn_ops_legal_catches_a_hand_crafted_capacity_overrun() {
         let ops = vec![DynOp::GrowAndAdd { count: 5 }, DynOp::GrowAndAdd { count: 5 }];
         validate_dyn_ops_legal(&ops, 8); // 5 + 5 = 10 > 8
+    }
+
+    // ------------------------------------------------------------------
+    // Report meta capture (Task 5b) -- smoke test on THIS machine: every
+    // best-effort helper must return non-empty ("unknown" is a valid
+    // non-empty fallback), and `is_wsl` must agree with an independent
+    // re-read of `/proc/version` performed right here (not just "trust the
+    // function's own internal logic").
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn meta_capture_helpers_return_non_empty_and_wsl_matches_proc_version() {
+        assert!(!cpu_model().is_empty(), "cpu_model() must never return an empty string");
+        assert!(!kernel_version().is_empty(), "kernel_version() must never return an empty string");
+        assert!(!cxx_compiler_version().is_empty(), "cxx_compiler_version() must never return an empty string");
+        assert!(!git_sha().is_empty(), "git_sha() must never return an empty string");
+
+        let expected_wsl =
+            std::fs::read_to_string("/proc/version").map(|s| s.to_lowercase().contains("microsoft")).unwrap_or(false);
+        assert_eq!(is_wsl(), expected_wsl, "is_wsl() must agree with an independent /proc/version check");
     }
 }

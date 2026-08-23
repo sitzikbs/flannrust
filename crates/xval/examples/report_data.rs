@@ -37,9 +37,10 @@ use nanoflann_ref::{Metric, RefDynIndexF32, RefIndex3F32, RefIndexF32};
 use nanoflann_rs::{ConstDim, DynDim, DynamicKdTreeBuilder, KdTreeBuilder, ResultItem, SearchParams, L2};
 use std::io::Write;
 use xval::{
-    apply_dyn_op_f32, brute_force_knn_l2_f32, brute_force_knn_l2_live_f32, build_rust_f32, cfg_seed, dyn_ops,
-    queries, sample_distinct_indices, score_exact_tie_aware_f32, score_exact_tie_aware_live_f32, score_query_f32,
-    timed_median_ms, to_array3, to_f32, uniform, with_duplicates, BuildThreads, GrowableFlat, RoundRobin, XMetric,
+    apply_dyn_op_f32, brute_force_knn_l2_f32, brute_force_knn_l2_live_f32, build_rust_f32, cfg_seed, cpu_model,
+    cxx_compiler_version, dyn_ops, dyn_ops_stats, git_sha, is_wsl, kernel_version, queries, sample_distinct_indices,
+    score_exact_tie_aware_f32, score_exact_tie_aware_live_f32, score_query_f32, timed_median_ms, to_array3, to_f32,
+    uniform, with_duplicates, BuildThreads, GrowableFlat, RoundRobin, XMetric,
 };
 
 /// One-line description of the accuracy scoring methodology, embedded
@@ -420,6 +421,27 @@ struct AccuracyRow {
     max_dist_rel_error_rust: f64,
     mean_dist_rel_error_cpp: f64,
     max_dist_rel_error_cpp: f64,
+    /// Task 5b: direct churn evidence for the dynamic accuracy rows only
+    /// (`None` for the three static-dataset rows) -- see
+    /// `dynamic_accuracy_rows`'s module doc.
+    dyn_evidence: Option<DynEvidence>,
+}
+
+/// Task 5b: direct evidence, emitted alongside `dyn_churn_*` accuracy
+/// rows, that the forest being scored is genuinely churned -- not just
+/// freshly built. `live_count`/`removed_count` come straight from the
+/// Rust side's own post-churn `tree_index()` bookkeeping (already
+/// cross-validated bit-exact against the oracle by M2 Task 4); the four
+/// op-kind totals come from `xval::dyn_ops_stats` over the exact op
+/// sequence that was replayed.
+#[derive(Clone, Copy)]
+struct DynEvidence {
+    live_count: usize,
+    removed_count: usize,
+    grow_and_add_count: usize,
+    remove_count: usize,
+    readd_count: usize,
+    tombstone_migrations: usize,
 }
 
 const K: usize = 10;
@@ -507,6 +529,7 @@ fn accuracy_rows_for_dataset(name: &str, dim: usize, data: &[f32]) -> Vec<Accura
             max_dist_rel_error_rust: max(&rust_errs),
             mean_dist_rel_error_cpp: mean(&cpp_errs),
             max_dist_rel_error_cpp: max(&cpp_errs),
+            dyn_evidence: None,
         });
     }
     out
@@ -579,6 +602,24 @@ fn dynamic_accuracy_rows() -> Vec<AccuracyRow> {
     progress(&format!(
         "accuracy: dyn_churn_dim3_f32 churn done -- {live_count}/{DYN_ACC_CAPACITY} live after {DYN_ACC_N_OPS} ops"
     ));
+
+    // Task 5b: direct evidence that the scored forest is genuinely
+    // churned, not freshly built -- `removed_count` from the same
+    // `tree_index()` bookkeeping as `live_count` above (a point is
+    // "removed" iff it was ever added but is no longer live), plus the
+    // op-kind totals (including tombstone migrations) from
+    // `dyn_ops_stats` over the exact `ops` sequence just replayed.
+    let point_count = tree_index.len();
+    let removed_count = point_count - live_count;
+    let op_stats = dyn_ops_stats(&ops);
+    let evidence = DynEvidence {
+        live_count,
+        removed_count,
+        grow_and_add_count: op_stats.grow_and_add_count,
+        remove_count: op_stats.remove_count,
+        readd_count: op_stats.readd_count,
+        tombstone_migrations: op_stats.tombstone_migrations,
+    };
 
     let q64 = queries(cfg_seed("report_dyn_acc_q", &[]), &data64, DYN_ACC_DIM, DYN_ACC_N_QUERIES);
     let q = to_f32(&q64);
@@ -659,15 +700,24 @@ fn dynamic_accuracy_rows() -> Vec<AccuracyRow> {
             max_dist_rel_error_rust: max(&rust_errs),
             mean_dist_rel_error_cpp: mean(&cpp_errs),
             max_dist_rel_error_cpp: max(&cpp_errs),
+            dyn_evidence: Some(evidence),
         });
     }
     out
 }
 
 // ============================================================================
-// JSON emission -- hand-written, no serde. Every value here is a plain
-// number/string/bool; nothing in this crate ever puts a `"` or control
-// character into a workload name, so no escaping logic is needed.
+// JSON emission -- hand-written, no serde (the RENDERING side,
+// `xval::report::render`, parses this JSON via serde_json -- see that
+// module's doc for the controller ruling on why parsing gets the real
+// dependency and emission doesn't). Every value emitted directly by this
+// crate's own data (workload names, etc.) is a plain identifier; nothing
+// here ever puts a `"`/`\`/control character into one, so those still
+// need no escaping. Task 5b's new meta fields (`cpu_model`/`kernel`/
+// `cxx_compiler`/`git_sha`) are captured from EXTERNAL commands/files
+// (`/proc/cpuinfo`, `uname`, `$CXX --version`, `git`), so -- unlike
+// everything else in this file -- they get run through `json_escape`
+// defensively before being embedded.
 // ============================================================================
 
 fn json_num(x: f64) -> String {
@@ -680,15 +730,68 @@ fn json_num(x: f64) -> String {
     }
 }
 
+/// Escapes `"`, `\`, and control characters for a JSON string body. Only
+/// used on the handful of Task 5b meta fields captured from external
+/// commands/files (see this section's module doc) -- everything else
+/// emitted by this file is a plain internally-generated identifier that
+/// structurally cannot contain these characters.
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// One accuracy row's JSON object, conditionally including the dynamic-row
+/// evidence fields (`live_count`/`removed_count`/the four `dyn_ops_stats`
+/// op-kind totals) only when `dyn_evidence` is `Some` -- i.e. only for the
+/// `dyn_churn_*` rows (see `dynamic_accuracy_rows`).
+fn accuracy_row_json(r: &AccuracyRow) -> String {
+    let base = format!(
+        "\"workload\": \"{}\", \"n_queries\": {}, \"rust_exact_tie_aware_vs_bruteforce\": {}, \"cpp_exact_tie_aware_vs_bruteforce\": {}, \"rust_eq_cpp_bitexact\": {}, \"mean_dist_rel_error_rust\": {}, \"max_dist_rel_error_rust\": {}, \"mean_dist_rel_error_cpp\": {}, \"max_dist_rel_error_cpp\": {}",
+        r.workload,
+        r.n_queries,
+        json_num(r.rust_exact_tie_aware_vs_bruteforce),
+        json_num(r.cpp_exact_tie_aware_vs_bruteforce),
+        r.rust_eq_cpp_bitexact,
+        json_num(r.mean_dist_rel_error_rust),
+        json_num(r.max_dist_rel_error_rust),
+        json_num(r.mean_dist_rel_error_cpp),
+        json_num(r.max_dist_rel_error_cpp),
+    );
+    match r.dyn_evidence {
+        Some(e) => format!(
+            "    {{ {base}, \"live_count\": {}, \"removed_count\": {}, \"grow_and_add_count\": {}, \"remove_count\": {}, \"readd_count\": {}, \"tombstone_migrations\": {} }}",
+            e.live_count, e.removed_count, e.grow_and_add_count, e.remove_count, e.readd_count, e.tombstone_migrations
+        ),
+        None => format!("    {{ {base} }}"),
+    }
+}
+
 fn main() {
     progress("starting");
 
+    progress("meta: capturing machine/toolchain fingerprint");
     let meta = format!(
-        "  \"meta\": {{\n    \"date\": \"{}\",\n    \"nanoflann_version\": \"1.12.1\",\n    \"rustc\": \"{}\",\n    \"cpu_threads\": {},\n    \"target_cpu_native\": {},\n    \"m2_dynamic\": true,\n    \"scoring\": \"{}\",\n    \"gt_methodology\": \"{}\",\n    \"speed_methodology\": \"{}\"\n  }}",
+        "  \"meta\": {{\n    \"date\": \"{}\",\n    \"nanoflann_version\": \"1.12.1\",\n    \"rustc\": \"{}\",\n    \"cpu_threads\": {},\n    \"target_cpu_native\": {},\n    \"m2_dynamic\": true,\n    \"cpu_model\": \"{}\",\n    \"kernel\": \"{}\",\n    \"cxx_compiler\": \"{}\",\n    \"git_sha\": \"{}\",\n    \"wsl\": {},\n    \"scoring\": \"{}\",\n    \"gt_methodology\": \"{}\",\n    \"speed_methodology\": \"{}\"\n  }}",
         today_utc(),
         rustc_version(),
         cpu_threads(),
         target_cpu_native(),
+        json_escape(&cpu_model()),
+        json_escape(&kernel_version()),
+        json_escape(&cxx_compiler_version()),
+        json_escape(&git_sha()),
+        is_wsl(),
         SCORING_NOTE,
         GT_METHODOLOGY_NOTE,
         SPEED_METHODOLOGY_NOTE
@@ -710,24 +813,7 @@ fn main() {
         .join(",\n");
 
     let accuracy = accuracy_rows();
-    let accuracy_json = accuracy
-        .iter()
-        .map(|r| {
-            format!(
-                "    {{ \"workload\": \"{}\", \"n_queries\": {}, \"rust_exact_tie_aware_vs_bruteforce\": {}, \"cpp_exact_tie_aware_vs_bruteforce\": {}, \"rust_eq_cpp_bitexact\": {}, \"mean_dist_rel_error_rust\": {}, \"max_dist_rel_error_rust\": {}, \"mean_dist_rel_error_cpp\": {}, \"max_dist_rel_error_cpp\": {} }}",
-                r.workload,
-                r.n_queries,
-                json_num(r.rust_exact_tie_aware_vs_bruteforce),
-                json_num(r.cpp_exact_tie_aware_vs_bruteforce),
-                r.rust_eq_cpp_bitexact,
-                json_num(r.mean_dist_rel_error_rust),
-                json_num(r.max_dist_rel_error_rust),
-                json_num(r.mean_dist_rel_error_cpp),
-                json_num(r.max_dist_rel_error_cpp)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(",\n");
+    let accuracy_json = accuracy.iter().map(accuracy_row_json).collect::<Vec<_>>().join(",\n");
 
     let doc = format!(
         "{{\n{meta},\n  \"speed\": [\n{speed_json}\n  ],\n  \"accuracy\": [\n{accuracy_json}\n  ]\n}}"
