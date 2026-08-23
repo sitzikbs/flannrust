@@ -12,11 +12,88 @@ Tracked milestones and standing requirements. Each milestone runs the same pipel
 
 Plan: `docs/superpowers/plans/2026-08-22-nanoflann-rs-m2-dynamic.md`. Bentley–Saxe forest (`add_points`/`remove_point`) with bit-exact op-sequence cross-validation, dynamic perf gates, report/EXPERIMENTS integration — all landed. Both dynamic perf gates pass, though not by a wide margin — see `docs/benchmarks.md`'s "M2 — dynamic forest" section for the honest ranges (`dyn_add_20k_dim3_f32` and the tombstone/merge-exercising `dyn_knn_after_churn_dim3_f32`), the single source for these figures; the dynamic op-sequence cross-validation suite is bit-exact with no divergence ever found; the suite-generated HTML scorecard (`report_data` → `render_report`) covers both M1 and M2. User-facing summary: README's "Dynamic adaptor (M2)" section; source-fact summary: `docs/nanoflann-notes.md`'s "M2 outcome" section.
 
-## M2.5 — Performance deep-dive (up next)
+## M2.5 — Performance deep-dive (complete)
 
-- Fixed-dim-3 kNN residual (~4–6%, asm-attributed to recursive call overhead) — candidate: iterative or flattened search descent.
-- Dim-32 kNN gap (~1.3–1.45×, root cause not isolated) — profile first; candidates: explicit SIMD distance kernels, prefetching, batch query API. Anything that changes arithmetic order goes behind a feature flag with parity tests for the default path.
-- Parallel slot rebuilds for the dynamic adaptor (C++ rebuilds sequentially; deviation would need documenting).
+Plan: `docs/superpowers/plans/2026-08-23-nanoflann-rs-m2.5-perf.md`. Two
+headline outcomes, both landed with bit-exact parity preserved (full xval
+suite green throughout, both changes reviewed with fix rounds):
+
+- **Dim-32 kNN gap closed at f32** (T3): root cause was per-component bounds
+  checks in the `L2`/`L1` kernel blocking LLVM's SLP vectorizer at
+  runtime-known dim, not a need for SIMD/batching as originally hypothesized.
+  Fix: `DataSource::point_row` + a bounds-check-free `as_chunks::<4>()` row
+  walk, bit-exact with the fallback (proven via multi-salt discriminating
+  tests). dim-32 f32: 1.423x → 0.966–1.008x.
+- **Fixed-dim-3 kNN residual substantially closed** (T2): `search_level`
+  converted from native self-recursion to an explicit-stack iteration
+  (`Frame`/`Phase`/`FrameStack`, `MaybeUninit`-backed, heap-`Vec` spill past
+  depth 128), removing the recursive call-overhead this crate's own T1
+  diagnosis attributed the residual to. knn_fixed3: 1.030–1.063x (pre-M2.5
+  pasted range) → 1.011–1.040x; T2's own interleaved A/B medians 1.052 →
+  1.0205. **This is a reviewed trade-off, not a pure win**: it gave back
+  all of `knn_dyn_dim8_f64_k10`'s T3 win (0.867 post-T3 → 0.950–0.966,
+  back inside its pre-M2.5 range 0.944–0.984) and left `radius_dim3_f32`
+  ~4.4% worse than its pre-M2.5 pasted range (0.767–0.792 → 0.827–0.828);
+  both still beat C++ (ratio < 1.0). In exchange: the fixed-dim-3 win, a
+  substantial `dyn_knn_after_churn` win (0.956–0.976x → 0.873–0.916x),
+  and query-path stack-overflow immunity on degenerate trees that C++'s
+  native recursion still lacks — at the documented cost of per-query heap
+  allocation for queries deeper than 128 levels. Full honest accounting
+  (not a "no regression" story): `docs/benchmarks.md`'s "M2.5 —
+  performance deep-dive" section; every pasted run behind these figures:
+  `docs/EXPERIMENTS.md` §3's "M2.5 task 1/2/3/4" subsections.
+
+Full sweep, provenance, and every pasted run: `docs/benchmarks.md` +
+`docs/EXPERIMENTS.md`; task reports:
+`docs/reports/m2.5/task-{1,2,3,4}-report.md`.
+
+**Future perf leads (explicitly NOT taken this milestone):**
+
+- Dim-64 f32 (1.16–1.23x across T3+T4 runs) and dim-32 f64 (~1.10–1.11x)
+  — both improved substantially by T3's kernel fix but not closed to
+  parity; T3's target was dim-32 f32 specifically.
+- The fixed-dim-3 residual's last ~1–4% (1.011–1.040x in T4's sweep).
+  What is asm-evidenced: the walk is fully inlined, zero `search_level`
+  call targets. What is not: the residual's mechanism — the T2 reviewer's
+  diagnosis attributes it to frame store/reload cost in the explicit-stack
+  form, consistent with the interleaved A/B data but never separately
+  quantified from asm. Within this host's documented noise floor
+  (`knn_fixed3` 0.956–1.192 across 8 runs of the unmodified tree,
+  `docs/EXPERIMENTS.md` "M2.5 task 1"), not chased further.
+- A fast-math / reordered-arithmetic kernel feature flag (non-default, own
+  accuracy docs, never in parity suites) — remains an unexplored idea, no
+  code written.
+- Parallel slot rebuilds for the dynamic adaptor (C++ rebuilds
+  sequentially; a deviation here would need documenting like
+  `BuildThreads` already is) — untouched by M2.5, which worked the
+  query/kernel hot paths only.
+- Dim-16 knn shows a large, repeatable (T4's task-4 sweep, both runs) jump
+  versus dim-8 (~76–88ms vs. ~3.2–3.5ms at this dataset/leaf-size
+  combination). **Confirmed mechanism (final-review fix wave, `m25_diag
+  count` at dim 16)**: curse-of-dimensionality traversal blowup, not a
+  code-path anomaly — `frac_points_scanned` (evaluated fraction of the
+  100k-point dataset per query, n=100k/leaf=10/1000 queries) jumps from
+  0.0176 at dim 8 to **0.4875 at dim 16** (~27.7x), en route to 1.0000
+  (exhaustive scan) at dim 32; the evaluated-fraction ratio (~27.7x) lines
+  up with the observed timing ratio (~22–27x), so the fraction jump is
+  sufficient to explain the timing cliff on its own, no separate code-path
+  issue needed. Full pasted run: `docs/EXPERIMENTS.md`'s "M2.5 final-review
+  fix wave" subsection. Not chased further this wave (out of T1/T3's
+  dim-32/64 scope; a future perf task could still target the traversal
+  itself at this dimensionality, now that the mechanism is known).
+- `radius_dim3_f32` took one real step worse in M2.5: every pre-M2.5
+  pasted run sits in 0.767–0.792, T3's post-fix 0.777 is inside that
+  range (not a step), and T2 moved it to 0.827–0.828 (T4's sweep) — ~4.4%
+  above the prior range's top, confirmed as a real regression by T2's
+  raw-ms interleaved A/B (+4.4–7.4%, `docs/EXPERIMENTS.md` "M2.5 task
+  2"). One reviewed, justified step, not a trend — but a watch-item for
+  any future perf-tuning pass touching the query hot path: still a
+  comfortable Rust win vs. C++ today, but worth checking this gate
+  specifically before give-backs accumulate. **Pre-announcement
+  re-measure mandate**: before M-pub's bare-metal re-run is published,
+  re-measure `radius_dim3_f32` with 8 interleaved repeats (the T2 rigor
+  mandate's methodology, not a single before/after pair) — don't publish
+  the 0.827–0.828 figure as final without that check.
 
 ## M-py — Python bindings (user directive, 2026-08-22: "most people use Python these days")
 
@@ -27,13 +104,14 @@ Goal: make nanoflann-rs usable from Python so it can replace the common Python r
 - Benchmarks vs `scipy.spatial.cKDTree` and `pynanoflann` on the same seeded datasets — these are the numbers Python users care about; extend the report generator with a Python section.
 - Correctness: cross-validate the bindings against the Rust core (bit-exact) and against brute force.
 - Packaging: wheels via maturin, CI matrix later.
+- **API lead**: ship a row-major `Vec<T>`-backed `DataSource` impl (analogous to `FlatSlice` but owned) with `point_row` pre-overridden, so Python-bound NumPy buffers (row-major by default) get the M2.5 dim-32/64 kernel speedup for free instead of silently falling back to the per-component loop — see `crates/nanoflann-rs/src/data_source.rs`'s `point_row` doc comment for the precondition this closes.
 
 ## M-pub — Announcement readiness (blog post + repo launch)
 
 Cross-the-t's checklist before anything public:
-- **Re-run the full evaluation on bare-metal Linux** (current numbers are WSL2; ±3–4% noise documented). Publish only the bare-metal numbers; keep WSL2 as a secondary data point.
+- **Re-run the full evaluation on bare-metal Linux** (current numbers are WSL2; the documented noise floor is `knn_fixed3` 0.956–1.192 across 8 runs of one unchanged tree — `docs/EXPERIMENTS.md` "M2.5 task 1"). Publish only the bare-metal numbers; keep WSL2 as a secondary data point.
 - **Claims audit**: every performance/parity sentence in the post traces to the generated report + EXPERIMENTS.md; independent re-review of the draft post against the data.
 - **Licensing/attribution**: nanoflann is BSD-2-Clause — vendored header retains its license text; README + post credit Blanco-Claraco et al. and link upstream; our LICENSE chosen (BSD-2 to match, or MIT/Apache-2.0 dual — decide explicitly).
-- **CI**: GitHub Actions running the workspace tests + `--no-default-features` + (nightly job) heavy/ignored tests and perf gates on a dedicated runner.
+- **CI**: GitHub Actions running the workspace tests + `--no-default-features` + (nightly job) heavy/ignored tests and perf gates on a dedicated runner. **The miri job is required, not optional**: `search.rs`'s `FrameStack` (M2.5 task 2) is this crate's first `unsafe` code, and both aliasing models (Stacked Borrows + Tree Borrows: `cargo +nightly miri test -p nanoflann-rs --lib -- search`, once plain and once with `MIRIFLAGS="-Zmiri-tree-borrows"`, see `docs/EXPERIMENTS.md`'s "Miri" subsection) must stay green on every change that touches `search.rs`, not just at milestone close-out — a nightly-only or manual-only miri run would let a regression sit undetected for however long the interval is.
 - **crates.io publish dry run**, docs.rs rendering check, README badges honest (no green-checkmark theater).
-- Blog post draft: the story is (1) bit-exact parity as a verification method (in-process oracle, tree-permutation equality, mutation canaries), (2) the wins (1.7× parallel build, 1.2–1.3× radius), (3) honest residuals (dim-3 knn ~4%, dim-32 gap) — credibility comes from publishing the losses too.
+- Blog post draft: the story is (1) bit-exact parity as a verification method (in-process oracle, tree-permutation equality, mutation canaries), (2) the wins (1.7× parallel build, 1.2–1.3× radius, M2.5's dim-32 fix), (3) honest residuals (dim-64/dim-32-f64 still open, the fixed-dim-3 last ~1-4%, and the M2.5 T2 trade-off — dim8 gave back all of its T3 win and radius landed ~4.4% worse than its pre-M2.5 range, both still < 1.0 vs C++, in exchange for the fixed-dim-3 win, the churn win, and stack-overflow immunity) — credibility comes from publishing the losses too.

@@ -7,6 +7,11 @@ use core::ops::{Add, Div, Mul, Sub};
 
 /// Element type of dataset coordinates. Implemented for `f32` and `f64` in M1.
 /// `Default` doubles as the zero value (mirrors nanoflann's `ElementType()` zero-init).
+/// **Contract: any `Scalar` implementation's `Default::default()` MUST equal
+/// its additive identity (zero)** -- this isn't just documentation, it's
+/// relied on by code: `metric.rs`'s `l1_eval_row`/`l2_eval_row` accumulate
+/// starting from `T::default()` specifically because it stands in for a
+/// `0.0` literal that a fully generic function can't otherwise spell.
 ///
 /// `Mul`/`Div` and `from_f64` are needed by the tree builder (`build.rs`):
 /// nanoflann's `middleSplit_` computes `(1 - EPS) *
