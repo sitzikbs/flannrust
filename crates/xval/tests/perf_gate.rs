@@ -24,9 +24,12 @@
 //! `--test-threads=1` (gate timings must not share the machine with a
 //! sibling test's CPU load).
 
-use nanoflann_rs::{ConstDim, KdTreeBuilder, ResultItem, L2};
-use nanoflann_ref::{Metric, RefIndex3F32, RefIndexF32, RefIndexF64};
-use xval::{build_rust_f32, build_rust_f64, cfg_seed, queries, timed_median_ms, to_array3, to_f32, uniform, BuildThreads, RoundRobin, XMetric};
+use nanoflann_rs::{ConstDim, DynDim, DynamicKdTreeBuilder, KdTreeBuilder, ResultItem, L2};
+use nanoflann_ref::{Metric, RefDynIndexF32, RefIndex3F32, RefIndexF32, RefIndexF64};
+use xval::{
+    build_rust_f32, build_rust_f64, cfg_seed, queries, sample_distinct_indices, timed_median_ms, to_array3, to_f32,
+    uniform, BuildThreads, GrowableFlat, RoundRobin, XMetric,
+};
 
 const RUNS: usize = 7;
 const MARGIN: f64 = 1.25;
@@ -263,4 +266,128 @@ fn perf_gate_radius_dim3_f32() {
     });
 
     assert_gate!("perf_gate_radius_dim3_f32", rust_ms, cpp_ms);
+}
+
+// ============================================================================
+// M2 Task 5 -- dynamic (add/remove) gates. Same guard/methodology as the
+// static gates above; workloads mirror `benches/bench_dynamic.rs`'s `dyn_add`
+// and `dyn_knn_after_churn` groups exactly, at gate-friendly sizes (20k
+// instead of 100k for the add gate, so a `PERF_GATE=1` run stays fast) --
+// see `bench_dynamic.rs`'s module doc for why nanoflann's dynamic
+// `addPoints` is inherently O(heavy) per point and why that makes this a
+// same-algorithm, not same-design, comparison.
+// ============================================================================
+
+#[test]
+#[ignore]
+fn perf_gate_dyn_add_20k_dim3_f32() {
+    if should_skip_perf_gate(std::env::var("PERF_GATE")) {
+        println!("PERF_GATE skipped: set PERF_GATE=1");
+        return;
+    }
+    const CAP: usize = 20_000;
+    const DIM: usize = 3;
+    const LEAF: usize = 10;
+    const BATCH: usize = 1000;
+    const BATCHES: usize = 20; // 20 * 1000 = 20k total
+
+    let data = to_f32(&uniform(cfg_seed("perf_gate_dyn_add", &[CAP, DIM]), CAP, DIM));
+
+    let rust_ms = timed_median_ms(RUNS, || {
+        let growable = GrowableFlat::new(&data, DIM);
+        let mut tree = DynamicKdTreeBuilder::new(DynDim(DIM), &growable)
+            .leaf_max_size(LEAF)
+            .maximum_point_count(CAP)
+            .build();
+        let mut start = 0usize;
+        for _ in 0..BATCHES {
+            let end = start + BATCH;
+            growable.set_current_n(end);
+            tree.add_points(start, end - 1);
+            start = end;
+        }
+        std::hint::black_box(tree.tree_count());
+    });
+    let cpp_ms = timed_median_ms(RUNS, || {
+        let mut oracle = RefDynIndexF32::build(&data, DIM, LEAF, CAP);
+        let mut start = 0u32;
+        for _ in 0..BATCHES {
+            let end = start + BATCH as u32;
+            oracle.set_current_n(end as usize);
+            oracle.add_points(start, end - 1);
+            start = end;
+        }
+        std::hint::black_box(oracle.tree_count());
+    });
+
+    assert_gate!("perf_gate_dyn_add_20k_dim3_f32", rust_ms, cpp_ms);
+}
+
+#[test]
+#[ignore]
+fn perf_gate_dyn_knn_after_churn_dim3_f32() {
+    if should_skip_perf_gate(std::env::var("PERF_GATE")) {
+        println!("PERF_GATE skipped: set PERF_GATE=1");
+        return;
+    }
+    const N: usize = 100_000;
+    const DIM: usize = 3;
+    const LEAF: usize = 10;
+    const CHURN: usize = 5_000;
+    const K: usize = 10;
+    const N_QUERIES: usize = 10_000;
+    const POOL: usize = 1000;
+
+    let data64 = uniform(cfg_seed("perf_gate_dyn_churn", &[N]), N, DIM);
+    let data = to_f32(&data64);
+    let q64 = queries(cfg_seed("perf_gate_dyn_churn_q", &[N]), &data64, DIM, POOL);
+    let q = to_f32(&q64);
+    let churn_idx = sample_distinct_indices(cfg_seed("perf_gate_dyn_churn_idx", &[N, CHURN]), N, CHURN);
+
+    // Build ONCE, outside timing; churn (5k removes + 5k re-adds) ONCE,
+    // outside timing -- only the knn query loop below is timed.
+    let growable = GrowableFlat::new(&data, DIM);
+    let mut rust_tree =
+        DynamicKdTreeBuilder::new(DynDim(DIM), &growable).leaf_max_size(LEAF).maximum_point_count(N).build();
+    growable.set_current_n(N);
+    rust_tree.add_points(0, N - 1);
+    for &idx in &churn_idx {
+        rust_tree.remove_point(idx);
+    }
+    for &idx in &churn_idx {
+        rust_tree.add_points(idx, idx);
+    }
+
+    let mut cpp_tree = RefDynIndexF32::build(&data, DIM, LEAF, N);
+    cpp_tree.set_current_n(N);
+    cpp_tree.add_points(0, (N - 1) as u32);
+    for &idx in &churn_idx {
+        cpp_tree.remove_point(idx);
+    }
+    for &idx in &churn_idx {
+        cpp_tree.add_points(idx as u32, idx as u32);
+    }
+
+    let rust_ms = timed_median_ms(RUNS, || {
+        let mut rr = RoundRobin::new(&q, DIM);
+        let mut out_idx = vec![0u32; K];
+        let mut out_dist = vec![0.0f32; K];
+        for _ in 0..N_QUERIES {
+            let query = std::hint::black_box(rr.next());
+            let found = rust_tree.knn_search(query, &mut out_idx, &mut out_dist);
+            std::hint::black_box(found);
+        }
+    });
+    let cpp_ms = timed_median_ms(RUNS, || {
+        let mut rr = RoundRobin::new(&q, DIM);
+        let mut out_idx = vec![0u32; K];
+        let mut out_dist = vec![0.0f32; K];
+        for _ in 0..N_QUERIES {
+            let query = std::hint::black_box(rr.next());
+            let found = cpp_tree.knn_into(query, K, 0.0, &mut out_idx, &mut out_dist);
+            std::hint::black_box(found);
+        }
+    });
+
+    assert_gate!("perf_gate_dyn_knn_after_churn_dim3_f32", rust_ms, cpp_ms);
 }

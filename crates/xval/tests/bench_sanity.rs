@@ -1,13 +1,18 @@
 //! Sanity test (NOT a criterion bench): exercises every bench data path
-//! (`benches/bench_build.rs`, `benches/bench_knn.rs`, `benches/bench_radius.rs`)
-//! at a tiny n = 2000, asserting only "does not panic" -- so `cargo test`
-//! (which never runs criterion) still catches bench-code rot (a signature
-//! change, a removed method, a broken assumption about slice lengths) the
-//! moment it happens, instead of only at the next manual `cargo bench` run.
+//! (`benches/bench_build.rs`, `benches/bench_knn.rs`, `benches/bench_radius.rs`,
+//! `benches/bench_dynamic.rs`) at a tiny n = 2000 (dynamic path: tiny
+//! capacity/batch sizes -- see `bench_data_paths_do_not_panic_dynamic`),
+//! asserting only "does not panic" -- so `cargo test` (which never runs
+//! criterion) still catches bench-code rot (a signature change, a removed
+//! method, a broken assumption about slice lengths) the moment it happens,
+//! instead of only at the next manual `cargo bench` run.
 
-use nanoflann_ref::{Metric, RefIndex3F32, RefIndex3F64, RefIndexF32, RefIndexF64};
-use nanoflann_rs::{ConstDim, KdTreeBuilder, L2};
-use xval::{build_rust_f32, build_rust_f64, cfg_seed, queries, to_array3, to_f32, uniform, BuildThreads, RoundRobin, XMetric};
+use nanoflann_ref::{Metric, RefDynIndexF32, RefIndex3F32, RefIndex3F64, RefIndexF32, RefIndexF64};
+use nanoflann_rs::{ConstDim, DynDim, DynamicKdTreeBuilder, KdTreeBuilder, L2};
+use xval::{
+    build_rust_f32, build_rust_f64, cfg_seed, queries, sample_distinct_indices, to_array3, to_f32, uniform,
+    BuildThreads, GrowableFlat, RoundRobin, XMetric,
+};
 
 const N: usize = 2000;
 const DIM: usize = 3;
@@ -99,4 +104,107 @@ fn bench_data_paths_do_not_panic() {
         let (cl_idx, _) = cpp_leaf.knn(probe32, K, 0.0);
         assert!(!rl_idx.is_empty() && !cl_idx.is_empty());
     }
+}
+
+// ============================================================================
+// M2 Task 5: tiny dynamic path (benches/bench_dynamic.rs's three groups --
+// dyn_add, dyn_churn, dyn_knn_after_churn -- at a tiny capacity/batch size
+// so `cargo test` catches dynamic-bench-code rot too).
+// ============================================================================
+
+#[test]
+fn bench_data_paths_do_not_panic_dynamic() {
+    const CAP: usize = 200;
+    const DIM: usize = 3;
+    const LEAF: usize = 10;
+    const BATCH: usize = 20;
+    const BATCHES: usize = 10; // 10 * 20 = 200 = CAP
+    const CHURN: usize = 20;
+    const K: usize = 5;
+    const N_QUERIES_POOL: usize = 20;
+
+    let data = to_f32(&uniform(cfg_seed("bench_sanity_dyn_add_data", &[CAP, DIM]), CAP, DIM));
+
+    // ---- dyn_add path (rust) ----
+    let growable = GrowableFlat::new(&data, DIM);
+    let mut rust_tree =
+        DynamicKdTreeBuilder::new(DynDim(DIM), &growable).leaf_max_size(LEAF).maximum_point_count(CAP).build();
+    let mut start = 0usize;
+    for _ in 0..BATCHES {
+        let end = start + BATCH;
+        growable.set_current_n(end);
+        rust_tree.add_points(start, end - 1);
+        start = end;
+    }
+    assert_eq!(rust_tree.active_count(), CAP);
+
+    // ---- dyn_add path (cpp) ----
+    let mut cpp_tree = RefDynIndexF32::build(&data, DIM, LEAF, CAP);
+    let mut start = 0u32;
+    for _ in 0..BATCHES {
+        let end = start + BATCH as u32;
+        cpp_tree.set_current_n(end as usize);
+        cpp_tree.add_points(start, end - 1);
+        start = end;
+    }
+    assert!(cpp_tree.tree_count() > 0);
+
+    // ---- dyn_churn path (both sides already fully built above) ----
+    let churn_idx = sample_distinct_indices(cfg_seed("bench_sanity_dyn_churn_idx", &[CAP, CHURN]), CAP, CHURN);
+    for &idx in &churn_idx {
+        rust_tree.remove_point(idx);
+    }
+    assert_eq!(rust_tree.removed_len(), CHURN);
+    for &idx in &churn_idx {
+        rust_tree.add_points(idx, idx);
+    }
+    assert_eq!(rust_tree.removed_len(), 0);
+
+    for &idx in &churn_idx {
+        cpp_tree.remove_point(idx);
+    }
+    assert_eq!(cpp_tree.removed_count(), CHURN);
+    for &idx in &churn_idx {
+        cpp_tree.add_points(idx as u32, idx as u32);
+    }
+    assert_eq!(cpp_tree.removed_count(), 0);
+
+    // ---- dyn_knn_after_churn path: one more churn pass (left applied this
+    // time, mirroring the bench's "separate post-churn forest"), then
+    // zero-alloc knn on both sides ----
+    for &idx in &churn_idx {
+        rust_tree.remove_point(idx);
+    }
+    for &idx in &churn_idx {
+        rust_tree.add_points(idx, idx);
+    }
+    for &idx in &churn_idx {
+        cpp_tree.remove_point(idx);
+    }
+    for &idx in &churn_idx {
+        cpp_tree.add_points(idx as u32, idx as u32);
+    }
+
+    let q64 = queries(cfg_seed("bench_sanity_dyn_knn_q", &[CAP, DIM]), &to_f32_as_f64(&data), DIM, N_QUERIES_POOL);
+    let q = to_f32(&q64);
+    let mut rr = RoundRobin::new(&q, DIM);
+    let mut out_idx = vec![0u32; K];
+    let mut out_dist = vec![0.0f32; K];
+    let probe = rr.next();
+    let found = rust_tree.knn_search(probe, &mut out_idx, &mut out_dist);
+    assert!(found > 0, "rust dynamic knn must find at least one point");
+
+    let mut out_idx2 = vec![0u32; K];
+    let mut out_dist2 = vec![0.0f32; K];
+    let found2 = cpp_tree.knn_into(probe, K, 0.0, &mut out_idx2, &mut out_dist2);
+    assert!(found2 > 0, "cpp dynamic knn must find at least one point");
+}
+
+/// Tiny local helper: `queries()` wants an `f64` dataset (it generates
+/// exact-dataset-point query copies from it); this test's dynamic data path
+/// only has the `f32`-cast buffer on hand, so cast back up rather than
+/// generating a second, independently-seeded `f64` buffer that wouldn't
+/// share the same points.
+fn to_f32_as_f64(data: &[f32]) -> Vec<f64> {
+    data.iter().map(|&x| x as f64).collect()
 }

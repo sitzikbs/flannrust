@@ -24,3 +24,7 @@ harness = false
 [[bench]]
 name = "bench_radius"
 harness = false
+
+[[bench]]
+name = "bench_dynamic"
+harness = false

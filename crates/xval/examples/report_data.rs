@@ -33,12 +33,13 @@
 //!   `mean_dist_rel_error_*`/`max_dist_rel_error_*` are unaffected -- still
 //!   from `xval::score_query_f32`'s `rel_dist_errors`.
 
-use nanoflann_ref::{Metric, RefIndex3F32, RefIndexF32};
-use nanoflann_rs::{ConstDim, KdTreeBuilder, ResultItem, L2};
+use nanoflann_ref::{Metric, RefDynIndexF32, RefIndex3F32, RefIndexF32};
+use nanoflann_rs::{ConstDim, DynDim, DynamicKdTreeBuilder, KdTreeBuilder, ResultItem, SearchParams, L2};
 use std::io::Write;
 use xval::{
-    brute_force_knn_l2_f32, build_rust_f32, cfg_seed, queries, score_exact_tie_aware_f32, score_query_f32,
-    timed_median_ms, to_array3, to_f32, uniform, with_duplicates, BuildThreads, RoundRobin, XMetric,
+    apply_dyn_op_f32, brute_force_knn_l2_f32, brute_force_knn_l2_live_f32, build_rust_f32, cfg_seed, dyn_ops,
+    queries, sample_distinct_indices, score_exact_tie_aware_f32, score_exact_tie_aware_live_f32, score_query_f32,
+    timed_median_ms, to_array3, to_f32, uniform, with_duplicates, BuildThreads, GrowableFlat, RoundRobin, XMetric,
 };
 
 /// One-line description of the accuracy scoring methodology, embedded
@@ -295,6 +296,112 @@ fn speed_rows() -> Vec<SpeedRow> {
         rows.push(SpeedRow { workload: "build_1M_dim3_f32_par", rust_ms: rust_par_ms, cpp_ms: cpp_par_ms });
     }
 
+    // ---- M2 Task 5: perf_gate_dyn_add_20k_dim3_f32 (same workload as the
+    // gate -- see tests/perf_gate.rs) ----
+    progress("speed: dyn_add_20k_dim3_f32");
+    {
+        const CAP: usize = 20_000;
+        const DIM: usize = 3;
+        const LEAF: usize = 10;
+        const BATCH: usize = 1000;
+        const BATCHES: usize = 20; // 20 * 1000 = 20k total
+
+        let data = to_f32(&uniform(cfg_seed("report_dyn_add", &[CAP, DIM]), CAP, DIM));
+
+        let rust_ms = timed_median_ms(RUNS, || {
+            let growable = GrowableFlat::new(&data, DIM);
+            let mut tree = DynamicKdTreeBuilder::new(DynDim(DIM), &growable)
+                .leaf_max_size(LEAF)
+                .maximum_point_count(CAP)
+                .build();
+            let mut start = 0usize;
+            for _ in 0..BATCHES {
+                let end = start + BATCH;
+                growable.set_current_n(end);
+                tree.add_points(start, end - 1);
+                start = end;
+            }
+            std::hint::black_box(tree.tree_count());
+        });
+        let cpp_ms = timed_median_ms(RUNS, || {
+            let mut oracle = RefDynIndexF32::build(&data, DIM, LEAF, CAP);
+            let mut start = 0u32;
+            for _ in 0..BATCHES {
+                let end = start + BATCH as u32;
+                oracle.set_current_n(end as usize);
+                oracle.add_points(start, end - 1);
+                start = end;
+            }
+            std::hint::black_box(oracle.tree_count());
+        });
+        rows.push(SpeedRow { workload: "dyn_add_20k_dim3_f32", rust_ms, cpp_ms });
+    }
+
+    // ---- M2 Task 5: perf_gate_dyn_knn_after_churn_dim3_f32 (same workload
+    // as the gate -- see tests/perf_gate.rs) ----
+    progress("speed: dyn_knn_after_churn_dim3_f32");
+    {
+        const N: usize = 100_000;
+        const DIM: usize = 3;
+        const LEAF: usize = 10;
+        const CHURN: usize = 5_000;
+        const K: usize = 10;
+        const N_QUERIES: usize = 10_000;
+        const POOL: usize = 1000;
+
+        let data64 = uniform(cfg_seed("report_dyn_churn", &[N]), N, DIM);
+        let data = to_f32(&data64);
+        let q64 = queries(cfg_seed("report_dyn_churn_q", &[N]), &data64, DIM, POOL);
+        let q = to_f32(&q64);
+        let churn_idx = sample_distinct_indices(cfg_seed("report_dyn_churn_idx", &[N, CHURN]), N, CHURN);
+
+        // Build ONCE, outside timing; churn (5k removes + 5k re-adds) ONCE,
+        // outside timing -- only the knn query loop below is timed.
+        let growable = GrowableFlat::new(&data, DIM);
+        let mut rust_tree =
+            DynamicKdTreeBuilder::new(DynDim(DIM), &growable).leaf_max_size(LEAF).maximum_point_count(N).build();
+        growable.set_current_n(N);
+        rust_tree.add_points(0, N - 1);
+        for &idx in &churn_idx {
+            rust_tree.remove_point(idx);
+        }
+        for &idx in &churn_idx {
+            rust_tree.add_points(idx, idx);
+        }
+
+        let mut cpp_tree = RefDynIndexF32::build(&data, DIM, LEAF, N);
+        cpp_tree.set_current_n(N);
+        cpp_tree.add_points(0, (N - 1) as u32);
+        for &idx in &churn_idx {
+            cpp_tree.remove_point(idx);
+        }
+        for &idx in &churn_idx {
+            cpp_tree.add_points(idx as u32, idx as u32);
+        }
+
+        let rust_ms = timed_median_ms(RUNS, || {
+            let mut rr = RoundRobin::new(&q, DIM);
+            let mut out_idx = vec![0u32; K];
+            let mut out_dist = vec![0.0f32; K];
+            for _ in 0..N_QUERIES {
+                let query = std::hint::black_box(rr.next());
+                let found = rust_tree.knn_search(query, &mut out_idx, &mut out_dist);
+                std::hint::black_box(found);
+            }
+        });
+        let cpp_ms = timed_median_ms(RUNS, || {
+            let mut rr = RoundRobin::new(&q, DIM);
+            let mut out_idx = vec![0u32; K];
+            let mut out_dist = vec![0.0f32; K];
+            for _ in 0..N_QUERIES {
+                let query = std::hint::black_box(rr.next());
+                let found = cpp_tree.knn_into(query, K, 0.0, &mut out_idx, &mut out_dist);
+                std::hint::black_box(found);
+            }
+        });
+        rows.push(SpeedRow { workload: "dyn_knn_after_churn_dim3_f32", rust_ms, cpp_ms });
+    }
+
     rows
 }
 
@@ -417,7 +524,144 @@ fn accuracy_rows() -> Vec<AccuracyRow> {
     let dup_dim3 = to_f32(&with_duplicates(cfg_seed("report_acc_dup_dim3", &[]), 20_000, 3, 0.3));
     rows.extend(accuracy_rows_for_dataset("with_duplicates", 3, &dup_dim3));
 
+    rows.extend(dynamic_accuracy_rows());
+
     rows
+}
+
+// ============================================================================
+// M2 Task 5 -- dynamic accuracy: after a seeded 120-op churn (add/remove/
+// re-add) sequence over a capacity-20k, dim-3, f32 buffer (reusing M2 Task
+// 4's cross-validation plumbing directly -- `xval::dyn_ops`/
+// `xval::apply_dyn_op_f32`/`xval::GrowableFlat`, NOT reimplemented here),
+// score BOTH forests' knn against brute-force ground truth restricted to the
+// LIVE set (`xval::brute_force_knn_l2_live_f32` / `xval::
+// score_exact_tie_aware_live_f32` -- see those functions' doc comments: a
+// removed point's coordinates stay physically present in the backing buffer
+// under lazy deletion, so an unfiltered ground truth or scorer would treat a
+// tombstoned index as a valid neighbor). eps in {0.0, 0.1} only (no eps=1.0
+// arm here, unlike the static accuracy datasets -- two eps values is enough
+// to exercise the same eps-pruning codepath the static rows already cover
+// in depth; this section's job is the churn/live-set methodology, not a
+// second full eps sweep).
+// ============================================================================
+
+const DYN_ACC_CAPACITY: usize = 20_000;
+const DYN_ACC_DIM: usize = 3;
+const DYN_ACC_N_OPS: usize = 120;
+const DYN_ACC_N_QUERIES: usize = 2000;
+const DYN_ACC_EPS_VALUES: [(&str, f32); 2] = [("eps0", 0.0), ("eps0.1", 0.1)];
+
+fn dynamic_accuracy_rows() -> Vec<AccuracyRow> {
+    progress("accuracy: dyn_churn_dim3_f32 (120-op churn sequence, capacity 20k)");
+
+    let data64 = uniform(cfg_seed("report_dyn_acc_data", &[]), DYN_ACC_CAPACITY, DYN_ACC_DIM);
+    let data = to_f32(&data64);
+
+    let growable = GrowableFlat::new(&data, DYN_ACC_DIM);
+    let mut rust_tree =
+        DynamicKdTreeBuilder::new(DynDim(DYN_ACC_DIM), &growable).maximum_point_count(DYN_ACC_CAPACITY).build();
+    let mut oracle = RefDynIndexF32::build(&data, DYN_ACC_DIM, 10, DYN_ACC_CAPACITY);
+
+    let ops = dyn_ops(cfg_seed("report_dyn_acc_ops", &[]), DYN_ACC_CAPACITY, DYN_ACC_N_OPS);
+    for op in &ops {
+        apply_dyn_op_f32(op, &growable, &mut rust_tree, &mut oracle);
+    }
+
+    // Live set, read straight from the rust side's own post-churn
+    // bookkeeping (`tree_index[i] != -1` iff `i` is live) -- already
+    // cross-validated bit-exact against the oracle's own `tree_index()` by
+    // M2 Task 4 (`tests/xval_dynamic.rs`), so there is no need to
+    // independently re-derive it from the op sequence here.
+    let tree_index = rust_tree.tree_index();
+    let live: Vec<bool> = (0..DYN_ACC_CAPACITY).map(|i| i < tree_index.len() && tree_index[i] != -1).collect();
+    let live_count = live.iter().filter(|&&l| l).count();
+    progress(&format!(
+        "accuracy: dyn_churn_dim3_f32 churn done -- {live_count}/{DYN_ACC_CAPACITY} live after {DYN_ACC_N_OPS} ops"
+    ));
+
+    let q64 = queries(cfg_seed("report_dyn_acc_q", &[]), &data64, DYN_ACC_DIM, DYN_ACC_N_QUERIES);
+    let q = to_f32(&q64);
+
+    // Ground truth: computed ONCE (independent of eps), over the LIVE set
+    // only, reused across both eps arms below.
+    progress(&format!("accuracy: dyn_churn_dim3_f32 brute-force live-set GT for {DYN_ACC_N_QUERIES} queries"));
+    let mut gts: Vec<Vec<(u32, f32)>> = Vec::with_capacity(DYN_ACC_N_QUERIES);
+    for i in 0..DYN_ACC_N_QUERIES {
+        let query = &q[i * DYN_ACC_DIM..(i + 1) * DYN_ACC_DIM];
+        gts.push(brute_force_knn_l2_live_f32(&data, DYN_ACC_DIM, query, K, &live));
+    }
+
+    let mut out = Vec::with_capacity(DYN_ACC_EPS_VALUES.len());
+    for (eps_label, eps) in DYN_ACC_EPS_VALUES {
+        let mut rust_exact_count = 0usize;
+        let mut cpp_exact_count = 0usize;
+        let mut rust_errs: Vec<f64> = Vec::new();
+        let mut cpp_errs: Vec<f64> = Vec::new();
+        let mut bitexact = true;
+
+        let params = SearchParams { eps, sorted: true };
+        for i in 0..DYN_ACC_N_QUERIES {
+            let query = &q[i * DYN_ACC_DIM..(i + 1) * DYN_ACC_DIM];
+            let gt = &gts[i];
+
+            let mut r_out_idx = vec![0u32; K];
+            let mut r_out_dist = vec![0.0f32; K];
+            let r_found = rust_tree.knn_search_with(query, &mut r_out_idx, &mut r_out_dist, &params);
+            let r_pairs: Vec<(u32, f32)> =
+                r_out_idx[..r_found].iter().copied().zip(r_out_dist[..r_found].iter().copied()).collect();
+
+            let (c_idx, c_dist) = oracle.knn(query, K, eps);
+            let c_pairs: Vec<(u32, f32)> = c_idx.iter().copied().zip(c_dist.iter().copied()).collect();
+
+            // `rel_dist_errors` (mean/max error stats) -- plain per-rank
+            // scorer, unaffected by the live-set fix (same as the static
+            // accuracy rows above).
+            let r_score = score_query_f32(gt, &r_pairs);
+            let c_score = score_query_f32(gt, &c_pairs);
+            rust_errs.extend(r_score.rel_dist_errors);
+            cpp_errs.extend(c_score.rel_dist_errors);
+
+            // Exactness -- the LIVE-SET-AWARE tie-aware scorer (see this
+            // section's module doc for why plain `score_exact_tie_aware_f32`
+            // would be wrong here).
+            if score_exact_tie_aware_live_f32(&data, DYN_ACC_DIM, query, gt, &r_pairs, &live) {
+                rust_exact_count += 1;
+            }
+            if score_exact_tie_aware_live_f32(&data, DYN_ACC_DIM, query, gt, &c_pairs, &live) {
+                cpp_exact_count += 1;
+            }
+
+            if bitexact {
+                if r_pairs.len() != c_pairs.len() {
+                    bitexact = false;
+                } else {
+                    for k in 0..r_pairs.len() {
+                        if r_pairs[k].0 != c_pairs[k].0 || r_pairs[k].1.to_bits() != c_pairs[k].1.to_bits() {
+                            bitexact = false;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        let mean = |v: &[f64]| if v.is_empty() { 0.0 } else { v.iter().sum::<f64>() / v.len() as f64 };
+        let max = |v: &[f64]| v.iter().cloned().fold(0.0f64, f64::max);
+
+        out.push(AccuracyRow {
+            workload: format!("dyn_churn_dim{DYN_ACC_DIM}_f32_k{K}_{eps_label}"),
+            n_queries: DYN_ACC_N_QUERIES,
+            rust_exact_tie_aware_vs_bruteforce: rust_exact_count as f64 / DYN_ACC_N_QUERIES as f64,
+            cpp_exact_tie_aware_vs_bruteforce: cpp_exact_count as f64 / DYN_ACC_N_QUERIES as f64,
+            rust_eq_cpp_bitexact: bitexact,
+            mean_dist_rel_error_rust: mean(&rust_errs),
+            max_dist_rel_error_rust: max(&rust_errs),
+            mean_dist_rel_error_cpp: mean(&cpp_errs),
+            max_dist_rel_error_cpp: max(&cpp_errs),
+        });
+    }
+    out
 }
 
 // ============================================================================
@@ -440,7 +684,7 @@ fn main() {
     progress("starting");
 
     let meta = format!(
-        "  \"meta\": {{\n    \"date\": \"{}\",\n    \"nanoflann_version\": \"1.12.1\",\n    \"rustc\": \"{}\",\n    \"cpu_threads\": {},\n    \"target_cpu_native\": {},\n    \"scoring\": \"{}\",\n    \"gt_methodology\": \"{}\",\n    \"speed_methodology\": \"{}\"\n  }}",
+        "  \"meta\": {{\n    \"date\": \"{}\",\n    \"nanoflann_version\": \"1.12.1\",\n    \"rustc\": \"{}\",\n    \"cpu_threads\": {},\n    \"target_cpu_native\": {},\n    \"m2_dynamic\": true,\n    \"scoring\": \"{}\",\n    \"gt_methodology\": \"{}\",\n    \"speed_methodology\": \"{}\"\n  }}",
         today_utc(),
         rustc_version(),
         cpu_threads(),

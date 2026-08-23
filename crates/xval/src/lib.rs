@@ -914,6 +914,113 @@ impl_score_exact_tie_aware!(score_exact_tie_aware_f32, f32);
 impl_score_exact_tie_aware!(score_exact_tie_aware_f64, f64);
 
 // ============================================================================
+// M2 Task 5 -- live-set-filter extension. `brute_force_knn_l2_*` and
+// `score_exact_tie_aware_*` above are the RIGHT ground truth / exactness
+// definitions when every dataset index is queryable, but M2's dynamic
+// accuracy report scores knn results after a churn (add/remove/re-add)
+// sequence: a removed (tombstoned) index's coordinates are still physically
+// present in the backing buffer (lazy deletion never touches storage -- see
+// `dynamic.rs`'s module doc), so an UNFILTERED brute-force scan would treat
+// dead points as valid ground-truth neighbors, and an UNFILTERED tie-aware
+// scorer would happily accept a candidate that (erroneously) returns one, as
+// long as its recomputed coordinate-distance happens to be numerically
+// correct (`tie_aware_live_rejects_a_removed_index_even_with_correct_distance`,
+// this module's `#[cfg(test)]`, pins exactly this gap). `live` (length `n =
+// data.len()/dim`, `live[i]` true iff dataset index `i` is currently live)
+// closes it on both ends: ground truth never considers a dead index a
+// candidate neighbor, and the scorer independently rejects any `got` entry
+// whose index is dead, regardless of how "correct" its reported distance
+// looks.
+// ============================================================================
+
+macro_rules! impl_brute_force_knn_live {
+    ($name:ident, $t:ty) => {
+        /// Live-set-restricted variant of `brute_force_knn_l2_*` (see this
+        /// section's module doc) -- identical selection/arithmetic contract
+        /// (same library `L2::eval` kernel, same ascending-distance-then-
+        /// index tie break) except any index `i` with `live[i] == false` is
+        /// excluded from consideration entirely, as if it were not part of
+        /// the dataset. Panics if `dim == 0`, `query.len() != dim`,
+        /// `data.len()` is not a multiple of `dim`, or `live.len() != n`.
+        /// Returns up to `k` pairs (fewer iff fewer than `k` indices are
+        /// live).
+        pub fn $name(data: &[$t], dim: usize, query: &[$t], k: usize, live: &[bool]) -> Vec<(u32, $t)> {
+            assert!(dim > 0, "{}: dim must be > 0", stringify!($name));
+            assert_eq!(query.len(), dim, "{}: query.len() must equal dim", stringify!($name));
+            assert_eq!(data.len() % dim, 0, "{}: data.len() must be a multiple of dim", stringify!($name));
+            let n = data.len() / dim;
+            assert_eq!(live.len(), n, "{}: live.len() ({}) must equal n ({n})", stringify!($name), live.len());
+            let ds = FlatSlice::new(data, dim);
+            let mut all: Vec<(u32, $t)> = (0..n)
+                .filter(|&i| live[i])
+                .map(|i| (i as u32, L2.eval(query, &ds, i, DynDim(dim))))
+                .collect();
+            all.sort_by(|a, b| a.1.partial_cmp(&b.1).expect("brute_force_knn_live: NaN distance").then(a.0.cmp(&b.0)));
+            all.truncate(k.min(all.len()));
+            all
+        }
+    };
+}
+
+impl_brute_force_knn_live!(brute_force_knn_l2_live_f32, f32);
+impl_brute_force_knn_live!(brute_force_knn_l2_live_f64, f64);
+
+macro_rules! impl_score_exact_tie_aware_live {
+    ($name:ident, $t:ty) => {
+        /// Live-set-aware variant of `score_exact_tie_aware_*` (see this
+        /// section's module doc) -- the SAME two conditions (positional
+        /// bit-equal distance list vs `gt`; every returned index's
+        /// recomputed true distance bit-matches its reported distance) PLUS
+        /// a third, independent check: every index in `got` must satisfy
+        /// `live[idx] == true`. This is load-bearing on its own -- lazy
+        /// deletion never touches a tombstoned point's physical storage, so
+        /// a dynamic-forest bug that returns a removed index can still
+        /// report a numerically "correct" distance for it (see
+        /// `tie_aware_live_rejects_a_removed_index_even_with_correct_distance`);
+        /// only the liveness check catches that class of bug. `gt` is
+        /// expected to already be restricted to the live set (e.g. via
+        /// `brute_force_knn_l2_live_*`) -- this function does not itself
+        /// filter `gt`, only `got`. Panics if `dim == 0` or `query.len() !=
+        /// dim` (same preconditions as `score_exact_tie_aware_*`); an
+        /// out-of-range `got` index is treated as dead (`live.get(idx)`
+        /// defaults to `false` via `unwrap_or(false)`) rather than panicking.
+        pub fn $name(
+            data: &[$t],
+            dim: usize,
+            query: &[$t],
+            gt: &[(u32, $t)],
+            got: &[(u32, $t)],
+            live: &[bool],
+        ) -> bool {
+            assert!(dim > 0, "{}: dim must be > 0", stringify!($name));
+            assert_eq!(query.len(), dim, "{}: query.len() must equal dim", stringify!($name));
+            if gt.len() != got.len() {
+                return false;
+            }
+            for i in 0..gt.len() {
+                if got[i].1.to_bits() != gt[i].1.to_bits() {
+                    return false;
+                }
+            }
+            let ds = FlatSlice::new(data, dim);
+            for &(idx, reported_dist) in got {
+                if !live.get(idx as usize).copied().unwrap_or(false) {
+                    return false;
+                }
+                let true_dist: $t = L2.eval(query, &ds, idx as usize, DynDim(dim));
+                if true_dist.to_bits() != reported_dist.to_bits() {
+                    return false;
+                }
+            }
+            true
+        }
+    };
+}
+
+impl_score_exact_tie_aware_live!(score_exact_tie_aware_live_f32, f32);
+impl_score_exact_tie_aware_live!(score_exact_tie_aware_live_f64, f64);
+
+// ============================================================================
 // Median-of-N timing -- shared by `tests/perf_gate.rs` and
 // `examples/report_data.rs` (both use the SAME "median of 7 timed runs,
 // after one untimed warmup" methodology, per the brief).
@@ -963,6 +1070,24 @@ pub fn cfg_seed(tag: &str, parts: &[usize]) -> u64 {
         h = h.wrapping_mul(0x100000001b3);
     }
     h
+}
+
+/// Deterministic (seeded) sample of `count` DISTINCT indices from `0..n`, in
+/// shuffled (not sorted) order -- a full Fisher-Yates shuffle of `0..n`
+/// truncated to `count` (`O(n)`, fine for the few-times-per-run call sites
+/// this exists for: `benches/bench_dynamic.rs`'s churn benchmarks and M2
+/// Task 5's `perf_gate.rs`/`report_data.rs` churn workloads, none of which
+/// call this from inside a timed loop). Used to pick a fixed, reproducible
+/// set of dataset indices to remove-then-re-add in a dynamic-forest churn
+/// workload. Panics if `count > n`.
+pub fn sample_distinct_indices(seed: u64, n: usize, count: usize) -> Vec<usize> {
+    assert!(count <= n, "sample_distinct_indices: count ({count}) must be <= n ({n})");
+    use rand::seq::SliceRandom;
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    let mut all: Vec<usize> = (0..n).collect();
+    all.shuffle(&mut rng);
+    all.truncate(count);
+    all
 }
 
 /// Runs `f`; if it panics, re-panics with `ctx` prepended to the original
@@ -1981,6 +2106,112 @@ mod tests {
             !score_exact_tie_aware_f32(&TIE_DATA, 1, &TIE_QUERY, &gt, &got),
             "tie-aware scorer must reject a fabricated/mismatched distance-to-index pairing"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // brute_force_knn_l2_live_f32 / score_exact_tie_aware_live_f32 -- M2
+    // Task 5's live-set-filter extension (TDD, per the task brief: written
+    // BEFORE the implementation exists). Reuses TIE_DATA/TIE_QUERY from the
+    // non-live tests above.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn brute_force_knn_l2_live_excludes_dead_indices_hand_calc() {
+        // dim 1: points at 0, 1, 2, 3 -> squared distances to query [0.0]
+        // are 0, 1, 4, 9 for indices 0, 1, 2, 3. live[1] = false (removed):
+        // must be excluded even though it would otherwise be the 2nd
+        // nearest, so k=2 over the live set is [(0,0),(2,4)], NOT [(0,0),(1,1)].
+        let data = [0.0f32, 1.0, 2.0, 3.0];
+        let live = [true, false, true, true];
+        let got = brute_force_knn_l2_live_f32(&data, 1, &[0.0], 2, &live);
+        assert_eq!(got, vec![(0u32, 0.0f32), (2u32, 4.0f32)]);
+    }
+
+    #[test]
+    fn brute_force_knn_l2_live_all_dead_returns_empty() {
+        let data = [0.0f32, 1.0];
+        let live = [false, false];
+        let got = brute_force_knn_l2_live_f32(&data, 1, &[0.0], 2, &live);
+        assert!(got.is_empty());
+    }
+
+    #[test]
+    fn tie_aware_live_rejects_a_removed_index_even_with_correct_distance() {
+        // p1 (index 1) is REMOVED (live[1] = false). Ground truth over the
+        // live set (via brute_force_knn_l2_live_f32) therefore excludes it:
+        // k=2 -> [(0,0.0),(2,1.0)] (p2, also true-distance 1.0, takes the
+        // rank-1 slot instead).
+        let live = [true, false, true, true];
+        let gt = brute_force_knn_l2_live_f32(&TIE_DATA, 1, &TIE_QUERY, 2, &live);
+        assert_eq!(gt, vec![(0u32, 0.0f32), (2u32, 1.0f32)]);
+
+        // A candidate reports index 1 (removed) with its numerically
+        // CORRECT true distance (1.0) at rank 1 -- the distance LIST is
+        // bit-equal to gt positionally (0.0, 1.0), and index 1's recomputed
+        // true distance does equal 1.0, so the OLD non-live-aware scorer
+        // (sanity-checked below) wrongly accepts this. The live-aware
+        // scorer must reject it because index 1 is dead.
+        let got = [(0u32, 0.0f32), (1u32, 1.0)];
+        assert!(
+            score_exact_tie_aware_f32(&TIE_DATA, 1, &TIE_QUERY, &gt, &got),
+            "sanity: the OLD non-live-aware scorer has no liveness concept and accepts this"
+        );
+        assert!(
+            !score_exact_tie_aware_live_f32(&TIE_DATA, 1, &TIE_QUERY, &gt, &got, &live),
+            "live-aware scorer must reject a removed index even with a numerically correct distance"
+        );
+    }
+
+    #[test]
+    fn tie_aware_live_accepts_a_live_alternate_tie_winner() {
+        // index 2 is LIVE and a legitimate alternate tie winner (mirrors
+        // tie_aware_accepts_a_different_but_legitimate_tie_winner above) --
+        // must still be accepted once a (trivial, nothing-removed) live
+        // filter is threaded through.
+        let live = [true, true, true, true];
+        let gt = [(0u32, 0.0f32), (1u32, 1.0)];
+        let got = [(0u32, 0.0f32), (2u32, 1.0)];
+        assert!(score_exact_tie_aware_live_f32(&TIE_DATA, 1, &TIE_QUERY, &gt, &got, &live));
+    }
+
+    #[test]
+    fn tie_aware_live_rejects_a_genuinely_wrong_neighbor() {
+        // Mirrors tie_aware_rejects_a_genuinely_wrong_neighbor above, with a
+        // trivial (nothing-removed) live filter threaded through -- the
+        // live check must not mask the existing wrong-distance rejection.
+        let live = [true, true, true, true];
+        let gt = [(0u32, 0.0f32), (1u32, 1.0)];
+        let got = [(0u32, 0.0f32), (3u32, 1.0)]; // p3's true distance is 100.0, not 1.0
+        assert!(!score_exact_tie_aware_live_f32(&TIE_DATA, 1, &TIE_QUERY, &gt, &got, &live));
+    }
+
+    // ------------------------------------------------------------------
+    // sample_distinct_indices
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn sample_distinct_indices_is_deterministic_and_distinct() {
+        let a = sample_distinct_indices(7, 100, 20);
+        let b = sample_distinct_indices(7, 100, 20);
+        assert_eq!(a, b, "same seed must reproduce the identical sample");
+        assert_eq!(a.len(), 20);
+        let set: std::collections::BTreeSet<usize> = a.iter().copied().collect();
+        assert_eq!(set.len(), 20, "every sampled index must be distinct");
+        assert!(a.iter().all(|&i| i < 100));
+    }
+
+    #[test]
+    fn sample_distinct_indices_full_count_is_a_permutation_of_0_n() {
+        let a = sample_distinct_indices(3, 10, 10);
+        let mut sorted = a.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, (0..10).collect::<Vec<usize>>());
+    }
+
+    #[test]
+    #[should_panic(expected = "count (5) must be <= n (3)")]
+    fn sample_distinct_indices_count_greater_than_n_panics() {
+        let _ = sample_distinct_indices(1, 3, 5);
     }
 
     // ------------------------------------------------------------------
