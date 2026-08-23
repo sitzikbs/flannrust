@@ -132,13 +132,17 @@ impl From<serde_json::Error> for RenderError {
 //   `body`'s background comes from the `--bg` token, never a literal color,
 //   so the viewer never sees a transparent/mismatched frame.
 // - Palette: light bg #FAF8F5 / surface #FFF / ink #23201B / muted #6E675E /
-//   line #E5E0D8 / rust #C8502E / cpp #2B6CB0 / good #2F855A; dark bg
-//   #1A1814 / surface #23201B / ink #EDE8E0 / muted #9C948A / line #38332C /
-//   rust #D96A45 / cpp #4A8FC7 / good #58B287. There is no separate
-//   "failure" color in the validated palette -- `--bad` is defined as an
-//   alias of `--rust` (already the palette's one warm/alert-coded color,
-//   distinct from `--good`'s green) rather than inventing an off-palette
-//   hex.
+//   line #E5E0D8 / rust #C8502E / cpp #2B6CB0 / good #2F855A / bad #B42318;
+//   dark bg #1A1814 / surface #23201B / ink #EDE8E0 / muted #9C948A / line
+//   #38332C / rust #D96A45 / cpp #4A8FC7 / good #58B287 / bad #F08578.
+//   `--bad` (fix round 1) is its OWN dedicated token, deliberately distinct
+//   from `--rust` -- aliasing it to `--rust` (the original design) meant
+//   the same hue read as both "Rust faster" (bars/legend) and "failure"
+//   (tiles/pills/caveat), a real cross-page misread risk. Failure state
+//   also never relies on color alone: `render_tiles`/`render_accuracy_rows`
+//   prefix every good/fail tile-value and pill with a `\u{2713} `/`\u{2715}
+//   ` text glyph (see `GOOD_GLYPH`/`BAD_GLYPH` below), so the state reads
+//   correctly even in grayscale/colorblind rendering.
 const TEMPLATE: &str = r##"<!doctype html>
 <html lang="en">
 <head>
@@ -158,7 +162,7 @@ const TEMPLATE: &str = r##"<!doctype html>
   --rust: #C8502E;
   --cpp: #2B6CB0;
   --good: #2F855A;
-  --bad: var(--rust);
+  --bad: #B42318;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -171,7 +175,7 @@ const TEMPLATE: &str = r##"<!doctype html>
     --rust: #D96A45;
     --cpp: #4A8FC7;
     --good: #58B287;
-    --bad: var(--rust);
+    --bad: #F08578;
   }
 }
 
@@ -184,7 +188,7 @@ const TEMPLATE: &str = r##"<!doctype html>
   --rust: #D96A45;
   --cpp: #4A8FC7;
   --good: #58B287;
-  --bad: var(--rust);
+  --bad: #F08578;
 }
 
 * { box-sizing: border-box; }
@@ -460,6 +464,13 @@ fn sci(x: f64) -> String {
     format!("{x:.2e}")
 }
 
+/// Fix round 1: text-glyph prefixes for good/fail states (tiles and
+/// pills), so state reads correctly WITHOUT relying on `--good`/`--bad`
+/// color alone (colorblind-safe / grayscale-safe). Plain text glyphs, no
+/// icon font.
+const GOOD_GLYPH: &str = "\u{2713} "; // "✓ "
+const BAD_GLYPH: &str = "\u{2715} "; // "✕ "
+
 /// Pulls the `eps<value>` suffix off a workload name (e.g.
 /// `"uniform_dim3_f32_k10_eps0.1"` -> `Some("ε=0.1")`), matching
 /// `report_data.rs`'s `EPS_VALUES`/`DYN_ACC_EPS_VALUES` naming convention
@@ -473,7 +484,11 @@ fn parse_eps(workload: &str) -> Option<String> {
 /// across those rows, flagged as a failure; (b) bit-exactness -- only a
 /// pass if EVERY accuracy row (any eps) has `rust_eq_cpp_bitexact`; (c)
 /// best speed win -- `max(1/ratio)` across all speed rows, with that row's
-/// workload name.
+/// workload name -- flagged as a failure (fix round 1) when that max is
+/// still `< 1.0`, i.e. C++ was faster on every single speed row, so there
+/// is genuinely no rust win to report. Every tile's value text is
+/// glyph-prefixed (`GOOD_GLYPH`/`BAD_GLYPH`) in addition to its
+/// good/fail CSS class, so the verdict reads without relying on color.
 fn render_tiles(accuracy: &[AccuracyRow], speed: &[SpeedRow]) -> String {
     let eps0_rows: Vec<&AccuracyRow> = accuracy.iter().filter(|r| r.workload.ends_with("_eps0")).collect();
     let (acc_ok, acc_value) = if eps0_rows.is_empty() {
@@ -502,22 +517,33 @@ fn render_tiles(accuracy: &[AccuracyRow], speed: &[SpeedRow]) -> String {
         (f64::NEG_INFINITY, ""),
         |acc, cur| if cur.0 > acc.0 { cur } else { acc },
     );
-    let speed_value = if speed.is_empty() {
-        "no speed rows in report".to_string()
+    let (speed_ok, speed_value) = if speed.is_empty() {
+        (false, "no speed rows in report".to_string())
+    } else if best.0 >= 1.0 {
+        (true, format!("{:.2}\u{d7} faster \u{2014} {}", best.0, html_escape(best.1)))
     } else {
-        format!("{:.2}\u{d7} faster \u{2014} {}", best.0, html_escape(best.1))
+        // Every row was cpp-faster (`1/ratio < 1.0` everywhere) -- report
+        // the least-bad row's actual ratio (`1/best.0`, since `best.0` is
+        // `max(1/ratio)` == `1/min(ratio)`) honestly rather than dressing
+        // up a loss as a "win".
+        let min_ratio = 1.0 / best.0;
+        (false, format!("no speed win \u{2014} best ratio {:.2}\u{d7} ({})", min_ratio, html_escape(best.1)))
     };
 
     format!(
         r#"<div class="tiles">
-<div class="tile {}"><div class="tile-label">Accuracy @ eps=0</div><div class="tile-value">{}</div></div>
-<div class="tile {}"><div class="tile-label">Bit-exactness</div><div class="tile-value">{}</div></div>
-<div class="tile good"><div class="tile-label">Best speed win</div><div class="tile-value">{}</div></div>
+<div class="tile {}"><div class="tile-label">Accuracy @ eps=0</div><div class="tile-value">{}{}</div></div>
+<div class="tile {}"><div class="tile-label">Bit-exactness</div><div class="tile-value">{}{}</div></div>
+<div class="tile {}"><div class="tile-label">Best speed win</div><div class="tile-value">{}{}</div></div>
 </div>"#,
         if acc_ok { "good" } else { "fail" },
+        if acc_ok { GOOD_GLYPH } else { BAD_GLYPH },
         acc_value,
         if bit_ok { "good" } else { "fail" },
+        if bit_ok { GOOD_GLYPH } else { BAD_GLYPH },
         bit_value,
+        if speed_ok { "good" } else { "fail" },
+        if speed_ok { GOOD_GLYPH } else { BAD_GLYPH },
         speed_value,
     )
 }
@@ -584,9 +610,9 @@ fn render_accuracy_rows(accuracy: &[AccuracyRow]) -> String {
             let perfect = r.rust_exact_tie_aware_vs_bruteforce >= 1.0 && r.cpp_exact_tie_aware_vs_bruteforce >= 1.0;
             let cell_class = if perfect { "good" } else { "" };
             let pill = if r.rust_eq_cpp_bitexact {
-                r#"<span class="pill good">bit-exact</span>"#.to_string()
+                format!(r#"<span class="pill good">{GOOD_GLYPH}bit-exact</span>"#)
             } else {
-                r#"<span class="pill fail">not bit-exact</span>"#.to_string()
+                format!(r#"<span class="pill fail">{BAD_GLYPH}not bit-exact</span>"#)
             };
 
             let evidence_attr = match (r.live_count, r.removed_count) {
