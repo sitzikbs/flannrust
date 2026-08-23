@@ -57,6 +57,7 @@ pub mod result_set;
 pub mod filter;
 pub mod params;
 pub mod tree;
+pub mod dynamic;
 mod node;
 mod build;
 mod search;
@@ -72,6 +73,7 @@ pub use result_set::{ResultItem, ResultSet, TieBreak, KeepInsertionOrder, Smalle
 pub use filter::{PointFilter, AcceptAll};
 pub use params::{SearchParams, BuildThreads};
 pub use tree::{KdTree, KdTreeBuilder};
+pub use dynamic::{DynamicKdTree, DynamicKdTreeBuilder};
 
 #[cfg(test)]
 mod tests {
