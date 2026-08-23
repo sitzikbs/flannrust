@@ -1273,6 +1273,90 @@ pub fn validate_dyn_ops_legal(ops: &[DynOp], total_capacity: usize) {
     }
 }
 
+/// Coverage statistics over one `DynOp` sequence: counts of each op kind,
+/// plus `tombstone_migrations` -- the number of times a currently-removed
+/// index's PHYSICAL slot residency changed because a later `GrowAndAdd`'s
+/// merge (`pos = first0bit(point_count)`, same arithmetic as
+/// `DynamicKdTree::add_points`) swallowed the slot it still physically
+/// occupied. ONE shared implementation for two callers that both need this:
+/// `dyn_ops`'s own generic capability property test (below, this module's
+/// `#[cfg(test)]`) and `tests/xval_dynamic.rs`'s per-matrix-sequence
+/// coverage assertions (fix-round-1 item 2) -- keeping this in one place
+/// means the two checks can't silently drift into simulating the
+/// first0bit/slot-migration rule differently.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DynOpStats {
+    pub grow_and_add_count: usize,
+    pub remove_count: usize,
+    pub readd_count: usize,
+    pub tombstone_migrations: usize,
+}
+
+/// Computes [`DynOpStats`] by replaying `ops` against a hand-simulated
+/// slot-residency model (see the struct's doc comment). `first0bit` is
+/// `dynamic.rs`'s private `First0Bit` duplicated here -- it's `pub(crate)`
+/// to `nanoflann-rs`, not part of xval's dependency surface -- purely so
+/// this simulation can determine, from a running `point_count` alone, which
+/// slot a genuinely-new index lands in and which lower slots a merge
+/// swallows.
+pub fn dyn_ops_stats(ops: &[DynOp]) -> DynOpStats {
+    fn first0bit(n: usize) -> usize {
+        let mut num = n;
+        let mut pos = 0usize;
+        while num & 1 == 1 {
+            num >>= 1;
+            pos += 1;
+        }
+        pos
+    }
+
+    let mut stats = DynOpStats::default();
+    let mut point_count = 0usize;
+    // dataset-index -> slot it's physically resident in right now (mirrors
+    // DynamicKdTree::add_points' bookkeeping, ignoring reactivation for
+    // SLOT purposes since lazy deletion never touches physical residency --
+    // only whether an index counts as "removed" for the migration count).
+    let mut slot_of: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    let mut currently_removed: std::collections::HashSet<usize> = std::collections::HashSet::new();
+
+    for op in ops {
+        match *op {
+            DynOp::GrowAndAdd { count } => {
+                stats.grow_and_add_count += 1;
+                for _ in 0..count {
+                    let pos = first0bit(point_count);
+                    if pos > 0 {
+                        // Every index physically resident in slots 0..pos
+                        // migrates to slot `pos`. If any such index is
+                        // currently a tombstone, this is a genuine
+                        // tombstone-slot migration.
+                        for (&i, s) in slot_of.iter_mut() {
+                            if *s < pos {
+                                *s = pos;
+                                if currently_removed.contains(&i) {
+                                    stats.tombstone_migrations += 1;
+                                }
+                            }
+                        }
+                    }
+                    slot_of.insert(point_count, pos);
+                    point_count += 1;
+                }
+            }
+            DynOp::Remove { live_idx } => {
+                stats.remove_count += 1;
+                currently_removed.insert(live_idx);
+            }
+            DynOp::ReAdd { removed_idx } => {
+                stats.readd_count += 1;
+                currently_removed.remove(&removed_idx);
+            }
+        }
+    }
+
+    stats
+}
+
 // ----------------------------------------------------------------------
 // Apply / structure-parity helpers -- one instantiation per scalar type
 // (the dynamic forest is L2-only, see `RefDynIndexF32`'s doc comment, so
@@ -2138,80 +2222,47 @@ mod tests {
         }
     }
 
-    /// `dynamic.rs`'s private `first0bit` (nanoflann's `First0Bit`),
-    /// duplicated here (not imported -- it's `pub(crate)` to
-    /// `nanoflann-rs`, not part of xval's dependency surface) purely so
-    /// this property test can determine, from a hand-simulated `point_count`
-    /// alone, which slot a genuinely-new index would land in -- the same
-    /// arithmetic `DynamicKdTree::add_points` uses to decide which slots a
-    /// merge swallows. See `dynamic.rs`'s doc comment for the algorithm.
-    fn first0bit(n: usize) -> usize {
-        let mut num = n;
-        let mut pos = 0usize;
-        while num & 1 == 1 {
-            num >>= 1;
-            pos += 1;
-        }
-        pos
-    }
-
     #[test]
     fn dyn_ops_can_produce_merges_tombstone_migrations_and_drain_stretches() {
         // Statistical capability check across many seeds (not a per-seed
         // guarantee) -- see dyn_ops' doc comment for why these are expected
         // to emerge naturally from the weighted, state-restricted model.
+        // Uses `dyn_ops_stats` for the tombstone-migration count -- the SAME
+        // shared simulation `tests/xval_dynamic.rs`'s per-matrix-sequence
+        // coverage assertions use (fix-round-1 item 2), so this generic
+        // capability check and that per-matrix-config check can't silently
+        // drift into simulating the first0bit/slot-migration rule
+        // differently.
         let mut saw_point_count_past_merge_boundary = false; // > 8 => at least one slot-3+ merge occurred (first0bit structural guarantee)
-        let mut saw_remove_before_a_later_merge = false; // a Remove's index was still physically resident in a slot 0..pos that a LATER GrowAndAdd's merge (pos = first0bit(point_count)) swallows
+        let mut saw_tombstone_migration = false;
         let mut saw_drain_heavy_stretch = false; // >= 5 consecutive Removes
 
         for seed in 0u64..30 {
             let ops = dyn_ops(seed, 200, 150);
+
+            let stats = dyn_ops_stats(&ops);
+            if stats.tombstone_migrations > 0 {
+                saw_tombstone_migration = true;
+            }
+
             let mut point_count = 0usize;
             let mut consecutive_removes = 0usize;
-            // dataset-index -> slot it's physically resident in right now
-            // (mirrors DynamicKdTree::add_points' bookkeeping exactly, but
-            // ignores reactivation/removal for SLOT purposes since lazy
-            // deletion never touches physical residency -- only whether an
-            // index counts as "removed" for the migration check below).
-            let mut slot_of: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
-            let mut currently_removed: std::collections::HashSet<usize> = std::collections::HashSet::new();
-
             for op in &ops {
                 match *op {
                     DynOp::GrowAndAdd { count } => {
-                        for _ in 0..count {
-                            let pos = first0bit(point_count);
-                            if pos > 0 {
-                                // Every index physically resident in slots
-                                // 0..pos migrates to slot `pos`. If any such
-                                // index is currently a tombstone, this is a
-                                // genuine tombstone-slot migration.
-                                for (&i, s) in slot_of.iter_mut() {
-                                    if *s < pos {
-                                        *s = pos;
-                                        if currently_removed.contains(&i) {
-                                            saw_remove_before_a_later_merge = true;
-                                        }
-                                    }
-                                }
-                            }
-                            slot_of.insert(point_count, pos);
-                            point_count += 1;
-                        }
+                        point_count += count;
                         consecutive_removes = 0;
                         if point_count > 8 {
                             saw_point_count_past_merge_boundary = true;
                         }
                     }
-                    DynOp::Remove { live_idx } => {
-                        currently_removed.insert(live_idx);
+                    DynOp::Remove { .. } => {
                         consecutive_removes += 1;
                         if consecutive_removes >= 5 {
                             saw_drain_heavy_stretch = true;
                         }
                     }
-                    DynOp::ReAdd { removed_idx } => {
-                        currently_removed.remove(&removed_idx);
+                    DynOp::ReAdd { .. } => {
                         consecutive_removes = 0;
                     }
                 }
@@ -2223,7 +2274,7 @@ mod tests {
             "no seed's point_count ever exceeded 8 -- needed for a slot-3+ merge (see first0bit)"
         );
         assert!(
-            saw_remove_before_a_later_merge,
+            saw_tombstone_migration,
             "no seed's sequence ever had a tombstoned index physically swallowed by a later \
              merge -- tombstone-migration scenarios never occurred"
         );
@@ -2231,6 +2282,25 @@ mod tests {
             saw_drain_heavy_stretch,
             "no seed produced a drain-heavy stretch (>= 5 consecutive Remove ops)"
         );
+    }
+
+    #[test]
+    fn dyn_ops_stats_counts_op_kinds_correctly_on_a_hand_crafted_sequence() {
+        // Independent hand check of dyn_ops_stats' op-kind counters (the
+        // tombstone_migrations field is exercised by the test above and by
+        // the tombstone_migration scenario's hand-derivation in
+        // dynamic.rs/tests/xval_dynamic.rs -- this just pins the three
+        // trivial counts).
+        let ops = vec![
+            DynOp::GrowAndAdd { count: 4 },
+            DynOp::Remove { live_idx: 0 },
+            DynOp::Remove { live_idx: 1 },
+            DynOp::ReAdd { removed_idx: 0 },
+        ];
+        let stats = dyn_ops_stats(&ops);
+        assert_eq!(stats.grow_and_add_count, 1);
+        assert_eq!(stats.remove_count, 2);
+        assert_eq!(stats.readd_count, 1);
     }
 
     #[test]
