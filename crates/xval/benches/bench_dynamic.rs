@@ -34,12 +34,27 @@
 //!   the SAME forest object is safely reused, net-unmutated, across every
 //!   sample/iteration without an explicit rebuild-per-iteration cost.
 //!   `sample_size(10)`.
-//! - `dyn_knn_after_churn`: a SEPARATE forest, also pre-built with 100k
-//!   points then churned ONCE (1000 removes + 1000 re-adds, outside all
-//!   timing) to reach a realistic post-churn structure (tombstone
-//!   migrations, multi-slot layout), then a 1000-query round-robin k=10 knn
-//!   loop, zero-allocation both sides (`knn_search`/`knn_into` writing into
-//!   reused out-buffers).
+//! - `dyn_knn_after_churn`: a SEPARATE forest, built contiguously to
+//!   `BASE` (95k) points, churned ONCE (`REMOVE` = 5k removes, `READD` =
+//!   2.5k re-adds -- HALF of the removed set, leaving `REMOVE - READD` =
+//!   2.5k LIVE TOMBSTONES), then grown by one more fresh CONTIGUOUS batch
+//!   of `GROWTH` = 5k points (starting exactly at `BASE`, the point_count
+//!   at that moment) to reach 100k total -- all outside all timing. The
+//!   growth batch is deliberately sized past 4096 = 2^12 so it is
+//!   GUARANTEED (pigeonhole: any 4096 consecutive integers contain exactly
+//!   one value congruent to 4095 mod 4096) to pass through a point_count
+//!   whose binary representation ends in >= 12 one-bits, forcing a REAL
+//!   cascading merge across slots 0..=11+ (see `nanoflann_rs::dynamic::
+//!   DynamicKdTree::add_points`'s doc comment) that also migrates the
+//!   still-removed tombstones' recorded slot. This reaches a realistic
+//!   post-churn structure (LIVE tombstones present, real merges, tombstone
+//!   migrations, multi-slot layout) -- then a 1000-query round-robin k=10
+//!   knn loop, zero-allocation both sides (`knn_search`/`knn_into` writing
+//!   into reused out-buffers). An earlier version of this workload removed
+//!   1000 and reactivated all 1000 of them, leaving ZERO tombstones and
+//!   ZERO merges at query time -- a provable no-op churn that never
+//!   exercised tombstone-filtered search at all; this workload doesn't have
+//!   that problem (`removed_len() > 0` is asserted in the setup below).
 //!
 //! ID scheme: `dyn_add/{lib}`, `dyn_churn/{lib}`, `dyn_knn_after_churn/{lib}`
 //! -- `lib` in {rust, cpp}.
@@ -167,35 +182,53 @@ fn bench_dyn_churn(c: &mut Criterion) {
 fn bench_dyn_knn_after_churn(c: &mut Criterion) {
     let mut group = c.benchmark_group("dyn_knn_after_churn");
 
+    const GROWTH: usize = 5_000; // fresh contiguous growth batch, CAP total after
+    const BASE: usize = CAP - GROWTH; // 95_000: initial contiguous build size
+    const KNN_REMOVE: usize = 5_000; // removed from the BASE range
+    const KNN_READD: usize = 2_500; // reactivated -- half of KNN_REMOVE
+
     let data64 = uniform(cfg_seed("bench_dyn_knn_after_churn_data", &[CAP, DIM]), CAP, DIM);
     let data = to_f32(&data64);
     let q64 = queries(cfg_seed("bench_dyn_knn_after_churn_q", &[CAP, DIM]), &data64, DIM, N_QUERIES_POOL);
     let q = to_f32(&q64);
-    let churn_idx = sample_distinct_indices(cfg_seed("bench_dyn_knn_after_churn_idx", &[CAP, CHURN]), CAP, CHURN);
+    let remove_idx =
+        sample_distinct_indices(cfg_seed("bench_dyn_knn_after_churn_idx", &[BASE, KNN_REMOVE]), BASE, KNN_REMOVE);
+    let readd_idx = &remove_idx[..KNN_READD];
 
-    // Rust: build, add all, churn once -- all outside timing.
+    // Rust: build to BASE, churn (remove REMOVE / re-add READD, leaving
+    // live tombstones), then a fresh contiguous GROWTH batch (real merges +
+    // tombstone migrations) -- all outside timing.
     let growable = GrowableFlat::new(&data, DIM);
     let mut rust_tree =
         DynamicKdTreeBuilder::new(DynDim(DIM), &growable).leaf_max_size(LEAF).maximum_point_count(CAP).build();
-    growable.set_current_n(CAP);
-    rust_tree.add_points(0, CAP - 1);
-    for &idx in &churn_idx {
+    growable.set_current_n(BASE);
+    rust_tree.add_points(0, BASE - 1);
+    for &idx in &remove_idx {
         rust_tree.remove_point(idx);
     }
-    for &idx in &churn_idx {
+    for &idx in readd_idx {
         rust_tree.add_points(idx, idx);
     }
+    growable.set_current_n(CAP);
+    rust_tree.add_points(BASE, CAP - 1);
+    assert!(
+        rust_tree.removed_len() > 0,
+        "bench_dyn_knn_after_churn setup: removed_len() must be > 0 at query time (workload \
+         must leave live tombstones)"
+    );
 
     // C++: same, outside timing.
     let mut cpp_tree = RefDynIndexF32::build(&data, DIM, LEAF, CAP);
-    cpp_tree.set_current_n(CAP);
-    cpp_tree.add_points(0, (CAP - 1) as u32);
-    for &idx in &churn_idx {
+    cpp_tree.set_current_n(BASE);
+    cpp_tree.add_points(0, (BASE - 1) as u32);
+    for &idx in &remove_idx {
         cpp_tree.remove_point(idx);
     }
-    for &idx in &churn_idx {
+    for &idx in readd_idx {
         cpp_tree.add_points(idx as u32, idx as u32);
     }
+    cpp_tree.set_current_n(CAP);
+    cpp_tree.add_points(BASE as u32, (CAP - 1) as u32);
 
     group.bench_function("rust", |b| {
         let mut rr = RoundRobin::new(&q, DIM);

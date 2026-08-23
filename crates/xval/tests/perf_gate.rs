@@ -330,10 +330,33 @@ fn perf_gate_dyn_knn_after_churn_dim3_f32() {
         println!("PERF_GATE skipped: set PERF_GATE=1");
         return;
     }
-    const N: usize = 100_000;
+    // Workload: build BASE points, remove REMOVE of them, re-add only HALF
+    // of those (READD) -- leaving READD-worth of LIVE TOMBSTONES in place
+    // -- then add a fresh CONTIGUOUS growth batch of GROWTH points starting
+    // exactly at BASE (point_count at that moment). A window of GROWTH=5000
+    // consecutive `add_points` increments is larger than 4096 = 2^12, so it
+    // is GUARANTEED (pigeonhole: any 4096 consecutive integers contain
+    // exactly one value congruent to 4095 mod 4096) to pass through a
+    // point_count whose binary representation ends in >= 12 one-bits --
+    // i.e. `first0bit` returns >= 12 for at least one point in the batch,
+    // forcing a REAL cascading merge across slots 0..=11+ (see
+    // `nanoflann_rs::dynamic::DynamicKdTree::add_points`'s doc comment for
+    // the merge/rebuild schedule), which also MIGRATES the still-removed
+    // tombstones' recorded slot. An earlier version of this workload
+    // removed 5k and reactivated all 5k, leaving ZERO tombstones and ZERO
+    // merges at query time -- a provable no-op churn that never exercised
+    // tombstone-filtered search at all. This corrected workload provably
+    // does not have that problem (see the `removed_len() > 0` assert
+    // below, and `docs/EXPERIMENTS.md`'s reproduction section for a RED
+    // capture proving the assert actually fires when the workload
+    // regresses to the old no-op shape).
+    const N: usize = 100_000; // total points after the growth batch
     const DIM: usize = 3;
     const LEAF: usize = 10;
-    const CHURN: usize = 5_000;
+    const BASE: usize = 95_000; // initial contiguous build size
+    const REMOVE: usize = 5_000; // removed from the BASE range
+    const READD: usize = 2_500; // reactivated -- half of REMOVE
+    const GROWTH: usize = N - BASE; // fresh contiguous growth batch (5_000)
     const K: usize = 10;
     const N_QUERIES: usize = 10_000;
     const POOL: usize = 1000;
@@ -342,31 +365,45 @@ fn perf_gate_dyn_knn_after_churn_dim3_f32() {
     let data = to_f32(&data64);
     let q64 = queries(cfg_seed("perf_gate_dyn_churn_q", &[N]), &data64, DIM, POOL);
     let q = to_f32(&q64);
-    let churn_idx = sample_distinct_indices(cfg_seed("perf_gate_dyn_churn_idx", &[N, CHURN]), N, CHURN);
+    let remove_idx = sample_distinct_indices(cfg_seed("perf_gate_dyn_churn_idx", &[BASE, REMOVE]), BASE, REMOVE);
+    let readd_idx = &remove_idx[..READD];
 
-    // Build ONCE, outside timing; churn (5k removes + 5k re-adds) ONCE,
-    // outside timing -- only the knn query loop below is timed.
+    // Build ONCE, outside timing; churn (REMOVE removes + READD re-adds,
+    // leaving REMOVE-READD live tombstones) then a fresh GROWTH-sized
+    // contiguous growth batch (triggering real merges + tombstone
+    // migrations) ONCE, outside timing -- only the knn query loop below is
+    // timed.
     let growable = GrowableFlat::new(&data, DIM);
     let mut rust_tree =
         DynamicKdTreeBuilder::new(DynDim(DIM), &growable).leaf_max_size(LEAF).maximum_point_count(N).build();
-    growable.set_current_n(N);
-    rust_tree.add_points(0, N - 1);
-    for &idx in &churn_idx {
+    growable.set_current_n(BASE);
+    rust_tree.add_points(0, BASE - 1);
+    for &idx in &remove_idx {
         rust_tree.remove_point(idx);
     }
-    for &idx in &churn_idx {
+    for &idx in readd_idx {
         rust_tree.add_points(idx, idx);
     }
+    growable.set_current_n(N);
+    rust_tree.add_points(BASE, BASE + GROWTH - 1);
+    assert!(
+        rust_tree.removed_len() > 0,
+        "perf_gate_dyn_knn_after_churn_dim3_f32 setup: removed_len() must be > 0 at query \
+         time (workload must leave live tombstones) -- got 0, which means this workload \
+         regressed back to the provable-no-op churn shape this gate was fixed to avoid"
+    );
 
     let mut cpp_tree = RefDynIndexF32::build(&data, DIM, LEAF, N);
-    cpp_tree.set_current_n(N);
-    cpp_tree.add_points(0, (N - 1) as u32);
-    for &idx in &churn_idx {
+    cpp_tree.set_current_n(BASE);
+    cpp_tree.add_points(0, (BASE - 1) as u32);
+    for &idx in &remove_idx {
         cpp_tree.remove_point(idx);
     }
-    for &idx in &churn_idx {
+    for &idx in readd_idx {
         cpp_tree.add_points(idx as u32, idx as u32);
     }
+    cpp_tree.set_current_n(N);
+    cpp_tree.add_points(BASE as u32, (N - 1) as u32);
 
     let rust_ms = timed_median_ms(RUNS, || {
         let mut rr = RoundRobin::new(&q, DIM);
