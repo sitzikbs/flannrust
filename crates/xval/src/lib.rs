@@ -799,8 +799,8 @@ pub struct QueryScore {
     /// a candidate may legitimately return the same k points in a different
     /// order under a different tie rule and still be "exact").
     ///
-    /// NOTE (controller ruling, see `score_exact_tie_aware_f32`/`_f64`'s doc
-    /// comment below): this definition is STILL too strict on
+    /// NOTE (see `score_exact_tie_aware_f32`/`_f64`'s doc comment below):
+    /// this definition is STILL too strict on
     /// duplicate-heavy datasets -- when multiple points are exactly tied at
     /// the k-th distance boundary, "the" index SET is not uniquely defined,
     /// so a candidate that legitimately picks a DIFFERENT (but equally
@@ -862,11 +862,11 @@ impl_score_query!(score_query_f64, f64);
 
 macro_rules! impl_score_exact_tie_aware {
     ($name:ident, $t:ty) => {
-        /// Tie-aware ground-truth exactness check (controller ruling on
+        /// Tie-aware ground-truth exactness check, used by
         /// `examples/report_data.rs`'s accuracy report -- see
         /// `QueryScore::exact`'s doc comment above for why the plain
         /// order-independent set match is too strict on duplicate-heavy
-        /// datasets). A query is EXACT iff BOTH hold:
+        /// datasets. A query is EXACT iff BOTH hold:
         ///
         /// 1. `got`'s distances, taken IN ORDER, are bit-equal to `gt`'s
         ///    distances in order (both are assumed already sorted ascending

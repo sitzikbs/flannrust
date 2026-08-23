@@ -324,13 +324,21 @@ lines and environment/toolchain provenance: `docs/EXPERIMENTS.md`.
 | `dyn_knn_after_churn_dim3_f32` (100k built, 5k removed + 5k re-added, then 10,000 k=10 knn queries) | 0.964 |
 
 Both pass with comfortable margin against the 1.25 gate threshold. Re-run
-during this documentation task (`PERF_GATE=1 RUSTFLAGS="-C
-target-cpu=native" cargo test -p xval --release --test perf_gate --
---ignored perf_gate_dyn --test-threads=1 --nocapture`, `crates/xval/tests/
-perf_gate.rs`) reproduced consistent figures on the same machine: **1.106**
-and **0.947** — within ordinary WSL2 run-to-run noise (see
-`docs/EXPERIMENTS.md`'s WSL2 caveat) of the recorded numbers above, not a
-regression.
+four times across this documentation task and its fix round — twice via
+the full six-gate invocation (`PERF_GATE=1 RUSTFLAGS="-C target-cpu=native"
+cargo test -p xval --release --test perf_gate -- --ignored perf_gate
+--test-threads=1 --nocapture`) and twice via the dynamic-only filter (same
+command with `--ignored perf_gate_dyn`), `crates/xval/tests/perf_gate.rs`;
+full pasted output of all four runs is in `docs/EXPERIMENTS.md`'s
+reproduction-commands section, not repeated here — `dyn_add_20k_dim3_f32`
+ranged **1.106–1.230** and `dyn_knn_after_churn_dim3_f32` ranged
+**0.945–0.972** across those four runs. Every individual run still
+passes the 1.25 margin by a comfortable amount, but `dyn_add`'s high end
+(1.230) is a real, larger-than-typical single-run swing worth knowing
+about — see `docs/EXPERIMENTS.md`'s WSL2 caveat, which uses this exact
+swing as its concrete illustration of why the gate margin isn't set
+tighter. Not a regression: no code in `crates/` changed between the
+recorded run and any of the four re-runs.
 
 `dyn_add`'s ratio (~1.1×, Rust slightly slower) and `dyn_knn_after_churn`'s
 ratio (~0.95-0.96×, Rust slightly faster) both compare the SAME algorithm

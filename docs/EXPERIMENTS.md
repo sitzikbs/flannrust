@@ -34,14 +34,25 @@ toolchain check, both re-run for this document:
 was measured inside WSL2** (Windows Subsystem for Linux 2), a virtualized
 environment sharing the host's scheduler with the Windows side. WSL2
 introduces real run-to-run scheduler/thermal jitter — M1's own measurement
-found roughly **±5-10% on individual runs**, and re-running individual perf
-gates during this task showed ratios drifting by several points between
-back-to-back runs on an otherwise-idle machine (e.g. `dyn_add_20k_dim3_f32`:
-1.113 at commit time, 1.106 and 1.156 on two re-runs minutes apart; see
-`docs/benchmarks.md`'s "M2 — dynamic forest" section). The perf gates' 1.25
-margin and the median-of-7 methodology (below) both exist specifically to
-absorb this noise, not to paper over a real regression — but it is still
-noise, not a bare-metal-quality measurement.
+found roughly **±5-10% on individual runs**. Four re-runs of the dynamic
+gates across this task and its fix round (§3 has all four complete pasted
+outputs — two full six-gate runs plus two dedicated `perf_gate_dyn`-only
+runs) show this concretely on this exact machine: `dyn_add_20k_dim3_f32`
+ratio 1.113 (recorded at commit `ec9b581`) vs. **1.106**, **1.230**,
+**1.113**, and **1.117** across the four re-runs — the 1.230 figure
+sitting noticeably closer to the 1.25 gate margin than any other recorded
+or re-run figure in this repo, purely from run-to-run noise, not a code
+change (nothing in `crates/` changed across any of these runs).
+`dyn_knn_after_churn_dim3_f32` ratio 0.964 (recorded) vs. **0.945**,
+**0.946**, **0.964**, and **0.972** across the same four re-runs —
+comparatively tighter. Observed range across all four: `dyn_add`
+**1.106–1.230** (~11.2% spread), `dyn_knn_after_churn` **0.945–0.972**
+(~2.9% spread). The perf gates'
+1.25 margin and the median-of-7 methodology (below) both exist
+specifically to absorb this noise, not to paper over a real regression —
+but it is still noise, not a bare-metal-quality measurement, and this
+task's own `dyn_add` swing up to 1.230 is a concrete illustration of why
+the margin isn't set tighter.
 
 **Before any public announcement, `docs/ROADMAP.md`'s M-pub milestone
 requires a bare-metal Linux re-run** of the full evaluation, with only
@@ -158,8 +169,9 @@ PERF_GATE=1 RUSTFLAGS="-C target-cpu=native" cargo test -p xval --release \
 Expected runtime: a few seconds (each gate is a handful of timed runs on a
 fixed-size workload, not a full benchmark sweep). `--test-threads=1` is
 load-bearing here, not cosmetic: gate timings must not share the CPU with
-a sibling test's load. **Re-run for this document** (all six, one
-invocation):
+a sibling test's load.
+
+**Re-run 1, all six gates** (during this document's original drafting):
 ```
 PERF_GATE perf_gate_build_100k_dim3_f32_seq: rust=9.128ms cpp=9.254ms ratio=0.986
 PERF_GATE perf_gate_dyn_add_20k_dim3_f32: rust=3.808ms cpp=3.444ms ratio=1.106
@@ -169,20 +181,59 @@ PERF_GATE perf_gate_knn_dyn_dim8_f64_k10: rust=195.461ms cpp=179.159ms ratio=1.0
 PERF_GATE perf_gate_radius_dim3_f32: rust=4.750ms cpp=5.995ms ratio=0.792
 test result: ok. 6 passed; 0 failed
 ```
-All six pass the 1.25 margin. Comparing against `docs/benchmarks.md`'s
-recorded figures (build 1.018, `knn_fixed3` 1.042, `knn_dyn_dim8_f64_k10`
-0.973, radius 0.767, `dyn_add` 1.113, `dyn_knn_after_churn` 0.964): most
-re-run ratios above sit within a few points, consistent with ordinary WSL2
-noise (§1) — except `knn_dyn_dim8_f64_k10`, which swung further this run
-(0.973 recorded vs. **1.091** here, ~12%). Still comfortably inside the
-1.25 gate margin and not a regression (no code changed between the
-recorded run and this one — this task is documentation-only), but it's a
-larger single-run swing than the "~±5-10%" figure quoted above, and is
-itself a live illustration of exactly why the WSL2 caveat exists and why
-the gate margin is 1.25, not something tighter.
 
-To run only the two dynamic gates: append `_dyn` to the filter
-(`--ignored perf_gate_dyn`).
+**Re-run 2, all six gates** (this fix round, minutes later, no code changes
+in between):
+```
+PERF_GATE perf_gate_build_100k_dim3_f32_seq: rust=9.996ms cpp=10.039ms ratio=0.996
+PERF_GATE perf_gate_dyn_add_20k_dim3_f32: rust=4.160ms cpp=3.383ms ratio=1.230
+PERF_GATE perf_gate_dyn_knn_after_churn_dim3_f32: rust=28.971ms cpp=30.638ms ratio=0.946
+PERF_GATE perf_gate_knn_dim3_f32_k10: rust=7.235ms cpp=6.809ms ratio=1.063
+PERF_GATE perf_gate_knn_dyn_dim8_f64_k10: rust=174.158ms cpp=179.602ms ratio=0.970
+PERF_GATE perf_gate_radius_dim3_f32: rust=4.606ms cpp=5.918ms ratio=0.778
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 3.83s
+```
+
+All twelve gate invocations across both re-runs pass the 1.25 margin.
+Comparing against `docs/benchmarks.md`'s recorded figures (build 1.018,
+`knn_fixed3` 1.042, `knn_dyn_dim8_f64_k10` 0.973, radius 0.767, `dyn_add`
+1.113, `dyn_knn_after_churn` 0.964): most ratios across both re-runs sit
+within a few points of the recorded figure, consistent with ordinary WSL2
+noise (§1) — except `knn_dyn_dim8_f64_k10` in Re-run 1 (0.973 recorded vs.
+**1.091**, ~12%) and `dyn_add_20k_dim3_f32` in Re-run 2 (1.113 recorded
+vs. **1.230**, ~10.5%, and the closest any recorded run in this repo has
+come to the 1.25 gate margin). Neither is a regression — no code in
+`crates/` changed between the recorded run and either re-run, this task is
+documentation-only — but both are real, larger-than-typical single-run
+swings, and are left in this document exactly as measured rather than
+re-run until a quieter number appeared, per the same "state the observed
+min–max honestly" standard the rest of this section follows.
+
+**Re-run, dynamic gates only** (`--ignored perf_gate_dyn` filter), two
+consecutive invocations during this fix round, minutes apart:
+```
+PERF_GATE perf_gate_dyn_add_20k_dim3_f32: rust=3.787ms cpp=3.403ms ratio=1.113
+PERF_GATE perf_gate_dyn_knn_after_churn_dim3_f32: rust=29.112ms cpp=30.208ms ratio=0.964
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.56s
+```
+```
+PERF_GATE perf_gate_dyn_add_20k_dim3_f32: rust=4.229ms cpp=3.787ms ratio=1.117
+PERF_GATE perf_gate_dyn_knn_after_churn_dim3_f32: rust=29.556ms cpp=30.415ms ratio=0.972
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.58s
+```
+The first of these two matches the recorded commit-time figures (1.113/
+0.964) exactly; the second drifts a few points (1.117/0.972). Across all
+four dynamic-gate re-runs pasted in this section — these two dedicated
+runs, plus Re-run 1's and Re-run 2's dynamic rows above (all four executed
+across this task and its fix round, no code changes between any of them)
+— the observed range is **`dyn_add` 1.106–1.230** and
+**`dyn_knn_after_churn` 0.945–0.972**, stated as the honest min–max
+across every pasted run, not averaged or cherry-picked. (This matches
+`docs/benchmarks.md`'s "M2 — dynamic forest" section, which cites this
+exact same four-run range.)
+
+To run only the two dynamic gates yourself: append `_dyn` to the filter
+(`--ignored perf_gate_dyn`, as used for the two dedicated re-runs above).
 
 ### Criterion benches (full sweep — ~15 minutes; smoke forms below for a quick check)
 
@@ -237,14 +288,15 @@ O(n_queries × n) — the slowest is 2000 queries × 50,000 points); `report.jso
 is regenerated fully every run, not incrementally, so there is no cheaper
 partial-update path.  `render_report` itself is near-instant (pure
 string/template work over an already-computed JSON). **Re-run for this
-document**: both exited 0; `report.json` (41 lines of pretty JSON fields,
-~8KB compact) and `report.html` (~16KB) were regenerated; verdict tiles
-computed live from the data read:
+fix round** (exact byte counts via `wc -c`, not the block-rounded `du -h`
+figures an earlier task report used): both exited 0; `report.json` was
+**6495 bytes** (~6.3KB) and `report.html` was **14179 bytes** (~13.9KB);
+verdict tiles computed live from the data read:
 
 ```
 Accuracy @ eps=0:  ✓ 100% exact @ eps=0
 Bit-exactness:     ✓ Bit-exact vs C++ (all rows)
-Best speed win:    ✓ 1.46× faster — build_1M_dim3_f32_par
+Best speed win:    ✓ 1.58× faster — build_1M_dim3_f32_par
 ```
 
 `report_data`'s own emitted `meta` block is this run's environment
