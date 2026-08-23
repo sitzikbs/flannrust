@@ -1,0 +1,26 @@
+[package]
+name = "xval"
+edition = "2021"
+license = "BSD-2-Clause"
+publish = false
+
+[dependencies]
+nanoflann-rs = { path = "../nanoflann-rs" }
+nanoflann-ref = { path = "../nanoflann-ref" }
+rand = "0.8"
+rand_chacha = "0.3"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "bench_build"
+harness = false
+
+[[bench]]
+name = "bench_knn"
+harness = false
+
+[[bench]]
+name = "bench_radius"
+harness = false

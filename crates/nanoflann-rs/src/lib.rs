@@ -1,0 +1,80 @@
+#![warn(missing_docs)]
+// The internal `(vind, root_bbox, nodes, n)`-shaped build-result tuples
+// (`build_sequential_core` and its parallel-build/test-helper analogs)
+// are crate-private plumbing shared by exactly a handful of call sites;
+// factoring them into a named struct wouldn't make any of those call
+// sites clearer, just add a type to look up. Allowed crate-wide since the
+// pattern recurs in a few private helpers, not just one.
+#![allow(clippy::type_complexity)]
+//! Rust port of nanoflann's static kd-tree; behavioral parity with nanoflann 1.12.1
+//!
+//! # Contracts (see the README for the full list, deviations, and input domain)
+//!
+//! - `L2`/`L2Simple` distances and radii are SQUARED (`L1` is summed absolute
+//!   value); `SO2` is an UNsquared wrapped angle of only the LAST dimension
+//!   (single-shot wrap, inputs assumed already in `[-pi, pi]`).
+//! - Radius search is strictly `dist < radius` (boundary excluded); box
+//!   search is inclusive on all faces, unsorted, traversal order, no params.
+//! - kNN ties keep traversal order by default ([`result_set::KeepInsertionOrder`]);
+//!   opt into [`result_set::SmallestIndexWins`] for `NANOFLANN_FIRST_MATCH`.
+//! - `eps`: a node is visited iff `mindist * (1 + eps) <= worst_dist`, `eps`
+//!   widened to the distance type BEFORE the multiply-add.
+//! - Queries snapshot the dataset at `build()`; growth afterward is invisible
+//!   until a rebuild.
+//! - [`ResultItem`] is `#[repr(C)] { index, distance }`.
+//! - Coordinates must be finite: NaN/±inf inputs are outside this crate's
+//!   domain (see the README's "Input domain" section).
+//! - Under the default `parallel` feature, `KdTreeBuilder::build()` requires
+//!   `DataSource: Sync`; non-`Sync` data sources use
+//!   [`tree::KdTreeBuilder::build_sequential`] instead.
+//!
+//! # Example
+//!
+//! ```
+//! use nanoflann_rs::{ConstDim, KdTreeBuilder};
+//!
+//! let pts: &[[f64; 3]] = &[
+//!     [0.0, 0.0, 0.0],
+//!     [10.0, 10.0, 10.0],
+//!     [1.0, 1.0, 1.0],
+//! ];
+//! let tree = KdTreeBuilder::new(ConstDim::<3>, pts).build();
+//!
+//! let mut indices = [0u32; 2];
+//! let mut dists = [0.0f64; 2];
+//! let found = tree.knn_search(&[0.1, 0.1, 0.1], &mut indices, &mut dists);
+//!
+//! assert_eq!(found, 2);
+//! assert_eq!(indices[0], 0); // nearest point is [0.0, 0.0, 0.0]
+//! ```
+
+pub mod scalar;
+pub mod dim;
+pub mod bbox;
+pub mod data_source;
+pub mod metric;
+pub mod result_set;
+pub mod filter;
+pub mod params;
+pub mod tree;
+mod node;
+mod build;
+mod search;
+#[cfg(feature = "parallel")]
+mod build_parallel;
+
+pub use scalar::{Scalar, DistanceValue, IndexType};
+pub use dim::{Dim, ConstDim, DynDim};
+pub use bbox::Interval;
+pub use data_source::{DataSource, FlatSlice};
+pub use metric::{Distance, L1, L2, L2Simple, SO2, SO3};
+pub use result_set::{ResultItem, ResultSet, TieBreak, KeepInsertionOrder, SmallestIndexWins, KnnResultSet, RknnResultSet, RadiusResultSet};
+pub use filter::{PointFilter, AcceptAll};
+pub use params::{SearchParams, BuildThreads};
+pub use tree::{KdTree, KdTreeBuilder};
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn smoke() {}
+}

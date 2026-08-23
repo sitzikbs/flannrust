@@ -1,0 +1,4 @@
+# Benchmarks must be run with native codegen on BOTH the Rust and C++ side
+# for a fair comparison (the C++ wrapper is compiled with -march=native):
+#   RUSTFLAGS="-C target-cpu=native" cargo bench -p xval
+# Deliberately NOT set unconditionally here: tests and CI builds stay portable.

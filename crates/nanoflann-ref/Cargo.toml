@@ -1,0 +1,8 @@
+[package]
+name = "nanoflann-ref"
+edition = "2021"
+license = "BSD-2-Clause"
+publish = false
+
+[build-dependencies]
+cc = "1"
