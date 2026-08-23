@@ -136,9 +136,20 @@ the same ~1.4-1.45x ratio (1.476ms rust / 1.018ms cpp at f32/k10, vs.
 something this task's changes introduced or regressed, and dim-32 is outside
 this task's success criterion ("dim-3 f32/f64 knn and build") and the
 perf-gate's covered workloads (dim-3, dim-8 only). Documented here as a known
-gap for a future task, not fixed in M1 per this task's explicit scope
-(closing it plausibly needs SIMD/batching to amortize the per-axis L2 kernel
-over a wider dimension — out of scope, see brief).
+gap for a future task, not fixed in M1 per this task's explicit scope.
+
+**Update (M2.5-T3):** closing this gap did NOT need SIMD/batching after all.
+The root cause (diagnosed in M2.5-T1, fixed in M2.5-T3) was that
+`L2::eval`'s per-component bounds checks split the unrolled body into 8
+basic blocks, blocking LLVM's SLP vectorizer at runtime-known dim — gcc
+compiles the *identical* summation order to AVX2/AVX-512 with no reordering,
+proving the order itself was always vectorizable. A bounds-check-free
+chunked row walk (`DataSource::point_row` + `as_chunks::<4>()`, bit-exact
+with the fallback) closed dim-32 f32 from **1.423× → 0.966×** (gate-style
+knn, leaf=10, measured this session) with zero SIMD intrinsics — see
+`.superpowers/sdd/2026-08-23-nanoflann-rs-m2.5-perf/task-3-report.md`.
+Dim-64 improved substantially but not fully (1.918× → 1.228×); further
+dim-64-specific work is out of scope for M2.5-T3, which targeted dim-32.
 
 ### Remaining gap analysis: knn_fixed3 (~1.04-1.05x)
 
@@ -160,6 +171,23 @@ leaf scan confirms the eval kernel itself is now optimal post-Task-14:
   once instead of per-component `point_component` calls) at all — that fast
   path was tried as a candidate optimization, measured as a net performance
   loss once the CSE above already closed most of the gap, and reverted.
+
+  **Update (M2.5-T3, reconciling this record with what actually shipped
+  later):** the *bare* `point_row` tried here really was a net loss at
+  dim 3/8, exactly as recorded above — but that prior A/B only tested a row
+  pointer that was still indexed per-component (`row[d]`), which at
+  runtime-known dim can't be bounds-check-hoisted any better than
+  `point_component` was. M2.5-T3 re-measured `point_row` at dim 32/64 (never
+  tried here) and productionized a different lever on top of it: a
+  bounds-check-free **chunked** row walk (`as_chunks::<4>()`, computing the
+  IDENTICAL summation order so results stay bit-exact) instead of
+  `row[d]`-indexing. That closed dim-32 f32 from **1.423× → 0.966×**
+  (gate-style knn, leaf=10) without any SIMD intrinsics or reordering — see
+  `.superpowers/sdd/2026-08-23-nanoflann-rs-m2.5-perf/task-3-report.md` for
+  the full A/B. The `point_row` fast path from this Task-14 record and
+  M2.5-T3's `point_row` are the same trait method; the fix wasn't "add row
+  access", it was "make row access bounds-check-free", which needed the
+  chunked walk specifically.
 
 What's left in the ~4-5% gap is architectural, not a missed optimization in
 the hot kernel:

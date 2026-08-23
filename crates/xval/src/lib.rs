@@ -1224,6 +1224,18 @@ impl<'a, T: Scalar> DataSource<T> for &GrowableFlat<'a, T> {
     fn point_component(&self, idx: usize, dim: usize) -> T {
         self.data[idx * self.dim + dim]
     }
+
+    // Mirrors `point_component` exactly: NOT bounds-checked against
+    // `current_n` (point_component isn't either -- it indexes `self.data`
+    // directly regardless of logical size), so a row for `idx >=
+    // current_n()` behaves consistently with what `point_component` already
+    // does for the same out-of-logical-range `idx` -- it reads straight
+    // from the backing buffer, bounds-checked only against the buffer's
+    // physical capacity (`self.data.get(...)` returns `None` past that).
+    #[inline]
+    fn point_row(&self, idx: usize) -> Option<&[T]> {
+        self.data.get(idx * self.dim..idx * self.dim + self.dim)
+    }
 }
 
 // ----------------------------------------------------------------------

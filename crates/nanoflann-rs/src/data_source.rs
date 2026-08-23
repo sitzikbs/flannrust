@@ -31,7 +31,27 @@ pub trait DataSource<T: Scalar> {
     /// `dim` long -- callers that need fewer than the full row's
     /// components just read a prefix).
     ///
+    /// Behavior for `idx >= point_count()` (out-of-range) is deliberately
+    /// UNSPECIFIED by this contract -- an implementation may return `None`
+    /// (e.g. by bounds-checking against its backing buffer, as
+    /// [`FlatSlice`] does via `slice::get`) or it may return `Some` of
+    /// whatever the backing storage happens to hold at that offset (as
+    /// `&GrowableFlat` in the `xval` crate does, deliberately matching its
+    /// own [`point_component`]'s out-of-range behavior, which also doesn't
+    /// consult `point_count()`). Either is a conforming implementation:
+    /// callers of `point_row` are never expected to pass an out-of-range
+    /// `idx` in the first place (same as `point_component`'s existing
+    /// `idx < point_count()` precondition), so this is about implementors
+    /// having latitude, not about callers relying on either behavior.
+    ///
+    /// A `debug_assert`-only spot check against `point_component` guards
+    /// the row path's in-tree callers (see `metric::debug_check_point_row_
+    /// contract`) against a `point_row` implementation that silently
+    /// violates the *in-range* contract above; it does not run in release
+    /// builds and is not a soundness mechanism.
+    ///
     /// [`point_component`]: DataSource::point_component
+    /// [`FlatSlice`]: crate::data_source::FlatSlice
     #[inline]
     fn point_row(&self, _idx: usize) -> Option<&[T]> {
         None
