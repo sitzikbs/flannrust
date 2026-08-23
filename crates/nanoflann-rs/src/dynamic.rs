@@ -2,10 +2,12 @@
 //! `KDTreeSingleIndexDynamicAdaptor` (nanoflann.hpp:2521-2718) plus the
 //! sub-tree class it wraps, `KDTreeSingleIndexDynamicAdaptor_`
 //! (nanoflann.hpp:2248-2504, in particular its `buildIndex()` at
-//! nanoflann.hpp:2345-2367). This task is FOREST BOOKKEEPING ONLY —
-//! `add_points`/`remove_point`/the merge-and-rebuild schedule. Search lands
-//! in M2 Task 3; fields/paths that only matter to a future query
-//! implementation are marked `#[allow(dead_code)] // TODO(m2-task-3)`.
+//! nanoflann.hpp:2345-2367). M2 Task 2 built the FOREST BOOKKEEPING —
+//! `add_points`/`remove_point`/the merge-and-rebuild schedule. M2 Task 3
+//! (this revision) adds SEARCH: [`DynamicKdTree::find_neighbors`] (= C++'s
+//! forest `findNeighbors`, nanoflann.hpp:2704-2713) plus the additive
+//! `knn_search`/`rknn_search`/`radius_search` wrappers, all tombstone-
+//! filtered via [`TombstoneFilter`].
 //!
 //! # The forest idea
 //!
@@ -42,10 +44,15 @@ use std::marker::PhantomData;
 use crate::bbox::{compute_bounding_box_over_indices, Interval};
 use crate::data_source::DataSource;
 use crate::dim::Dim;
+use crate::filter::PointFilter;
 use crate::metric::{Distance, L2};
 use crate::node::Node;
-use crate::result_set::{KeepInsertionOrder, TieBreak};
-use crate::scalar::{IndexType, Scalar};
+use crate::params::SearchParams;
+use crate::result_set::{
+    KeepInsertionOrder, KnnResultSet, RadiusResultSet, ResultItem, ResultSet, RknnResultSet, TieBreak,
+};
+use crate::scalar::{DistanceValue, IndexType, Scalar};
+use crate::search::{find_neighbors as search_find_neighbors, SearchCtx};
 
 /// Position of the least-significant UNSET (zero) bit of `n` — nanoflann's
 /// `First0Bit` (nanoflann.hpp:2565-2574, `private` member of
@@ -98,6 +105,35 @@ struct Slot<T: Scalar, D: Dim, Idx: IndexType> {
 impl<T: Scalar, D: Dim, Idx: IndexType> Slot<T, D, Idx> {
     fn empty(dim: D) -> Self {
         Slot { vind: Vec::new(), nodes: Vec::new(), root_bbox: dim.filled(Interval::default()) }
+    }
+}
+
+/// The forest's `isActive` (nanoflann.hpp:2289: `return treeIndex_[idx] !=
+/// -1;`), wired into M1's [`PointFilter`] seam so a slot's search skips
+/// tombstoned (lazily removed) points, exactly like the C++ dynamic
+/// sub-tree adaptor.
+///
+/// # Safety note (parity deviation)
+/// `is_active` indexes `tree_index[idx.to_usize()]` directly, with no
+/// bounds check beyond what Rust's slice indexing does automatically. A
+/// LEGAL forest never yields an out-of-range `vind` entry here: every
+/// accessor a slot's leaf loop offers this filter originates from that
+/// slot's own `vind`, itself only ever populated by `add_points` with
+/// dataset indices `< tree_index.len()` at the moment they were pushed
+/// (`tree_index` is resized to cover every `idx` before it's ever written),
+/// and `tree_index` only ever grows, never shrinks or gets reordered. So a
+/// panic here can only happen if that forest-wide invariant is somehow
+/// violated by a bug elsewhere — unlike C++, where the equivalent
+/// out-of-range `treeIndex_[idx]` access would be silent undefined
+/// behavior, safe Rust panics loudly instead.
+struct TombstoneFilter<'a> {
+    tree_index: &'a [i32],
+}
+
+impl<'a, Idx: IndexType> PointFilter<Idx> for TombstoneFilter<'a> {
+    #[inline]
+    fn is_active(&self, idx: Idx) -> bool {
+        self.tree_index[idx.to_usize()] != -1
     }
 }
 
@@ -253,6 +289,26 @@ where
 /// kd-tree slots plus the bookkeeping (`tree_index`/`removed`/
 /// `point_count`) that decides which slot each dataset point currently
 /// lives in. See the module doc for the overall scheme.
+///
+/// # Example
+///
+/// ```
+/// use nanoflann_rs::{ConstDim, DynamicKdTreeBuilder};
+///
+/// let pts: Vec<[f64; 2]> = vec![[0.0, 0.0], [5.0, 5.0], [10.0, 10.0]];
+/// let mut tree = DynamicKdTreeBuilder::new(ConstDim::<2>, pts.as_slice()).build();
+///
+/// let mut idx = [0u32; 1];
+/// let mut dist = [0.0f64; 1];
+/// let found = tree.knn_search(&[0.1, 0.1], &mut idx, &mut dist);
+/// assert_eq!(found, 1);
+/// assert_eq!(idx, [0]); // nearest is [0.0, 0.0]
+///
+/// assert!(tree.remove_point(0));
+/// let found_after = tree.knn_search(&[0.1, 0.1], &mut idx, &mut dist);
+/// assert_eq!(found_after, 1);
+/// assert_eq!(idx, [1]); // [0.0, 0.0] is gone; nearest is now [5.0, 5.0]
+/// ```
 pub struct DynamicKdTree<T, D, DS, M = L2, Idx = u32, TB = KeepInsertionOrder>
 where
     T: Scalar,
@@ -263,7 +319,6 @@ where
     TB: TieBreak,
 {
     dataset: DS,
-    #[allow(dead_code)] // TODO(m2-task-3): consumed once query methods land
     metric: M,
     dim: D,
     leaf_max_size: usize,
@@ -518,6 +573,158 @@ where
         self.removed.insert(idx, self.tree_index[idx]);
         self.tree_index[idx] = -1;
         true
+    }
+
+    /// = C++ forest `findNeighbors` (nanoflann.hpp:2704-2713): calls every
+    /// slot's FULL sub-tree `findNeighbors` (nanoflann.hpp:2400-2417) in
+    /// turn, slots in ASCENDING order, against the SAME shared `result`,
+    /// tombstone-filtered via [`TombstoneFilter`]. Reuses M1's
+    /// `search::find_neighbors` verbatim per slot — that function already
+    /// re-zeroes its `dists_scratch` argument at the top of every call
+    /// (checked against both the vendored C++, whose sub-tree
+    /// `findNeighbors` constructs a fresh zeroed `distance_vector_t` on
+    /// EVERY call, nanoflann.hpp:2409-2411, and M1's actual
+    /// `search::find_neighbors` body, `for d in dists_scratch.iter_mut() {
+    /// *d = ZERO; }` at its top) — so the single `scratch` buffer below is
+    /// safely reused across every slot pass without any extra re-zeroing
+    /// here; each pass still independently computes its own initial
+    /// distances from ITS OWN slot's root bbox, honors `params.eps`, and
+    /// (a real C++ quirk, mirrored exactly, not an optimization
+    /// opportunity to skip) calls `result.sort()` again if `params.sorted`
+    /// — so with `sorted: true` and more than one non-empty slot, the
+    /// result is re-sorted after EVERY slot pass, which is harmless
+    /// (idempotent on an already-sorted set) but is the literal C++
+    /// behavior. Each slot's own `bool` return is discarded, exactly like
+    /// the C++ forest loop discards `index_[i].findNeighbors(...)`'s
+    /// return value; only the FINAL `result.full()` is returned.
+    ///
+    /// **Empty-forest quirk (inherited from nanoflann; M1 Corrections #4):**
+    /// with zero occupied slots, every slot pass hits the size-0 early
+    /// return inside `search::find_neighbors` (`ctx.nodes.is_empty()`)
+    /// without ever touching `result` — so the final `result.full()`
+    /// reflects whatever an UNTOUCHED result set naturally reports:
+    /// `false` for [`KnnResultSet`]/[`RknnResultSet`] (count `0 <`
+    /// capacity), but **`true`** for [`RadiusResultSet`] (its `full()` is
+    /// hardwired `true`, nanoflann.hpp:433, regardless of whether anything
+    /// was ever added). So calling `find_neighbors` directly with an empty
+    /// `RadiusResultSet` on an empty (or all-slots-empty) forest returns
+    /// `true` with ZERO items — this is the literal C++ contract, not a
+    /// bug. The quirk is only observable through this generic escape
+    /// hatch: the additive [`Self::radius_search`]/[`Self::radius_search_with`]
+    /// wrappers below return the found COUNT (`0` in that case), where the
+    /// quirk is invisible to callers who only use the wrapper API.
+    ///
+    /// No forest-level box search exists in the vendored C++ (only the
+    /// per-slot static class has `findWithinBox`, and it is never exposed
+    /// through the dynamic forest adaptor) — this port does not add one
+    /// either, matching upstream's surface exactly.
+    pub fn find_neighbors<R: ResultSet<M::DistanceType, Idx>>(
+        &self,
+        result: &mut R,
+        query: &[T],
+        params: &SearchParams,
+    ) -> bool {
+        let filter = TombstoneFilter { tree_index: &self.tree_index };
+        let mut scratch = self.dim.filled(M::DistanceType::ZERO);
+
+        for slot in &self.slots {
+            let ctx = SearchCtx {
+                ds: &self.dataset,
+                metric: &self.metric,
+                dim: self.dim,
+                nodes: &slot.nodes,
+                vind: &slot.vind,
+                root_bbox: slot.root_bbox.as_ref(),
+            };
+            let _ = search_find_neighbors(&ctx, result, query, params, &filter, scratch.as_mut());
+        }
+
+        result.full()
+    }
+
+    /// `k` = out slices' length (must be equal; panics otherwise). Returns
+    /// the found count. `eps = 0`, sorted — like M1's `KdTree::knn_search`.
+    /// ADDITIVE over C++ (the dynamic forest adaptor exposes only
+    /// `findNeighbors`; this wraps it with M1's naming/ergonomics, tombstone
+    /// filtering included automatically via [`Self::find_neighbors`]).
+    pub fn knn_search(&self, query: &[T], out_indices: &mut [Idx], out_dists: &mut [M::DistanceType]) -> usize {
+        self.knn_search_with(query, out_indices, out_dists, &SearchParams::default())
+    }
+
+    /// Same as [`Self::knn_search`] with explicit params.
+    pub fn knn_search_with(
+        &self,
+        query: &[T],
+        out_indices: &mut [Idx],
+        out_dists: &mut [M::DistanceType],
+        params: &SearchParams,
+    ) -> usize {
+        assert_eq!(
+            out_indices.len(),
+            out_dists.len(),
+            "knn_search: out_indices/out_dists length mismatch"
+        );
+        let mut rs = KnnResultSet::<M::DistanceType, Idx, TB>::new(out_indices, out_dists);
+        self.find_neighbors(&mut rs, query, params);
+        rs.size()
+    }
+
+    /// ADDITIVE (see [`Self::knn_search`]). `radius` is in the metric's
+    /// native scale (SQUARED for L2-family).
+    pub fn rknn_search(
+        &self,
+        query: &[T],
+        radius: M::DistanceType,
+        out_indices: &mut [Idx],
+        out_dists: &mut [M::DistanceType],
+    ) -> usize {
+        self.rknn_search_with(query, radius, out_indices, out_dists, &SearchParams::default())
+    }
+
+    /// Same as [`Self::rknn_search`] with explicit params.
+    pub fn rknn_search_with(
+        &self,
+        query: &[T],
+        radius: M::DistanceType,
+        out_indices: &mut [Idx],
+        out_dists: &mut [M::DistanceType],
+        params: &SearchParams,
+    ) -> usize {
+        assert_eq!(
+            out_indices.len(),
+            out_dists.len(),
+            "rknn_search: out_indices/out_dists length mismatch"
+        );
+        let mut rs = RknnResultSet::<M::DistanceType, Idx, TB>::new(out_indices, out_dists, radius);
+        self.find_neighbors(&mut rs, query, params);
+        rs.size()
+    }
+
+    /// ADDITIVE (see [`Self::knn_search`]). Clears `out`. STRICTLY `dist <
+    /// radius`. `eps = 0`, sorted.
+    pub fn radius_search(
+        &self,
+        query: &[T],
+        radius: M::DistanceType,
+        out: &mut Vec<ResultItem<Idx, M::DistanceType>>,
+    ) -> usize {
+        self.radius_search_with(query, radius, out, &SearchParams::default())
+    }
+
+    /// Same as [`Self::radius_search`] with explicit params. Returns the
+    /// found COUNT — the empty-forest quirk documented on
+    /// [`Self::find_neighbors`] is invisible here (`rs.size()` is `0` either
+    /// way for an untouched result set).
+    pub fn radius_search_with(
+        &self,
+        query: &[T],
+        radius: M::DistanceType,
+        out: &mut Vec<ResultItem<Idx, M::DistanceType>>,
+        params: &SearchParams,
+    ) -> usize {
+        let mut rs = RadiusResultSet::new(radius, out);
+        self.find_neighbors(&mut rs, query, params);
+        rs.size()
     }
 }
 
@@ -1090,5 +1297,395 @@ mod tests {
         assert!(tree.remove_point(1));
         tree.add_points(1, 1); // must NOT panic
         assert_eq!(tree.removed_len(), 0);
+    }
+
+    // =================================================================
+    // M2 Task 3: forest search
+    // =================================================================
+
+    struct Lcg(u64);
+    impl Lcg {
+        fn next_f64(&mut self) -> f64 {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((self.0 >> 11) as f64) / ((1u64 << 53) as f64)
+        }
+    }
+
+    /// Brute-force KNN restricted to `live[i]` points, using the SAME
+    /// `KnnResultSet` push pattern M1's own tests use (search.rs /
+    /// tree.rs's `brute_force_knn`), and `metric.eval` (not a hand-rolled
+    /// sum) so summation order matches the tree search bit-for-bit.
+    fn brute_force_knn_live<const N: usize>(
+        pts: &[[f64; N]],
+        live: &[bool],
+        query: &[f64; N],
+        k: usize,
+    ) -> (Vec<u32>, Vec<f64>) {
+        let metric = L2;
+        let mut indices = vec![0u32; k];
+        let mut dists = vec![0.0f64; k];
+        let count;
+        {
+            let mut rs = KnnResultSet::<f64, u32>::new(&mut indices, &mut dists);
+            for (i, &is_live) in live.iter().enumerate() {
+                if !is_live {
+                    continue;
+                }
+                let d = metric.eval(query.as_slice(), &pts, i, ConstDim::<N>);
+                rs.add_point(d, i as u32);
+            }
+            count = rs.size();
+        }
+        indices.truncate(count);
+        dists.truncate(count);
+        (indices, dists)
+    }
+
+    /// Brute-force RKNN restricted to `live[i]` points: all live points
+    /// within `radius` (strict `<`), closest `k` first, tie-broken by index
+    /// (irrelevant on this test's tie-free data, kept for determinism).
+    fn brute_force_rknn_live<const N: usize>(
+        pts: &[[f64; N]],
+        live: &[bool],
+        query: &[f64; N],
+        radius: f64,
+        k: usize,
+    ) -> (Vec<u32>, Vec<f64>) {
+        let metric = L2;
+        let mut scored: Vec<(f64, u32)> = (0..pts.len())
+            .filter(|&i| live[i])
+            .map(|i| (metric.eval(query.as_slice(), &pts, i, ConstDim::<N>), i as u32))
+            .filter(|&(d, _)| d < radius)
+            .collect();
+        scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap().then(a.1.cmp(&b.1)));
+        scored.truncate(k);
+        let indices = scored.iter().map(|&(_, i)| i).collect();
+        let dists = scored.iter().map(|&(d, _)| d).collect();
+        (indices, dists)
+    }
+
+    /// Brute-force radius set restricted to `live[i]` points, sorted
+    /// ascending by distance (then index) -- mirrors search.rs's
+    /// `brute_force_radius`.
+    fn brute_force_radius_live<const N: usize>(
+        pts: &[[f64; N]],
+        live: &[bool],
+        query: &[f64; N],
+        radius: f64,
+    ) -> Vec<(u32, f64)> {
+        let metric = L2;
+        let mut out: Vec<(u32, f64)> = (0..pts.len())
+            .filter(|&i| live[i])
+            .filter_map(|i| {
+                let d = metric.eval(query.as_slice(), &pts, i, ConstDim::<N>);
+                if d < radius { Some((i as u32, d)) } else { None }
+            })
+            .collect();
+        out.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap().then(a.0.cmp(&b.0)));
+        out
+    }
+
+    // ---------------------------------------------------------------
+    // T3 Test 1: removed points never returned
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn removed_points_never_returned_by_knn_or_radius() {
+        let pts: Vec<[f64; 2]> = (0..20).map(|i| [i as f64, (i * 2) as f64]).collect();
+        let pts_slice: &[[f64; 2]] = pts.as_slice();
+        let mut tree = DynamicKdTreeBuilder::new(ConstDim::<2>, pts_slice)
+            .maximum_point_count(1000)
+            .build();
+
+        let removed_indices = [1usize, 3, 5, 7, 9, 11, 13];
+        for &i in &removed_indices {
+            assert!(tree.remove_point(i));
+        }
+        assert_eq!(tree.active_count(), 13);
+
+        let mut idx = [0u32; 20];
+        let mut dist = [0.0f64; 20];
+        let found = tree.knn_search(&[0.0, 0.0], &mut idx, &mut dist);
+        assert_eq!(found, 13, "knn(k=20) over 13 live points must return exactly 13");
+        for &i in &idx[..found] {
+            assert!(!removed_indices.contains(&(i as usize)), "removed point {i} leaked into knn results");
+        }
+
+        let mut radius_out = Vec::new();
+        let radius_found = tree.radius_search(&[0.0, 0.0], 1_000_000.0, &mut radius_out);
+        assert_eq!(radius_found, 13, "radius over everything must return exactly the 13 live points");
+        for item in &radius_out {
+            assert!(
+                !removed_indices.contains(&(item.index as usize)),
+                "removed point leaked into radius results"
+            );
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // T3 Test 2: filtered brute-force equality (tie-free data)
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn filtered_brute_force_equality_100_points_dim3_random_removals() {
+        // Random continuous-valued coordinates are tie-free with
+        // overwhelming probability. NOTE: multi-slot forest traversal order
+        // can genuinely differ from a single static tree's order
+        // specifically ON TIES (each slot pass restarts its own
+        // mindist/eps bookkeeping from its own root bbox) -- this test's
+        // data is effectively tie-free, so exact index + bit-equal-distance
+        // equality against a brute force is a safe assertion here.
+        // Cross-language (C++ oracle) tie parity is Task 4's job, not this
+        // one.
+        let mut rng = Lcg(0xF0A_15E7u64);
+        let n = 100;
+        let pts: Vec<[f64; 3]> = (0..n)
+            .map(|_| {
+                [
+                    rng.next_f64() * 200.0 - 100.0,
+                    rng.next_f64() * 200.0 - 100.0,
+                    rng.next_f64() * 200.0 - 100.0,
+                ]
+            })
+            .collect();
+        let pts_slice: &[[f64; 3]] = pts.as_slice();
+
+        let mut tree = DynamicKdTreeBuilder::new(ConstDim::<3>, pts_slice)
+            .maximum_point_count(1000)
+            .build();
+
+        let mut live = vec![true; n];
+        for (i, live_i) in live.iter_mut().enumerate() {
+            if rng.next_f64() < 0.3 {
+                assert!(tree.remove_point(i));
+                *live_i = false;
+            }
+        }
+
+        for _case in 0..15 {
+            let query = [
+                rng.next_f64() * 200.0 - 100.0,
+                rng.next_f64() * 200.0 - 100.0,
+                rng.next_f64() * 200.0 - 100.0,
+            ];
+            let k = 10;
+
+            let mut idx = vec![0u32; k];
+            let mut dist = vec![0.0f64; k];
+            let found = tree.knn_search(&query, &mut idx, &mut dist);
+            let (want_idx, want_dist) = brute_force_knn_live(pts_slice, &live, &query, k);
+            assert_eq!(found, want_idx.len());
+            assert_eq!(&idx[..found], want_idx.as_slice());
+            assert_eq!(&dist[..found], want_dist.as_slice());
+
+            let radius = 5000.0;
+            let mut ridx = vec![0u32; k];
+            let mut rdist = vec![0.0f64; k];
+            let rfound = tree.rknn_search(&query, radius, &mut ridx, &mut rdist);
+            let (want_ridx, want_rdist) = brute_force_rknn_live(pts_slice, &live, &query, radius, k);
+            assert_eq!(rfound, want_ridx.len());
+            assert_eq!(&ridx[..rfound], want_ridx.as_slice());
+            assert_eq!(&rdist[..rfound], want_rdist.as_slice());
+
+            let mut radius_out = Vec::new();
+            tree.radius_search(&query, radius, &mut radius_out);
+            let want_radius = brute_force_radius_live(pts_slice, &live, &query, radius);
+            let got_radius: Vec<(u32, f64)> = radius_out.iter().map(|it| (it.index, it.distance)).collect();
+            assert_eq!(got_radius, want_radius);
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // T3 Test 3: reactivated point returned again, same distance bits
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn reactivated_point_is_returned_again_with_same_distance_bits() {
+        let pts: Vec<[f64; 2]> = vec![[0.0, 0.0], [3.0, 4.0], [10.0, 10.0], [-5.0, -5.0]];
+        let pts_slice: &[[f64; 2]] = pts.as_slice();
+        let mut tree = DynamicKdTreeBuilder::new(ConstDim::<2>, pts_slice)
+            .maximum_point_count(1000)
+            .build();
+
+        let query = [0.0, 0.0];
+        let expected_dist = L2.eval(query.as_slice(), &pts_slice, 1, ConstDim::<2>);
+
+        assert!(tree.remove_point(1));
+
+        let mut idx = [0u32; 4];
+        let mut dist = [0.0f64; 4];
+        let found = tree.knn_search(&query, &mut idx, &mut dist);
+        assert!(!idx[..found].contains(&1), "removed point must not be found by query");
+
+        // Reactivation: `start == 1` is not `point_count` (4) at call time,
+        // but every index in `1..=1` is a reactivation, so this is
+        // contiguity-legal (see `add_points`'s doc comment).
+        tree.add_points(1, 1);
+
+        let mut idx2 = [0u32; 4];
+        let mut dist2 = [0.0f64; 4];
+        let found2 = tree.knn_search(&query, &mut idx2, &mut dist2);
+        let pos = idx2[..found2]
+            .iter()
+            .position(|&i| i == 1)
+            .expect("reactivated point must be found again");
+        assert_eq!(
+            dist2[pos], expected_dist,
+            "reactivated point's distance must be bit-identical to its pre-removal distance"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // T3 Test 4: empty-forest quirk
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn empty_forest_quirk_true_for_radius_false_for_knn_zero_for_radius_search_wrapper() {
+        let pts: Vec<[f64; 2]> = Vec::new();
+        let pts_slice: &[[f64; 2]] = pts.as_slice();
+        let tree = DynamicKdTreeBuilder::new(ConstDim::<2>, pts_slice)
+            .maximum_point_count(1000)
+            .build();
+        assert_eq!(tree.active_count(), 0);
+
+        let mut idx = [0u32; 3];
+        let mut dist = [0.0f64; 3];
+        let mut knn_rs = KnnResultSet::<f64, u32>::new(&mut idx, &mut dist);
+        let full = tree.find_neighbors(&mut knn_rs, &[0.0, 0.0], &SearchParams::default());
+        assert!(!full, "KNN find_neighbors on an empty forest must return false");
+        assert_eq!(knn_rs.size(), 0);
+
+        // Inherited nanoflann quirk (M1 Corrections #4):
+        // `RadiusResultSet::full()` is HARDWIRED true (nanoflann.hpp:433)
+        // regardless of whether anything was ever added -- so an empty
+        // forest (zero slot passes ever touch `result`) still reports
+        // `find_neighbors(..) == true`, with ZERO items. This is the
+        // literal C++ contract, not a bug; it's only observable through
+        // this generic escape hatch (the `radius_search` wrapper below
+        // returns the found COUNT and hides the quirk).
+        let mut items = Vec::new();
+        let mut radius_rs = RadiusResultSet::new(100.0, &mut items);
+        let radius_full = tree.find_neighbors(&mut radius_rs, &[0.0, 0.0], &SearchParams::default());
+        assert!(radius_full, "RadiusResultSet::full() is hardwired true -- the quirk");
+        assert_eq!(items.len(), 0);
+
+        let mut out = Vec::new();
+        let count = tree.radius_search(&[0.0, 0.0], 100.0, &mut out);
+        assert_eq!(count, 0, "the additive radius_search wrapper returns the COUNT, hiding the quirk");
+    }
+
+    // ---------------------------------------------------------------
+    // T3 Test 5: multi-slot correctness, then forced merge
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn multi_slot_correctness_spanning_two_slots_then_merged() {
+        let pts: Vec<[f64; 2]> = vec![[0.0, 0.0], [5.0, 5.0], [-3.0, 2.0], [8.0, -1.0]];
+        let pts_slice: &[[f64; 2]] = pts.as_slice();
+
+        let ds = Ungated(pts.clone());
+        let mut tree = DynamicKdTreeBuilder::new(ConstDim::<2>, ds)
+            .maximum_point_count(1000)
+            .build();
+
+        // 3 points -> first0bit(0)=0, first0bit(1)=1, first0bit(2)=0:
+        // slot0=[2], slot1=[0,1] -- 2 slots simultaneously occupied (see
+        // `add_4_points_one_batch_matches_first0bit_slot_occupancy` above
+        // for the same derivation one step further).
+        tree.add_points(0, 2);
+
+        assert!(!tree.point_indices_of_slot(0).is_empty(), "slot 0 must be occupied");
+        assert!(!tree.point_indices_of_slot(1).is_empty(), "slot 1 must be occupied");
+        assert!(tree.point_indices_of_slot(2).is_empty());
+
+        let query = [1.0, 1.0];
+        let k = 3;
+        let mut idx = vec![0u32; k];
+        let mut dist = vec![0.0f64; k];
+        let found = tree.knn_search(&query, &mut idx, &mut dist);
+        let (want_idx, want_dist) = brute_force_knn_live(pts_slice, &[true, true, true, false], &query, k);
+        assert_eq!(found, 3);
+        assert_eq!(idx, want_idx.as_slice());
+        assert_eq!(dist, want_dist.as_slice());
+
+        // Force a merge: the 4th point's pos = first0bit(3) = 2, which
+        // absorbs slot0 AND slot1's entire contents into slot2.
+        tree.add_points(3, 3);
+
+        assert!(tree.point_indices_of_slot(0).is_empty());
+        assert!(tree.point_indices_of_slot(1).is_empty());
+        assert!(!tree.point_indices_of_slot(2).is_empty(), "everything merged into slot 2");
+
+        let k2 = 4;
+        let mut idx2 = vec![0u32; k2];
+        let mut dist2 = vec![0.0f64; k2];
+        let found2 = tree.knn_search(&query, &mut idx2, &mut dist2);
+        let (want_idx2, want_dist2) = brute_force_knn_live(pts_slice, &[true; 4], &query, k2);
+        assert_eq!(found2, 4);
+        assert_eq!(idx2, want_idx2.as_slice());
+        assert_eq!(dist2, want_dist2.as_slice());
+    }
+
+    // ---------------------------------------------------------------
+    // T3 Test 6: eps plumbing
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn eps_plumbing_zero_matches_brute_force_ten_returns_valid_member() {
+        let pts: Vec<[f64; 2]> = vec![[0.0, 0.0], [5.0, 5.0], [-3.0, 2.0]];
+        let pts_slice: &[[f64; 2]] = pts.as_slice();
+        let tree = DynamicKdTreeBuilder::new(ConstDim::<2>, pts_slice)
+            .maximum_point_count(1000)
+            .build();
+
+        // 3 points -> slot0=[2], slot1=[0,1]: 2 simultaneously-occupied slots.
+        assert!(!tree.point_indices_of_slot(0).is_empty());
+        assert!(!tree.point_indices_of_slot(1).is_empty());
+
+        let query = [1.0, 1.0];
+        let k = 1;
+
+        let params_zero = SearchParams { eps: 0.0, sorted: true };
+        let mut idx0 = [0u32; 1];
+        let mut dist0 = [0.0f64; 1];
+        tree.knn_search_with(&query, &mut idx0, &mut dist0, &params_zero);
+        let (want_idx, want_dist) = brute_force_knn_live(pts_slice, &[true; 3], &query, k);
+        assert_eq!(idx0.as_slice(), want_idx.as_slice(), "eps=0 must match brute force exactly");
+        assert_eq!(dist0.as_slice(), want_dist.as_slice());
+
+        let params_eps = SearchParams { eps: 10.0, sorted: true };
+        let mut idx_eps = [0u32; 1];
+        let mut dist_eps = [0.0f64; 1];
+        let found = tree.knn_search_with(&query, &mut idx_eps, &mut dist_eps, &params_eps);
+        assert_eq!(found, 1);
+        assert!(
+            (idx_eps[0] as usize) < pts.len(),
+            "approximate result must still be a member of the live set"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // T3 Test 7: sorted radius across slots
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn sorted_radius_search_ascending_across_slots() {
+        let pts: Vec<[f64; 2]> = vec![[0.0, 0.0], [5.0, 5.0], [-3.0, 2.0], [8.0, -1.0]];
+        let ds = Ungated(pts.clone());
+        let mut tree = DynamicKdTreeBuilder::new(ConstDim::<2>, ds)
+            .maximum_point_count(1000)
+            .build();
+        tree.add_points(0, 2); // slot0=[2], slot1=[0,1] -- 2 occupied slots
+        assert!(!tree.point_indices_of_slot(0).is_empty());
+        assert!(!tree.point_indices_of_slot(1).is_empty());
+
+        let mut out = Vec::new();
+        let params = SearchParams { eps: 0.0, sorted: true };
+        tree.radius_search_with(&[1.0, 1.0], 1000.0, &mut out, &params);
+        let dists: Vec<f64> = out.iter().map(|it| it.distance).collect();
+        let mut sorted = dists.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert_eq!(dists, sorted, "sorted=true must yield ascending distances across multiple slot passes");
+        assert!(out.len() >= 2, "test must actually exercise multiple slots' worth of results");
     }
 }
