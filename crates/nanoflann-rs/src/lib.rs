@@ -43,6 +43,10 @@
 //!   reflects an untouched result set — `false` for knn/rknn, but
 //!   hardwired `true` for [`result_set::RadiusResultSet`] regardless of
 //!   whether anything was ever added.
+//! - The dim-32/64 `L2`/`L1` kernel speedup (M2.5, see the README's
+//!   "dim-32/64 knn" section) requires the `DataSource` impl to override
+//!   [`data_source::DataSource::point_row`]; a `DataSource` that only
+//!   implements `point_component` gets none of it, at any dimensionality.
 //!
 //! # Example
 //!

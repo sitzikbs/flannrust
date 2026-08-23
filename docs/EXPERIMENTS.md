@@ -527,6 +527,117 @@ Both clean under Stacked Borrows and Tree Borrows — no UB detected in
 `FrameStack`'s `unsafe` code, including under the real spill path
 (`spill_boundary_deep_tree_knn_and_radius_match_brute_force`).
 
+**Provenance flag on the identical `488.12s` figures above**: both lines
+were genuinely pasted from real runs at the time this subsection was
+written, but the whole-branch final review correctly flagged that two
+independent ~8-minute interpreted runs reporting the exact same duration
+to the centisecond is implausible on its face and warranted a fresh,
+skeptical re-capture — see the "M2.5 final-review fix wave" subsection
+immediately below for that re-capture and the (surprising, but
+documented) explanation: the two runs' *real* host wall-clock times do
+differ substantially, but miri's own internal elapsed-time report does
+not, for a specific, reproducible reason.
+
+### M2.5 final-review fix wave: miri provenance re-capture + dim-16 CSV (commit `d1e309e`+)
+
+Both miri commands (§3's "Miri" subsection) were re-run FRESH for this fix
+wave, this time each wrapped in the shell's own `time` to capture genuine
+host wall-clock duration independent of whatever the interpreted test
+binary itself reports, specifically to settle the "centisecond-identical"
+provenance concern raised against the M2.5-task-4 figures above.
+
+```
+$ time (cargo +nightly miri test -p nanoflann-rs --lib -- search)
+test result: ok. 34 passed; 0 failed; 1 ignored; 0 measured; 152 filtered out; finished in 488.12s
+( cargo +nightly miri test -p nanoflann-rs --lib -- search ) 154.14s user 0.18s system 99% cpu 2:34.36 total
+
+$ time (MIRIFLAGS="-Zmiri-tree-borrows" cargo +nightly miri test -p nanoflann-rs --lib -- search)
+test result: ok. 34 passed; 0 failed; 1 ignored; 0 measured; 152 filtered out; finished in 488.12s
+( MIRIFLAGS="-Zmiri-tree-borrows" cargo +nightly miri test -p nanoflann-rs --lib -- search ) 264.26s user 0.77s system 99% cpu 4:26.15 total
+```
+
+**These two runs are genuinely different measurements, and they DO
+differ** — just not in the field the earlier documentation round pasted.
+Real host wall-clock time: Stacked Borrows **2:34.36 (154.36s)**, Tree
+Borrows **4:26.15 (266.15s)** — a 1.7x spread, consistent with Tree
+Borrows' stricter aliasing model doing genuinely more interpreter work per
+memory access. The `test result: ... finished in 488.12s` line, by
+contrast, is identical across both runs (and matches the M2.5-task-4
+figures above too) — **not** because the number was copy-pasted or the
+run wasn't real, but because that duration is computed *inside* miri's
+interpreted sandbox via `Instant`/`SystemTime`, and miri's default
+isolation mode (undoing this needs `-Zmiri-disable-isolation`, not used
+here or previously) advances the interpreted program's synthetic clock
+deterministically from the instruction stream rather than sampling the
+real system clock — so two runs that execute the identical 34-test
+sequence in the identical order report the identical synthetic elapsed
+time, regardless of how long the interpretation actually took on the host.
+Net conclusion: no UB in either run (both `ok`, both `34 passed; 0 failed;
+1 ignored`), and the identical `488.12s` reported by miri's own harness is
+an artifact of miri's clock isolation, not evidence of a stale or reused
+number — confirmed here by wrapping both commands in a real, host-side
+timer that shows genuinely different elapsed times.
+
+**`m25_diag knn` dim-16 rows (M8/I4b — previously published without their
+pasted CSV)**: the README's/`docs/benchmarks.md`'s in-passing mention of
+dim-16's "~76–88ms vs. dim-8's ~3.2–3.5ms" cited both M2.5-task-4 runs but
+never pasted the underlying rows. Fresh run below (`RUSTFLAGS="-C
+target-cpu=native" cargo run -p xval --release --example m25_diag -- knn`,
+same n=100k/200-queries/k=10/leaf=10 methodology as the dim-32/64 table),
+CPU otherwise idle (no background miri/benchmark process running):
+
+```
+dim,scalar,rust_ms,cpp_ms,ratio
+8,f32,3.547,3.933,0.902
+8,f64,3.322,3.632,0.915
+16,f32,76.148,115.954,0.657
+16,f64,87.086,95.623,0.911
+32,f32,199.066,200.189,0.994
+32,f64,360.144,324.031,1.111
+64,f32,384.852,329.154,1.169
+64,f64,681.040,773.105,0.881
+```
+
+(dim-32/64 rows included here too since this was a fresh full run of the
+same command that produces the README's/`docs/benchmarks.md`'s headline
+table — consistent with those, modulo ordinary WSL2 run-to-run swing.)
+
+Confirms the previously-cited ranges (dim-8 ~3.3–3.5ms, dim-16 ~76–87ms —
+inside the earlier "~76–88ms vs ~3.2–3.5ms" characterization) with the
+actual pasted numbers now on record. `ratio` stays a Rust win at every
+row above (dim-16 f32's 0.657 is the widest margin of the whole table this
+run — still the same shared traversal-cost cliff discussed below, not a
+Rust-vs-C++ regression: both sides pay the near-half-dataset scan, Rust
+just pays it somewhat faster this run).
+
+**M8 — curse-of-dimensionality hypothesis test (`m25_diag count`, dim 16
+added to the existing sweep)**: fresh run, `RUSTFLAGS="-C
+target-cpu=native" cargo run -p xval --release --example m25_diag --
+count` (n=100k, leaf=10, 1000 queries per dim, `frac_points_scanned` =
+mean leaf-scan evaluations per query divided by n):
+
+```
+dim,leaf,scalar,queries,eval_per_query,interior_per_query,frac_points_scanned
+3,10,f32,1000,66.0,29.1,0.0007
+8,10,f32,1000,1756.7,540.4,0.0176
+16,10,f32,1000,48748.2,9515.9,0.4875
+32,10,f32,1000,99999.9,14438.7,1.0000
+```
+
+**Confirmed, not just plausible**: `frac_points_scanned` jumps from 1.76%
+at dim 8 to **48.75% at dim 16** (a ~27.7x increase) en route to an
+exhaustive 100.00% scan at dim 32. The evaluated-fraction ratio (~27.7x)
+lines up closely with the dim-16-vs-dim-8 rust_ms timing ratio measured
+just above (76.148/3.547 ≈ 21.5x f32, 87.086/3.322 ≈ 26.2x f64) — close
+enough that the evaluated-fraction jump is sufficient on its own to
+explain the timing cliff, with no separate code-path anomaly required.
+This upgrades the dim-16 lead from "undiagnosed" to a confirmed mechanism:
+garden-variety curse-of-dimensionality (the kd-tree's pruning bound
+degrades and the search degenerates toward a near-exhaustive scan well
+before dim 32's
+already-known 100% scan), not a bug or regression. See
+`docs/ROADMAP.md`'s M2.5 future-perf-leads list for the updated framing.
+
 ### Criterion benches (full sweep — ~15 minutes; smoke forms below for a quick check)
 
 ```
@@ -595,9 +706,23 @@ Best speed win:    ✓ 1.47× faster — build_1M_dim3_f32_par
 (Superseded, kept for context: a prior documentation round, pre-M2.5,
 recorded `report.json` 6495 bytes / `report.html` **14179** bytes and a
 **1.58×** best-speed-win tile — the 2-byte HTML difference and the win-tile
-delta both trace to ordinary WSL2 run-to-run timing noise moving which
-speed row reports the widest margin, not a code or methodology change
-between the two snapshots.)
+delta both trace to ordinary WSL2 run-to-run timing noise on the SAME
+speed row, `build_1M_dim3_f32_par`, not a different row taking over the
+"best speed win" title, and not a code or methodology change between the
+two snapshots.)
+
+**Reconciling this tile's 1.47–1.58× against the criterion-table "roughly
+1.75x faster" claim (both `build_1M_dim3_f32_par`)**: same workload,
+different methodology, not a contradiction. The criterion figure is the
+statistically-modeled result of `cargo bench` (hundreds of iterations,
+outlier rejection, warm-up); the scorecard tile is `report_data`'s own
+`timed_median_ms` (one warmup + median of 7 raw wall-clock runs, the same
+lighter-weight methodology used throughout this doc's perf-gate sections)
+— a smaller, noisier sample that swings a few tenths of an x-factor
+run-to-run on this WSL2 host, which is exactly the 1.47–1.58× spread seen
+above. Both stay on the same side of "substantially faster"; neither
+number is wrong, they're just two different measurement instruments
+pointed at the same workload.
 
 `report_data`'s own emitted `meta` block is this run's environment
 fingerprint (see §1's table — those values were read directly from this
@@ -720,6 +845,9 @@ ranges, not these).
 | **M2.5 dim-32/64 final ranges** (dim32 f32 0.966–1.008, dim32 f64 1.103–1.111, dim64 f32 1.162–1.171, dim64 f64 0.879–0.887 — README "dim-32/64 knn" table, `docs/benchmarks.md` M2.5 dim-32/64 table) | `cargo run -p xval --release --example m25_diag -- knn`, §3, "M2.5 task 4" subsection | stdout CSV, `dim,scalar,rust_ms,cpp_ms,ratio` rows for dim 32/64 |
 | M2.5 test-status counts (359 passed / 0 failed / 15 ignored; `--no-default-features` 179/0/3; heavy suite 0 failed, 151.80s) | Full test suite + heavy suite + `--no-default-features` commands, §3, "M2.5 task 4" subsection | terminal `test result:` lines |
 | Miri clean (Stacked Borrows + Tree Borrows, re-run for M2.5 task 4) | Miri commands, §3 | terminal `test result: ok. 34 passed; 0 failed; 1 ignored` for each aliasing model |
+| Miri re-capture, final-review fix wave (real host wall-clock 2:34.36 vs 4:26.15, `test result:` line's `488.12s` identical both times — clock-isolation artifact, not a stale/reused number) | Miri commands each wrapped in `time`, §3, "M2.5 final-review fix wave" subsection | terminal `time` output + `test result:` line, both commands |
+| dim-16 knn CSV rows (rust_ms/cpp_ms/ratio, f32+f64 — previously cited only as a range, never pasted) | `cargo run -p xval --release --example m25_diag -- knn`, §3, "M2.5 final-review fix wave" subsection | stdout CSV, `dim,scalar,rust_ms,cpp_ms,ratio` rows for dim 16 |
+| M8 curse-of-dimensionality confirmation (`frac_points_scanned` 0.0176 dim8 → 0.4875 dim16 → 1.0000 dim32) | `cargo run -p xval --release --example m25_diag -- count`, §3, "M2.5 final-review fix wave" subsection | stdout CSV, `dim,leaf,scalar,queries,eval_per_query,interior_per_query,frac_points_scanned` rows |
 | Churned-forest accuracy row (1.0/1.0/bit-exact at eps=0) | Report chain, §3 | `report.json`'s `accuracy[].workload == "dyn_churn_dim3_f32_k10_eps0"`: `rust_exact_tie_aware_vs_bruteforce`, `cpp_exact_tie_aware_vs_bruteforce`, `rust_eq_cpp_bitexact` |
 | Static accuracy rows (uniform/with_duplicates, eps ∈ {0, 0.1, 1}) | Report chain, §3 | `report.json`'s `accuracy[]` array, one row per `{dataset}_dim{d}_f32_k10_eps{e}` workload |
 | `knn_fixed3` headline table (k=1/10/100, f32/f64) | Full criterion sweep (§3; smoke form shown covers `k10/f32`) | `bench_knn.rs`'s `knn_fixed3/{lib}/{scalar}/k{k}` groups |

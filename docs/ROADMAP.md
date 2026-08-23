@@ -60,16 +60,31 @@ Full sweep, provenance, and every pasted run: `docs/benchmarks.md` +
   query/kernel hot paths only.
 - Dim-16 knn shows a large, repeatable (T4's task-4 sweep, both runs) jump
   versus dim-8 (~76–88ms vs. ~3.2–3.5ms at this dataset/leaf-size
-  combination) that no M2.5 task diagnosed — flagged, not chased, out of
-  T1/T3's dim-32/64 scope; needs profiling before it's understood as a
-  real cliff vs. an artifact of this specific workload shape.
+  combination). **Confirmed mechanism (final-review fix wave, `m25_diag
+  count` at dim 16)**: curse-of-dimensionality traversal blowup, not a
+  code-path anomaly — `frac_points_scanned` (evaluated fraction of the
+  100k-point dataset per query, n=100k/leaf=10/1000 queries) jumps from
+  0.0176 at dim 8 to **0.4875 at dim 16** (~27.7x), en route to 1.0000
+  (exhaustive scan) at dim 32; the evaluated-fraction ratio (~27.7x) lines
+  up with the observed timing ratio (~22–27x), so the fraction jump is
+  sufficient to explain the timing cliff on its own, no separate code-path
+  issue needed. Full pasted run: `docs/EXPERIMENTS.md`'s "M2.5 final-review
+  fix wave" subsection. Not chased further this wave (out of T1/T3's
+  dim-32/64 scope; a future perf task could still target the traversal
+  itself at this dimensionality, now that the mechanism is known).
 - `radius_dim3_f32` has drifted worse across three consecutive
   measurement rounds — 0.767 (milestone-start-recorded) → 0.777 (post-T3)
   → 0.827–0.828 (post-T2/final, T4) — each individual step a reviewed,
   justified trade-off, but the monotonic direction across rounds is a
   watch-item for any future perf-tuning pass touching the query hot path:
   still a comfortable Rust win vs. C++ today, but worth checking this gate
-  specifically before it accumulates further.
+  specifically before it accumulates further. **Pre-announcement
+  re-measure mandate**: before M-pub's bare-metal re-run is published,
+  re-measure `radius_dim3_f32` with 8 interleaved repeats (the T2 rigor
+  mandate's methodology, not a single before/after pair) to confirm
+  whether the drift is a real continuing trend or has settled inside the
+  noise band — don't publish the 0.827–0.828 figure as final without that
+  check.
 
 ## M-py — Python bindings (user directive, 2026-08-22: "most people use Python these days")
 
@@ -80,6 +95,7 @@ Goal: make nanoflann-rs usable from Python so it can replace the common Python r
 - Benchmarks vs `scipy.spatial.cKDTree` and `pynanoflann` on the same seeded datasets — these are the numbers Python users care about; extend the report generator with a Python section.
 - Correctness: cross-validate the bindings against the Rust core (bit-exact) and against brute force.
 - Packaging: wheels via maturin, CI matrix later.
+- **API lead**: ship a row-major `Vec<T>`-backed `DataSource` impl (analogous to `FlatSlice` but owned) with `point_row` pre-overridden, so Python-bound NumPy buffers (row-major by default) get the M2.5 dim-32/64 kernel speedup for free instead of silently falling back to the per-component loop — see `crates/nanoflann-rs/src/data_source.rs`'s `point_row` doc comment for the precondition this closes.
 
 ## M-pub — Announcement readiness (blog post + repo launch)
 
@@ -87,6 +103,6 @@ Cross-the-t's checklist before anything public:
 - **Re-run the full evaluation on bare-metal Linux** (current numbers are WSL2; ±3–4% noise documented). Publish only the bare-metal numbers; keep WSL2 as a secondary data point.
 - **Claims audit**: every performance/parity sentence in the post traces to the generated report + EXPERIMENTS.md; independent re-review of the draft post against the data.
 - **Licensing/attribution**: nanoflann is BSD-2-Clause — vendored header retains its license text; README + post credit Blanco-Claraco et al. and link upstream; our LICENSE chosen (BSD-2 to match, or MIT/Apache-2.0 dual — decide explicitly).
-- **CI**: GitHub Actions running the workspace tests + `--no-default-features` + (nightly job) heavy/ignored tests and perf gates on a dedicated runner.
+- **CI**: GitHub Actions running the workspace tests + `--no-default-features` + (nightly job) heavy/ignored tests and perf gates on a dedicated runner. **The miri job is required, not optional**: `search.rs`'s `FrameStack` (M2.5 task 2) is this crate's first `unsafe` code, and both aliasing models (Stacked Borrows + Tree Borrows, `crates/nanoflann-rs -- search`, see `docs/EXPERIMENTS.md`'s "Miri" subsection) must stay green on every change that touches `search.rs`, not just at milestone close-out — a nightly-only or manual-only miri run would let a regression sit undetected for however long the interval is.
 - **crates.io publish dry run**, docs.rs rendering check, README badges honest (no green-checkmark theater).
 - Blog post draft: the story is (1) bit-exact parity as a verification method (in-process oracle, tree-permutation equality, mutation canaries), (2) the wins (1.7× parallel build, 1.2–1.3× radius, M2.5's dim-32 fix), (3) honest residuals (dim-64/dim-32-f64 still open, the fixed-dim-3 last ~1-4%, and the M2.5 T2 trade-off — dim8/radius gave back margin in exchange for the fixed-dim-3 win, the churn win, and stack-overflow immunity) — credibility comes from publishing the losses too.

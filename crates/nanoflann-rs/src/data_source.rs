@@ -50,6 +50,16 @@ pub trait DataSource<T: Scalar> {
     /// violates the *in-range* contract above; it does not run in release
     /// builds and is not a soundness mechanism.
     ///
+    /// **Performance note (M2.5)**: overriding this is also the precondition
+    /// for the dim-32/64 `L2`/`L1` kernel speedup (a bounds-check-free
+    /// chunked row walk over the slice this method returns, see the
+    /// README's "dim-32/64 knn" section and `docs/benchmarks.md`'s "M2.5 —
+    /// performance deep-dive"). A `DataSource` that only implements
+    /// [`point_component`] falls back to the per-component loop at every
+    /// dimensionality and gets none of that fix — the built-in
+    /// [`FlatSlice`] and `&[[T; N]]` impls both override this method for
+    /// exactly that reason.
+    ///
     /// [`point_component`]: DataSource::point_component
     /// [`FlatSlice`]: crate::data_source::FlatSlice
     #[inline]

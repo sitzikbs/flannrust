@@ -306,25 +306,34 @@ in `docs/EXPERIMENTS.md`, milestone-by-milestone comparison in
 | Workload | Ratio range (2 fresh runs) |
 |---|---|
 | `build_100k_dim3_f32_seq` | 0.974–1.079 |
-| `knn_fixed3_dim3_f32_k10` | 1.011–1.040 |
+| `knn_fixed3_dim3_f32_k10`¹ | 1.011–1.040 |
 | `knn_dyn_dim8_f64_k10` | 0.950–0.966 |
 | `radius_dim3_f32` | 0.827–0.828 |
 | `dyn_add_20k_dim3_f32` | 1.121–1.170 |
 | `dyn_knn_after_churn_dim3_f32` | 0.873–0.916 |
 
-All six pass with comfortable margin. Build is effectively at parity;
-`knn_fixed3`'s residual (~1-4%) is architectural (recursive `search_level`
-call overhead, present on both sides — confirmed via asm inspection) and is
-now smaller than before M2.5, since M2.5's T2 task converted the query walk
-to an explicit-stack iteration specifically to close most of this gap. **That
-conversion is a trade-off, not a free win**: it gave back part of `dim8`'s
-and `radius`'s prior improvement (both still comfortably beat C++, ratio <
-1.0, but sit above where they were immediately after M2.5's kernel fix) in
-exchange for the `knn_fixed3` win, a substantial `dyn_knn_after_churn` win,
-and query-path stack-overflow immunity on degenerate trees that the C++
-oracle's native recursion still lacks — see `docs/benchmarks.md`'s "M2.5 —
-performance deep-dive" section for the full honest accounting (this is
-explicitly not a "no regression" story).
+¹ within this host's documented noise floor (0.956–1.192 across 8 runs, T1's
+report — `docs/benchmarks.md`'s "Honest residuals" section); only 2 final
+runs are pasted above, so this range shouldn't be read as more precise than
+that floor.
+
+All six pass the ≤1.25 gate; two workloads (`dyn_add_20k_dim3_f32` in
+particular) pass by a real but not "comfortable" margin — see the "Dynamic
+adaptor (M2)" → "Performance" section below. Build is effectively at parity.
+`knn_fixed3`'s residual (~1-4%) is no longer recursive-call overhead: M2.5's
+T2 task converted the query walk to a fully-inlined explicit-stack iteration
+(0 `search_level` call targets remain in the compiled asm), and the residual
+that's left is asm-evidenced as frame store/reload cost intrinsic to that
+explicit-stack form, not the old recursion (see `docs/benchmarks.md`'s
+"Honest residuals" section). **That conversion is a trade-off, not a free
+win**: it gave back part of `dim8`'s and `radius`'s prior improvement (both
+still comfortably beat C++, ratio < 1.0, but sit above where they were
+immediately after M2.5's kernel fix) in exchange for the `knn_fixed3` win, a
+substantial `dyn_knn_after_churn` win, and query-path stack-overflow
+immunity on degenerate trees that the C++ oracle's native recursion still
+lacks — see `docs/benchmarks.md`'s "M2.5 — performance deep-dive" section
+for the full honest accounting (this is explicitly not a "no regression"
+story).
 
 ### dim-32/64 knn: the M1-era gap is closed at f32 (M2.5)
 
@@ -336,8 +345,14 @@ blocking LLVM's SLP vectorizer at runtime-known dim — gcc compiled the
 vectorizable) and fixed it with a bounds-check-free chunked row walk
 (`DataSource::point_row` + `as_chunks::<4>()`, bit-exact with the fallback,
 zero SIMD intrinsics, zero arithmetic reordering) — **not** the
-SIMD/batching approach originally hypothesized as necessary. Result, this
-task's (T4's) fresh two-run sweep:
+SIMD/batching approach originally hypothesized as necessary. **This win has
+a precondition**: it only applies when the `DataSource` impl overrides
+`point_row` (the built-in `&[[T; N]]`, `FlatSlice`, and the dynamic
+adaptor's `GrowableFlat` all do); a custom `DataSource` that only
+implements `point_component` falls back to the per-component loop and gets
+none of this fix — see `DataSource::point_row`'s doc comment
+(`crates/nanoflann-rs/src/data_source.rs`) for what to implement to opt in.
+Result, this task's (T4's) fresh two-run sweep:
 
 | dim | scalar | before M2.5 | after M2.5 |
 |---|---|---|---|

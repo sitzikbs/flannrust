@@ -488,9 +488,10 @@ this task's fresh two-run sweep with both changes landed (commit `2d23db4`).
 **The T2 trade-off, stated plainly — this is not a "no regression" story.**
 `knn_dyn_dim8_f64_k10` and `radius_dim3_f32` both moved measurably worse
 after T2 landed than they were immediately post-T3: T3's kernel fix took
-`dim8` from ~0.95 down to 0.867 (a real win), and T2's iterative-search
-conversion gave back roughly two-thirds of that win (0.867 → 0.950–0.966,
-landing back inside the milestone-start band rather than below it);
+`dim8` from ~0.95 down to 0.867 (a real win, ~0.083 of ratio), and T2's
+iterative-search conversion gave back essentially all of that win (0.867 →
+0.950–0.966, a give-back of 0.083–0.099 — 100–119% of the win, landing back
+inside the milestone-start band rather than below it);
 `radius` moved from 0.777 (matching the milestone-start band) to
 0.827–0.828, landing about 2% *outside* the milestone-start band's upper
 edge (0.81) — a real, if small, net loss relative to where this crate

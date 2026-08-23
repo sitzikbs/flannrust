@@ -1,5 +1,8 @@
-//! M2.5 Task 1 DIAGNOSTIC PROBES (temporary measurement tooling, not part of
-//! the library or its test surface).
+//! M2.5 Task 1 DIAGNOSTIC PROBES (permanent provenance tooling for the
+//! published dim-32/64 numbers — not part of the library or its test
+//! surface, but retained, not temporary: `docs/EXPERIMENTS.md` names this
+//! file's `knn` subcommand as the regenerating command for the README's/
+//! `docs/benchmarks.md`'s dim-32/64 tables).
 //!
 //! Answers the M2.5 T1 brief's questions with measurements. Every subcommand
 //! uses the perf-gate methodology (`xval::timed_median_ms`: one untimed
