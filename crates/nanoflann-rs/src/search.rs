@@ -259,26 +259,16 @@ enum Phase {
 /// both of which only ever touch index `inline_len - 1`, i.e. the slot the
 /// most recent `push` wrote and no `pop` has consumed yet).
 ///
-/// DESTRUCTION/PANIC invariant: `Dist: Copy` (bound on this struct and on
-/// `Frame`) is not just documentation — it is load-bearing for soundness.
-/// `MaybeUninit<T>` never runs `T`'s destructor implicitly (that is
-/// precisely why it costs nothing to leave slots uninitialized), so if
-/// `Frame<Dist>` could be non-`Copy` (i.e. could own a `Drop` resource),
-/// dropping a `FrameStack` with `inline_len > 0` remaining initialized
-/// slots would silently LEAK every one of them — Rust has no way to know
-/// which `inline` slots hold live values without a manual `Drop` impl this
-/// struct does not have. `Dist: Copy` statically forecloses that: a type
-/// cannot implement both `Copy` and `Drop` in Rust, so `Frame<Dist>` (whose
-/// only non-`Copy`-trivial fields are `Dist`-typed) can never have a
-/// destructor to skip. This holds unconditionally — on the ordinary pop-
-/// everything-then-drop path, on early return (an aborted search simply
-/// stops popping, see `search_level`'s three-exit-paths table — again fine,
-/// since there is nothing to run), and on an unwinding panic through
-/// `FrameStack`'s stack frame (same reasoning: no destructor exists to
-/// miss). `M::DistanceType` (this crate's only real-world `Dist`) is
-/// bounded `Copy` by `DistanceValue` already (`scalar.rs`), so this bound
-/// costs nothing at any current call site — it only forecloses a FUTURE
-/// non-`Copy` `Dist` from silently making this struct unsound.
+/// DESTRUCTION/PANIC note: `Dist: Copy` (bound on this struct and on
+/// `Frame`) is a leak guard, not a soundness requirement. `MaybeUninit<T>`
+/// never runs `T`'s destructor, and this struct has no manual `Drop`, so
+/// a non-`Copy` `Frame` holding a `Drop` resource would be LEAKED (never
+/// UB — `mem::forget` is safe) for every slot still initialized when the
+/// stack is dropped: on the ordinary path, on an aborted search's early
+/// return, or on an unwinding panic. A type cannot be both `Copy` and
+/// `Drop`, so the bound forecloses that leak statically. `M::DistanceType`
+/// is already `Copy` via `DistanceValue` (`scalar.rs`), so the bound costs
+/// nothing at any current call site.
 struct FrameStack<Dist: Copy> {
     inline: [MaybeUninit<Frame<Dist>>; SEARCH_STACK_INLINE_CAPACITY],
     inline_len: usize,

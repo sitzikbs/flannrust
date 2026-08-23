@@ -106,12 +106,19 @@ fn debug_check_point_row_contract<T: Scalar, DS: DataSource<T> + ?Sized>(ds: &DS
     if dim == 0 {
         return;
     }
+    // NaN-tolerant equality: a conforming `point_row` over NaN-poisoned data
+    // must not trip this check (`NaN == NaN` is false). `Scalar` has no
+    // `is_nan`; `x.partial_cmp(&x).is_none()` is the `PartialOrd`-only test.
+    #[inline]
+    fn same<T: Scalar>(a: T, b: T) -> bool {
+        a == b || (a.partial_cmp(&a).is_none() && b.partial_cmp(&b).is_none())
+    }
     debug_assert!(
-        row[0] == ds.point_component(idx, 0),
+        same(row[0], ds.point_component(idx, 0)),
         "DataSource::point_row contract violated at idx={idx}: row[0] != point_component(idx, 0)"
     );
     debug_assert!(
-        row[dim - 1] == ds.point_component(idx, dim - 1),
+        same(row[dim - 1], ds.point_component(idx, dim - 1)),
         "DataSource::point_row contract violated at idx={idx}: row[dim-1] != point_component(idx, dim-1)"
     );
 }

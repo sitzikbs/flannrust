@@ -1,5 +1,6 @@
-//! M2.5 Task 1 DIAGNOSTIC: asm-extraction probe (temporary measurement
-//! tooling, not part of the library or its test surface).
+//! M2.5 asm-extraction probe. Retained (not temporary) as the reproduction
+//! target for the vectorization/asm evidence cited in `docs/benchmarks.md`
+//! and `docs/EXPERIMENTS.md`; not part of the library or its test surface.
 //!
 //! Forces monomorphization of the library's `L2::eval` at the shapes the
 //! benchmarks use, plus the hand-written access-path variants, each behind an
