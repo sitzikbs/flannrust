@@ -436,6 +436,25 @@ void nfrd_add_points_impl(nfrd_index<T>* h, uint32_t start, uint32_t end)
 {
     // C++'s own addPoints(start, end) -- END-INCLUSIVE (`idx <= end` in the
     // vendored header), unmodified.
+    //
+    // CONTIGUOUS-APPEND CONTRACT (nanoflann's own usage contract, not
+    // something this wrapper imposes -- see nanoflann.hpp:2647-2668): inside
+    // addPoints' loop, for every NEW (never-before-added) index `idx` the
+    // header does `treeIndex_[pointCount_] = pos`, keyed by the class's own
+    // running `pointCount_` counter, NOT by `idx`. That only yields a
+    // correct `treeIndex_[idx]` mapping when `idx == pointCount_` at the
+    // moment it is processed, i.e. `start` must equal the total count of
+    // points ever added so far and every call must be a contiguous,
+    // in-order block (reactivating a previously-removed index via
+    // addPoints(idx, idx) is exempt -- that path restores from the
+    // `removedPoints_` tombstone instead of touching `pointCount_`). This
+    // wrapper does not (and per the "no logic beyond plumbing" rule, must
+    // not) validate that contract -- a misaligned `start` silently corrupts
+    // `treeIndex_` on the C++ side, with no exception and no abort. See
+    // `add_points_misaligned_start_documents_silent_corruption` in
+    // `tests/oracle_dynamic.rs` for the observed symptom, and the
+    // `add_points` doc comment on the Rust wrappers in src/lib.rs for the
+    // caller-facing version of this note.
     h->tree->addPoints(start, end);
 }
 

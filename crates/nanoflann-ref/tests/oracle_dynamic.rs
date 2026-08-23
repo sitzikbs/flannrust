@@ -289,3 +289,68 @@ fn radius_into_matches_allocating_radius_f32() {
         assert_eq!(got_dist[i], want[i].1);
     }
 }
+
+// ---- fix round 1: contiguous-append contract regression -------------------
+//
+// `add_points`'s doc comment (src/lib.rs) and `nfrd_add_points_impl`'s
+// comment (cpp/wrapper.cpp) both document that nanoflann's own addPoints()
+// keys `treeIndex_` by its internal running `pointCount_` counter, not by
+// the caller-supplied index -- so `start` MUST equal the total number of
+// points ever added so far (contiguous append from 0). This test drives a
+// deliberately MISALIGNED first call (skips index 0, adds only index 1) and
+// asserts the OBSERVED symptom: silent mis-mapping between `treeIndex_`
+// (bookkeeping) and `vAcc_` (physical storage), with no panic/exception/
+// abort anywhere in the C++ or Rust wrapper -- exactly the "silently
+// corrupts treeIndex_" failure mode the doc comments warn about.
+//
+// IMPORTANT: this test deliberately does NOT call `knn`/`radius` (or any
+// other query) after the misaligned `add_points`. nanoflann's searchLevel()
+// calls `isActive(accessor)` -> `treeIndex_[accessor]` for every physical
+// index `accessor` stored in a sub-tree's `vAcc_`
+// (nanoflann.hpp:1260,:2289). After this misalignment, `vAcc_` holds the
+// REAL index 1, but `treeIndex_` was only ever resized to length 1 (it
+// tracks `pointCount_`, which only reached 1) -- so `treeIndex_[1]` would be
+// an out-of-bounds `std::vector::operator[]` read, i.e. genuine undefined
+// behavior, not just a wrong-but-safe value. Per the fix-round-1 request:
+// the OBSERVED behavior of the misalignment itself (inspecting
+// `tree_index()`/`slot_vacc()` only) is a safe, well-defined silent
+// mis-mapping; a subsequent *query* on top of that corrupted state would be
+// UB, so this test stops short of ever taking that step.
+#[test]
+fn add_points_misaligned_start_documents_silent_corruption_f32() {
+    let mut idx = RefDynIndexF32::build(&PTS_F32, DIM, LEAF_MAX_SIZE, MAX_POINT_COUNT);
+    idx.set_current_n(2);
+    // MISALIGNED: this is the first-ever add_points call, so C++'s internal
+    // pointCount_ is 0 -- start should have been 0, not 1.
+    idx.add_points(1, 1);
+
+    let ti = idx.tree_index();
+    // treeIndex_ grew by exactly 1 entry (pointCount_ advanced by 1, since
+    // exactly one NEW index was processed) -- NOT by "up to the highest
+    // real index added" (which would need length 2 to cover index 1).
+    assert_eq!(
+        ti.len(),
+        1,
+        "treeIndex_ tracks pointCount_ (1 point ever added), not the real max index (1)"
+    );
+    // treeIndex_[0] wrongly claims point index 0 is live in slot 0 -- but
+    // index 0 was NEVER passed to add_points at all.
+    assert_eq!(
+        ti[0], 0,
+        "treeIndex_[0] falsely marks point 0 active; point 0 was never added"
+    );
+
+    // The point PHYSICALLY stored (in some sub-tree's vAcc_) is real index
+    // 1 -- the actual argument passed to add_points -- with no
+    // corresponding treeIndex_ entry at all. Bookkeeping (treeIndex_) and
+    // physical storage (vAcc_) have silently gone out of sync.
+    let mut union: Vec<u32> = Vec::new();
+    for slot in 0..idx.tree_count() {
+        union.extend(idx.slot_vacc(slot));
+    }
+    assert_eq!(
+        union,
+        vec![1],
+        "the real point physically stored is index 1, orphaned from any treeIndex_ entry"
+    );
+}

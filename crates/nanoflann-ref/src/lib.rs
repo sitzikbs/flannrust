@@ -732,6 +732,16 @@ macro_rules! define_ref_dyn_index {
             /// queryable after a subsequent `add_points` call covering
             /// their index range. `n * dim` must not exceed the buffer
             /// passed to `build`.
+            ///
+            /// Shrinking has NO effect on points already added: the C++
+            /// side only ever consults `kdtree_get_point_count()` once, at
+            /// construction time (to decide whether to auto-add an initial
+            /// batch), and never again afterward -- `set_current_n` exists
+            /// purely so this wrapper's own buffer-bound asserts (here and
+            /// in `add_points`) have something to check against. Shrinking
+            /// `n` below a point's index does not remove or hide that point
+            /// from the tree; the caller owns keeping `add_points`/
+            /// `remove_point` calls consistent with whatever `n` it sets.
             pub fn set_current_n(&mut self, n: usize) {
                 assert!(
                     n <= self.n_capacity,
@@ -751,6 +761,26 @@ macro_rules! define_ref_dyn_index {
             /// index in `start..=end`), unmodified. Points previously
             /// removed via `remove_point` are reactivated in place rather
             /// than duplicated (nanoflann's own tombstone-reuse behavior).
+            ///
+            /// CONTIGUOUS-APPEND CONTRACT (nanoflann's own usage contract,
+            /// not a wrapper-added restriction -- nanoflann.hpp ~2647-2668):
+            /// for every NEW (never-before-added) index `idx` in the call's
+            /// range, the C++ side writes `treeIndex_[pointCount_] = pos`,
+            /// keyed by its own running `pointCount_` counter, NOT by `idx`.
+            /// This only produces a correct `treeIndex_[idx]` mapping when
+            /// `idx == pointCount_` at the moment it is processed -- i.e.
+            /// `start` must equal the number of points ever added so far
+            /// (every prior `add_points` call's new, non-reactivated
+            /// indices, summed). In practice this means: always grow
+            /// `current_n` and call `add_points` in contiguous blocks
+            /// starting from 0, never with gaps or out-of-order `start`
+            /// values (re-adding a previously-removed index via
+            /// `add_points(idx, idx)` is fine -- that path is a
+            /// reactivation, not a new-index insert, and does not advance
+            /// `pointCount_`). A misaligned `start` does NOT panic or abort
+            /// on either side of the FFI boundary -- it SILENTLY corrupts
+            /// `treeIndex_` (see `add_points_misaligned_start_documents_silent_corruption`
+            /// in `tests/oracle_dynamic.rs` for the observed symptom).
             pub fn add_points(&mut self, start: u32, end_inclusive: u32) {
                 assert!(
                     (end_inclusive as usize) < self.current_n,
