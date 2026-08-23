@@ -24,10 +24,12 @@
 using nanoflann::BoxResultSet;
 using nanoflann::KDTreeSingleIndexAdaptor;
 using nanoflann::KDTreeSingleIndexAdaptorParams;
+using nanoflann::KDTreeSingleIndexDynamicAdaptor;
 using nanoflann::KNNResultSet;
 using nanoflann::L1_Adaptor;
 using nanoflann::L2_Adaptor;
 using nanoflann::L2_Simple_Adaptor;
+using nanoflann::RadiusResultSet;
 using nanoflann::RKNNResultSet;
 using nanoflann::ResultItem;
 using nanoflann::SearchParameters;
@@ -335,6 +337,189 @@ size_t nfr3_knn_impl(const nfr3_index<T>* h, const T* q, size_t k, uint32_t* out
     return h->tree->knnSearch(q, k, out_idx, out_dist);
 }
 
+// ---- Dynamic-forest (KDTreeSingleIndexDynamicAdaptor) implementations ----
+//
+// L2 metric only (M2's dynamic cross-validation scope -- unlike the static
+// `nfr_*` surface above, there is no per-metric switch/dispatch here).
+
+// Row-major point-cloud adaptor for the dynamic forest: unlike the static
+// `RowMajorAdaptor`, `kdtree_get_point_count()` returns a MUTABLE
+// `current_n` rather than a fixed `n`. This is load-bearing: nanoflann's
+// `KDTreeSingleIndexDynamicAdaptor` ctor auto-adds every existing point
+// (`addPoints(0, kdtree_get_point_count()-1)`) the instant it is
+// constructed, with no way to opt out. Starting `current_n` at 0 makes that
+// auto-add a no-op, so `nfrd_build_*` always begins with an empty forest and
+// the caller (the xval harness, via `nfrd_set_current_n_*` +
+// `nfrd_add_points_*`) drives every subsequent insertion explicitly and
+// deterministically instead.
+template <typename T>
+struct RowMajorDynAdaptor
+{
+    const T* pts        = nullptr;
+    size_t   dim        = 0;
+    size_t   n_capacity = 0;  // rows physically available in `pts` (n_capacity * dim elements)
+    size_t   current_n  = 0;  // logical size reported to nanoflann; grown by nfrd_set_current_n_*
+
+    inline size_t kdtree_get_point_count() const { return current_n; }
+    inline T      kdtree_get_pt(const size_t idx, const size_t d) const { return pts[idx * dim + d]; }
+    template <class BBOX>
+    bool kdtree_get_bbox(BBOX&) const
+    {
+        return false;
+    }
+};
+
+template <typename T>
+using DynTreeBase = KDTreeSingleIndexDynamicAdaptor<
+    L2_Adaptor<T, RowMajorDynAdaptor<T>, T, uint32_t>, RowMajorDynAdaptor<T>, -1, uint32_t>;
+
+// `treeIndex_`, `removedPoints_`, and `treeCount_` are `protected` on
+// `KDTreeSingleIndexDynamicAdaptor` (public only to derived classes, not to
+// arbitrary external code) -- nanoflann.hpp:2532-2557. A protected member is
+// exactly as accessible from a subclass as nanoflann's own design intends,
+// so this thin subclass (pure `using`-declarations, no logic) is the
+// faithful way to expose them across the FFI boundary, rather than
+// recomputing equivalent values from public accessors.
+template <typename T>
+struct DynTree : public DynTreeBase<T>
+{
+    using Base = DynTreeBase<T>;
+    using Base::Base;
+    using Base::pointCount_;
+    using Base::removedPoints_;
+    using Base::treeCount_;
+    using Base::treeIndex_;
+};
+
+template <typename T>
+struct nfrd_index
+{
+    RowMajorDynAdaptor<T>                adaptor;
+    DynTree<T>*                          tree = nullptr;
+    std::vector<ResultItem<uint32_t, T>> radius_scratch;
+};
+
+template <typename T>
+nfrd_index<T>* nfrd_build_impl(
+    const T* pts, size_t n_capacity, int dim, size_t leaf_max_size, size_t maximum_point_count)
+{
+    auto* h            = new nfrd_index<T>();
+    h->adaptor.pts     = pts;
+    h->adaptor.dim     = static_cast<size_t>(dim);
+    h->adaptor.n_capacity = n_capacity;
+    h->adaptor.current_n  = 0;  // ctor's auto-add-existing-points path is therefore a no-op.
+
+    const KDTreeSingleIndexAdaptorParams params(
+        leaf_max_size, nanoflann::KDTreeSingleIndexAdaptorFlags::None, /*n_thread_build=*/1u);
+    h->tree = new DynTree<T>(dim, h->adaptor, params, maximum_point_count);
+    return h;
+}
+
+template <typename T>
+void nfrd_free_impl(nfrd_index<T>* h)
+{
+    if (!h) return;
+    delete h->tree;
+    delete h;
+}
+
+template <typename T>
+void nfrd_set_current_n_impl(nfrd_index<T>* h, size_t n)
+{
+    if (n > h->adaptor.n_capacity)
+        throw std::out_of_range("nfrd_set_current_n: n exceeds the buffer capacity passed to nfrd_build");
+    h->adaptor.current_n = n;
+}
+
+template <typename T>
+void nfrd_add_points_impl(nfrd_index<T>* h, uint32_t start, uint32_t end)
+{
+    // C++'s own addPoints(start, end) -- END-INCLUSIVE (`idx <= end` in the
+    // vendored header), unmodified.
+    h->tree->addPoints(start, end);
+}
+
+template <typename T>
+void nfrd_remove_point_impl(nfrd_index<T>* h, size_t idx)
+{
+    h->tree->removePoint(idx);
+}
+
+template <typename T>
+size_t nfrd_knn_impl(
+    const nfrd_index<T>* h, const T* q, size_t k, float eps, uint32_t* out_idx, T* out_dist)
+{
+    KNNResultSet<T, uint32_t> result_set(k);
+    result_set.init(out_idx, out_dist);
+    h->tree->findNeighbors(result_set, q, SearchParameters(eps, /*sorted=*/true));
+    return result_set.size();
+}
+
+template <typename T>
+size_t nfrd_radius_count_impl(nfrd_index<T>* h, const T* q, T radius_sq, int sorted, float eps)
+{
+    // Unlike the static tree, KDTreeSingleIndexDynamicAdaptor has no
+    // radiusSearch()/radiusSearchCustomCallback() convenience wrapper --
+    // only the sub-tree class (KDTreeSingleIndexDynamicAdaptor_) does. So
+    // this builds the RadiusResultSet directly and drives it through the
+    // outer class's findNeighbors(), exactly mirroring what the sub-tree
+    // class's own radiusSearch() does internally
+    // (nanoflann.hpp:2463-2471).
+    const SearchParameters                   params(eps, sorted != 0);
+    RadiusResultSet<T, uint32_t>             result_set(radius_sq, h->radius_scratch);
+    h->tree->findNeighbors(result_set, q, params);
+    return result_set.size();
+}
+
+template <typename T>
+size_t nfrd_radius_fetch_impl(const nfrd_index<T>* h, uint32_t* out_idx, T* out_dist, size_t cap)
+{
+    const size_t n      = h->radius_scratch.size();
+    const size_t copy_n = cap < n ? cap : n;
+    for (size_t i = 0; i < copy_n; ++i)
+    {
+        out_idx[i]  = h->radius_scratch[i].first;
+        out_dist[i] = h->radius_scratch[i].second;
+    }
+    return n;
+}
+
+template <typename T>
+size_t nfrd_tree_count_impl(const nfrd_index<T>* h)
+{
+    return h->tree->getAllIndices().size();
+}
+
+template <typename T>
+size_t nfrd_slot_vacc_impl(const nfrd_index<T>* h, size_t slot, uint32_t* out, size_t cap)
+{
+    // `.at(slot)` bounds-checks and throws `std::out_of_range` on an invalid
+    // slot, which the extern-C entry point below catches and turns into an
+    // abort (same "no sane per-call recovery" convention as every other
+    // non-build entry point in this file).
+    const auto&  vacc   = h->tree->getAllIndices().at(slot).vAcc_;
+    const size_t n      = vacc.size();
+    const size_t copy_n = cap < n ? cap : n;
+    if (copy_n > 0) std::memcpy(out, vacc.data(), copy_n * sizeof(uint32_t));
+    return n;
+}
+
+template <typename T>
+size_t nfrd_tree_index_impl(const nfrd_index<T>* h, int32_t* out, size_t cap)
+{
+    const auto&  ti     = h->tree->treeIndex_;
+    const size_t n      = ti.size();
+    const size_t copy_n = cap < n ? cap : n;
+    for (size_t i = 0; i < copy_n; ++i) out[i] = static_cast<int32_t>(ti[i]);
+    return n;
+}
+
+template <typename T>
+size_t nfrd_removed_count_impl(const nfrd_index<T>* h)
+{
+    return h->tree->removedPoints_.size();
+}
+
 }  // namespace
 
 // ---- extern "C" surface ----------------------------------------------------
@@ -349,6 +534,8 @@ extern "C"
     struct nfr_index_d;
     struct nfr3_index_f;
     struct nfr3_index_d;
+    struct nfrd_index_f;
+    struct nfrd_index_d;
 }
 
 // A C++ exception unwinding across an `extern "C"` boundary into Rust is
@@ -495,3 +682,121 @@ NFR_DEFINE_ENTRY_POINTS(float, f)
 NFR_DEFINE_ENTRY_POINTS(double, d)
 
 #undef NFR_DEFINE_ENTRY_POINTS
+
+// ---- Dynamic-forest extern "C" surface (nfrd_*) ---------------------------
+//
+// Same exception-safety convention as NFR_DEFINE_ENTRY_POINTS above:
+// `nfrd_build_*` catches and returns null (checked by the Rust
+// `RefDynIndexF32::build`/`RefDynIndexF64::build` asserts); every other
+// entry point catches and aborts, since there is no sane per-call recovery
+// once an index is live.
+#define NFRD_DEFINE_ENTRY_POINTS(T, SUF)                                                         \
+    extern "C" nfrd_index_##SUF* nfrd_build_##SUF(                                               \
+        const T* pts, size_t n_capacity, int dim, size_t leaf_max_size,                          \
+        size_t maximum_point_count)                                                              \
+    {                                                                                             \
+        try {                                                                                     \
+            return reinterpret_cast<nfrd_index_##SUF*>(                                           \
+                nfrd_build_impl<T>(pts, n_capacity, dim, leaf_max_size, maximum_point_count));     \
+        } catch (...) {                                                                           \
+            return nullptr;                                                                       \
+        }                                                                                         \
+    }                                                                                              \
+    extern "C" void nfrd_free_##SUF(nfrd_index_##SUF* h)                                          \
+    {                                                                                              \
+        try {                                                                                      \
+            nfrd_free_impl<T>(reinterpret_cast<nfrd_index<T>*>(h));                                \
+        } catch (...) {                                                                            \
+            std::abort();                                                                          \
+        }                                                                                          \
+    }                                                                                               \
+    extern "C" void nfrd_set_current_n_##SUF(nfrd_index_##SUF* h, size_t n)                        \
+    {                                                                                               \
+        try {                                                                                       \
+            nfrd_set_current_n_impl<T>(reinterpret_cast<nfrd_index<T>*>(h), n);                     \
+        } catch (...) {                                                                             \
+            std::abort();                                                                           \
+        }                                                                                           \
+    }                                                                                                \
+    extern "C" void nfrd_add_points_##SUF(nfrd_index_##SUF* h, uint32_t start, uint32_t end)         \
+    {                                                                                                \
+        try {                                                                                        \
+            nfrd_add_points_impl<T>(reinterpret_cast<nfrd_index<T>*>(h), start, end);                \
+        } catch (...) {                                                                              \
+            std::abort();                                                                            \
+        }                                                                                            \
+    }                                                                                                 \
+    extern "C" void nfrd_remove_point_##SUF(nfrd_index_##SUF* h, size_t idx)                          \
+    {                                                                                                 \
+        try {                                                                                         \
+            nfrd_remove_point_impl<T>(reinterpret_cast<nfrd_index<T>*>(h), idx);                      \
+        } catch (...) {                                                                               \
+            std::abort();                                                                             \
+        }                                                                                             \
+    }                                                                                                 \
+    extern "C" size_t nfrd_knn_##SUF(                                                                \
+        const nfrd_index_##SUF* h, const T* q, size_t k, float eps, uint32_t* out_idx, T* out_dist)  \
+    {                                                                                                 \
+        try {                                                                                          \
+            return nfrd_knn_impl<T>(reinterpret_cast<const nfrd_index<T>*>(h), q, k, eps, out_idx, out_dist); \
+        } catch (...) {                                                                                \
+            std::abort();                                                                              \
+        }                                                                                               \
+    }                                                                                                    \
+    extern "C" size_t nfrd_radius_count_##SUF(                                                          \
+        nfrd_index_##SUF* h, const T* q, T radius_sq, int sorted, float eps)                            \
+    {                                                                                                    \
+        try {                                                                                             \
+            return nfrd_radius_count_impl<T>(reinterpret_cast<nfrd_index<T>*>(h), q, radius_sq, sorted, eps); \
+        } catch (...) {                                                                                    \
+            std::abort();                                                                                  \
+        }                                                                                                   \
+    }                                                                                                        \
+    extern "C" size_t nfrd_radius_fetch_##SUF(                                                              \
+        const nfrd_index_##SUF* h, uint32_t* out_idx, T* out_dist, size_t cap)                               \
+    {                                                                                                        \
+        try {                                                                                                  \
+            return nfrd_radius_fetch_impl<T>(                                                                  \
+                reinterpret_cast<const nfrd_index<T>*>(h), out_idx, out_dist, cap);                            \
+        } catch (...) {                                                                                        \
+            std::abort();                                                                                      \
+        }                                                                                                       \
+    }                                                                                                            \
+    extern "C" size_t nfrd_tree_count_##SUF(const nfrd_index_##SUF* h)                                           \
+    {                                                                                                            \
+        try {                                                                                                     \
+            return nfrd_tree_count_impl<T>(reinterpret_cast<const nfrd_index<T>*>(h));                            \
+        } catch (...) {                                                                                            \
+            std::abort();                                                                                          \
+        }                                                                                                           \
+    }                                                                                                                \
+    extern "C" size_t nfrd_slot_vacc_##SUF(                                                                          \
+        const nfrd_index_##SUF* h, size_t slot, uint32_t* out, size_t cap)                                           \
+    {                                                                                                                \
+        try {                                                                                                         \
+            return nfrd_slot_vacc_impl<T>(reinterpret_cast<const nfrd_index<T>*>(h), slot, out, cap);                 \
+        } catch (...) {                                                                                                \
+            std::abort();                                                                                              \
+        }                                                                                                               \
+    }                                                                                                                    \
+    extern "C" size_t nfrd_tree_index_##SUF(const nfrd_index_##SUF* h, int32_t* out, size_t cap)                         \
+    {                                                                                                                     \
+        try {                                                                                                              \
+            return nfrd_tree_index_impl<T>(reinterpret_cast<const nfrd_index<T>*>(h), out, cap);                          \
+        } catch (...) {                                                                                                    \
+            std::abort();                                                                                                  \
+        }                                                                                                                   \
+    }                                                                                                                        \
+    extern "C" size_t nfrd_removed_count_##SUF(const nfrd_index_##SUF* h)                                                    \
+    {                                                                                                                        \
+        try {                                                                                                                 \
+            return nfrd_removed_count_impl<T>(reinterpret_cast<const nfrd_index<T>*>(h));                                     \
+        } catch (...) {                                                                                                       \
+            std::abort();                                                                                                     \
+        }                                                                                                                      \
+    }
+
+NFRD_DEFINE_ENTRY_POINTS(float, f)
+NFRD_DEFINE_ENTRY_POINTS(double, d)
+
+#undef NFRD_DEFINE_ENTRY_POINTS
