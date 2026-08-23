@@ -462,7 +462,11 @@ other gates, a deliberate, reviewed trade-off, not a free improvement). Full
 task reports:
 `.superpowers/sdd/2026-08-23-nanoflann-rs-m2.5-perf/task-{2,3,4}-report.md`.
 Every number below was re-measured fresh by this task (T4) at commit
-`2d23db4` (2 runs per workload, pasted in full in `docs/EXPERIMENTS.md`).
+`2d23db4` (2 runs per workload, pasted in full in `docs/EXPERIMENTS.md`),
+**except the "Post-T3" column**, which is cited from T3's own report as
+measured at commit `549f1ac` (T3's landing commit, before T2 existed) —
+not re-run by T4, since T2 had already superseded that state by the time
+this task started.
 
 ### Summary table: milestone-start → post-T3 → post-T2/final
 

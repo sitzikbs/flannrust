@@ -58,6 +58,18 @@ Full sweep, provenance, and every pasted run: `docs/benchmarks.md` +
   sequentially; a deviation here would need documenting like
   `BuildThreads` already is) — untouched by M2.5, which worked the
   query/kernel hot paths only.
+- Dim-16 knn shows a large, repeatable (T4's task-4 sweep, both runs) jump
+  versus dim-8 (~76–88ms vs. ~3.2–3.5ms at this dataset/leaf-size
+  combination) that no M2.5 task diagnosed — flagged, not chased, out of
+  T1/T3's dim-32/64 scope; needs profiling before it's understood as a
+  real cliff vs. an artifact of this specific workload shape.
+- `radius_dim3_f32` has drifted worse across three consecutive
+  measurement rounds — 0.767 (milestone-start-recorded) → 0.777 (post-T3)
+  → 0.827–0.828 (post-T2/final, T4) — each individual step a reviewed,
+  justified trade-off, but the monotonic direction across rounds is a
+  watch-item for any future perf-tuning pass touching the query hot path:
+  still a comfortable Rust win vs. C++ today, but worth checking this gate
+  specifically before it accumulates further.
 
 ## M-py — Python bindings (user directive, 2026-08-22: "most people use Python these days")
 

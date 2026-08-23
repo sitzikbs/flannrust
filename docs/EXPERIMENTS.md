@@ -88,7 +88,17 @@ The perf gates' 1.25 margin and the median-of-7 methodology (below) both
 exist specifically to absorb this noise, not to paper over a real
 regression — but it is still noise, not a bare-metal-quality measurement,
 and `dyn_add`'s swing up to 1.237 is a concrete illustration of why the
-margin isn't set tighter.
+margin isn't set tighter. Noise isn't always benign, though: during M2.5
+task 4's report-chain regeneration, a `report_data` run executed while a
+background `miri` process was still consuming a full CPU core came back
+with an implausible `knn_dyn_dim8_f64_k10` ratio of 1.214 (vs. every other
+dim8 measurement in that task's own sweep landing at 0.926–0.966) — caught
+by cross-checking against the clean gate numbers, discarded, and re-run
+only after confirming (`ps aux`) no CPU-heavy background process remained;
+see the "M2.5 task 4" subsection below for the clean numbers, and
+`task-4-report.md` §2 for the full account — a concrete illustration of
+why every timed run in this repo is captured on an otherwise-idle host, not
+just why the margin exists.
 
 **Before any public announcement, `docs/ROADMAP.md`'s M-pub milestone
 requires a bare-metal Linux re-run** of the full evaluation, with only
@@ -568,17 +578,26 @@ three static + one dynamic brute-force ground-truth computations, each
 O(n_queries × n) — the slowest is 2000 queries × 50,000 points); `report.json`
 is regenerated fully every run, not incrementally, so there is no cheaper
 partial-update path.  `render_report` itself is near-instant (pure
-string/template work over an already-computed JSON). **Re-run during the
-prior documentation round** (exact byte counts via `wc -c`, not the
-block-rounded `du -h` figures used earlier still): both exited 0;
-`report.json` was **6495 bytes** (~6.3KB) and `report.html` was **14179
-bytes** (~13.9KB); verdict tiles computed live from the data read:
+string/template work over an already-computed JSON).
+
+**Current snapshot — re-run for M2.5 task 4** (commit `2d23db4`, 2026-08-23;
+exact byte counts via `wc -c`, not the block-rounded `du -h` figures used
+in earlier rounds): both exited 0; `report.json` was **6495 bytes**
+(~6.3KB) and `report.html` was **14177 bytes** (~13.9KB); verdict tiles
+computed live from the data read:
 
 ```
 Accuracy @ eps=0:  ✓ 100% exact @ eps=0
 Bit-exactness:     ✓ Bit-exact vs C++ (all rows)
-Best speed win:    ✓ 1.58× faster — build_1M_dim3_f32_par
+Best speed win:    ✓ 1.47× faster — build_1M_dim3_f32_par
 ```
+
+(Superseded, kept for context: a prior documentation round, pre-M2.5,
+recorded `report.json` 6495 bytes / `report.html` **14179** bytes and a
+**1.58×** best-speed-win tile — the 2-byte HTML difference and the win-tile
+delta both trace to ordinary WSL2 run-to-run timing noise moving which
+speed row reports the widest margin, not a code or methodology change
+between the two snapshots.)
 
 `report_data`'s own emitted `meta` block is this run's environment
 fingerprint (see §1's table — those values were read directly from this

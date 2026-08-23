@@ -280,4 +280,7 @@ trade-off, not a "no regression" outcome — full accounting in
 `docs/benchmarks.md`'s "M2.5 — performance deep-dive" section. Open
 residuals explicitly not chased this milestone (dim-64 f32, dim-32 f64, the
 fixed-dim-3 last ~1-4%, a fast-math feature flag, parallel slot rebuilds):
-`docs/ROADMAP.md`'s M2.5 entry.
+`docs/ROADMAP.md`'s M2.5 entry. Also noted by T4 but not diagnosed: dim-16
+knn shows a large, repeatable jump versus dim-8 unrelated to anything T1/T3
+found, flagged for future profiling — `docs/ROADMAP.md`'s M2.5
+future-perf-leads list.
