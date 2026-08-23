@@ -223,8 +223,8 @@ mod tests {
         (0..n)
             .map(|_| {
                 let mut p = [0.0f64; N];
-                for d in 0..N {
-                    p[d] = rng.next_f64() * scale;
+                for v in p.iter_mut() {
+                    *v = rng.next_f64() * scale;
                 }
                 p
             })
@@ -307,6 +307,26 @@ mod tests {
     #[test]
     fn bit_identical_to_sequential_5000_uniform_dim3() {
         let points = seeded_points::<3>(0xC0FFEE_u64, 5000, 1000.0);
+        assert_builds_bit_identical(&points, 10);
+    }
+
+    // ---------------------------------------------------------------
+    // 1b (I5): Bit-identical to sequential at n=20_000 — > 4x
+    // PARALLEL_CUTOFF (4096), so `build_subtree_parallel` recurses at least
+    // twice past the base case, exercising a COMPOSED (multi-level) merge
+    // (grandchild arenas spliced into child arenas, then those into the
+    // root) rather than just the single-level splice the 5000-point test
+    // above exhausts its budget on. Checked NOT `#[ignore]`d — part of the
+    // default `cargo test` suite, unlike the 1M heavy tests below.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn bit_identical_to_sequential_20000_uniform_dim3() {
+        let points = seeded_points::<3>(0xC0FFEE2_u64, 20_000, 1000.0);
+        assert!(
+            points.len() > 4 * PARALLEL_CUTOFF,
+            "test setup: n must exceed 4x PARALLEL_CUTOFF to force a composed (multi-level) merge"
+        );
         assert_builds_bit_identical(&points, 10);
     }
 
