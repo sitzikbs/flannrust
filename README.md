@@ -99,6 +99,7 @@ below says otherwise.
 | No `NANOFLANN_NODE_ALIGNMENT` (16-byte node alignment) | Evaluated as a bench-gated perf candidate, not applied unconditionally as a default — see `docs/benchmarks.md`. |
 | `KdTree::knn_search_with` accepts a `SearchParams` | C++'s static `knnSearch` takes none — this is additive, not a narrowing. |
 | `BoxResultSet::sort()` not ported | Dead code upstream: nanoflann's own box-search path never calls it (callers own the output `Vec` and can sort it themselves if desired). |
+| `search_level` is an explicit-stack iteration (`FrameStack`: 128 inline frames, heap-`Vec` spill beyond), not C++'s native `searchLevel` recursion (M2.5) | Same traversal order and results, bit-exact. Benefit: the query path cannot overflow the native stack on a degenerate tree (C++'s recursion can). Costs: a query deeper than 128 levels pays per-query heap allocation the recursive form never did, and the conversion gave back margin on `knn_dyn_dim8_f64_k10` and `radius_dim3_f32` (both still < 1.0 vs C++) — see "Safety" below and `docs/benchmarks.md`'s "M2.5 — performance deep-dive". |
 
 ## Input domain
 
@@ -148,6 +149,27 @@ this case: it carries no `Sync` bound, always compiles, and always builds —
 but only honors `BuildThreads::Sequential` (the default); it panics if
 `threads` was set to `Auto`/`Threads(_)`, since those genuinely require
 `Sync` to run at all.
+
+## Safety (`unsafe` in this crate)
+
+This crate contains exactly two `unsafe` blocks, both in
+`crates/nanoflann-rs/src/search.rs`'s `FrameStack` (M2.5): a
+`MaybeUninit::assume_init_read` in `pop` and an `assume_init_mut` in
+`top_mut`, reading back frames of the explicit-stack query walk from a
+fixed 128-slot inline array that is deliberately left uninitialized
+(zero-filling it on every query was measured as a real regression). The
+invariant is one line — slot `i` is initialized iff `i < inline_len` —
+stated on the struct and referenced at each use site; it is the same
+technique `arrayvec`/`smallvec` use. Why it is kept rather than replaced
+by a safe `Vec`: a zero-`unsafe` `Vec::with_capacity(128)` frame stack was
+A/B-tested against it and was slower in 8/8 interleaved repeats, median
+**+4.7%** on the fixed-dim-3 knn gate (pasted in
+[`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md)'s "M2.5 task 2" subsection).
+Both blocks are miri-clean under both aliasing models (Stacked Borrows and
+Tree Borrows, `-Zmiri-tree-borrows`), including a test that really
+exercises the heap-spill path past 128 frames — commands and the pasted
+runs are in `docs/EXPERIMENTS.md`'s "Miri" subsection; `docs/ROADMAP.md`
+makes that miri job a required CI check for any change to `search.rs`.
 
 ## Parity & testing
 
@@ -260,8 +282,8 @@ M1 was defined as done only when all four hold — current status:
    sequential+parallel) show Rust ≥ C++ (ratio ≤ 1.0) or a documented gap
    analysis. **Met**: all four perf gates pass with wide margin (see
    "Benchmarks" below); build is at parity (ratio 1.018); knn_fixed3's
-   residual ~4% gap is analyzed, not hand-waved (asm-evidenced, see
-   `docs/benchmarks.md`).
+   residual ~4% gap is analyzed, not hand-waved (M1-era; that recursion
+   analysis is superseded by M2.5 — see "Benchmarks" below).
 3. **Robustness** — heavy degenerate builds (dim-1 depth ~2115, dim-8 depth
    ~16794) pass in release; empty/`k > n`/duplicate edge cases covered.
    **Met**.
@@ -276,7 +298,7 @@ passing, `cargo test --workspace` still green with zero warnings — also
 numbers and [`docs/nanoflann-notes.md`](docs/nanoflann-notes.md)'s "M2
 outcome" section for the full source-fact record.
 
-## Benchmarks (M1 — static kd-tree)
+## Benchmarks
 
 Machine: WSL2 (Linux 6.6.87.2-microsoft-standard-WSL2), AMD Ryzen 7 9800X3D,
 8 threads visible, `rustc 1.98.0`. Methodology: `RUSTFLAGS="-C
@@ -286,11 +308,13 @@ neither side gets an unforced codegen advantage); C++ built `-O3
 -march=native -ffp-contract=off` (`-ffp-contract=off` specifically so
 clang's default FMA contraction doesn't produce a bit-parity mismatch
 against rustc, which never contracts). Ratio = `rust_time / cpp_time`; lower
-is better for Rust. Full detail, including an asm-level analysis of the
-residual `knn_fixed3` gap, is in
+is better for Rust. Full detail — including the M1-era asm analysis of
+the then-recursive `knn_fixed3` walk (kept as history, superseded by the
+M2.5 section that records the iterative walk that replaced it) — is in
 [`docs/benchmarks.md`](docs/benchmarks.md) (this crate's single, unified
-benchmarks doc — M1's static-tree numbers and M2's dynamic-forest numbers
-both live there now, in separate sections). **Reproducing our numbers**:
+benchmarks doc — M1's static-tree, M2's dynamic-forest, and M2.5's
+performance-deep-dive numbers all live there, in separate sections).
+**Reproducing our numbers**:
 every command behind every figure on this page and in `docs/benchmarks.md`
 is listed, exact and copy-pasteable, in
 [`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md), including the WSL2
@@ -312,28 +336,36 @@ in `docs/EXPERIMENTS.md`, milestone-by-milestone comparison in
 | `dyn_add_20k_dim3_f32` | 1.121–1.170 |
 | `dyn_knn_after_churn_dim3_f32` | 0.873–0.916 |
 
-¹ within this host's documented noise floor (0.956–1.192 across 8 runs, T1's
-report — `docs/benchmarks.md`'s "Honest residuals" section); only 2 final
-runs are pasted above, so this range shouldn't be read as more precise than
-that floor.
+¹ within this host's documented noise floor (0.956–1.192 across 8 runs of
+one unchanged tree — pasted in `docs/EXPERIMENTS.md`'s "M2.5 task 1"
+subsection); only 2 final runs are pasted above, so this range shouldn't
+be read as more precise than that floor.
 
-All six pass the ≤1.25 gate; two workloads (`dyn_add_20k_dim3_f32` in
-particular) pass by a real but not "comfortable" margin — see the "Dynamic
-adaptor (M2)" → "Performance" section below. Build is effectively at parity.
-`knn_fixed3`'s residual (~1-4%) is no longer recursive-call overhead: M2.5's
-T2 task converted the query walk to a fully-inlined explicit-stack iteration
-(0 `search_level` call targets remain in the compiled asm), and the residual
-that's left is asm-evidenced as frame store/reload cost intrinsic to that
-explicit-stack form, not the old recursion (see `docs/benchmarks.md`'s
-"Honest residuals" section). **That conversion is a trade-off, not a free
-win**: it gave back part of `dim8`'s and `radius`'s prior improvement (both
-still comfortably beat C++, ratio < 1.0, but sit above where they were
-immediately after M2.5's kernel fix) in exchange for the `knn_fixed3` win, a
-substantial `dyn_knn_after_churn` win, and query-path stack-overflow
-immunity on degenerate trees that the C++ oracle's native recursion still
-lacks — see `docs/benchmarks.md`'s "M2.5 — performance deep-dive" section
-for the full honest accounting (this is explicitly not a "no regression"
-story).
+All six pass the ≤1.25 gate. `dyn_add_20k_dim3_f32` is the one workload
+whose margin is not "comfortable": 1.121–1.170 in this sweep and up to
+1.237 across its pre-M2.5 re-runs, ~1% below the threshold — see the
+"Dynamic adaptor (M2)" → "Performance" section below; no other gate's
+recorded sweep median exceeds 1.10 (individual `knn_fixed3` noise-sweep
+runs have: 1.104, 1.192, see `docs/EXPERIMENTS.md` "M2.5 task 1"). Build
+is effectively at parity. `knn_fixed3`'s
+residual (~1-4%) is no longer recursive-call overhead: M2.5's T2 task
+converted the query walk to a fully-inlined explicit-stack iteration — 0
+`search_level` call targets remain in the compiled asm (reproduction
+command and grep output in `docs/EXPERIMENTS.md`'s "M2.5 asm re-capture"
+subsection). What the residual now IS has not been separately measured:
+T2's reviewer attributes it to frame store/reload cost intrinsic to the
+explicit-stack form, a diagnosis consistent with the A/B data but not
+asm-quantified (see `docs/benchmarks.md`'s "Honest residuals" section).
+**That conversion is a trade-off, not a free win**: it gave back all of
+`dim8`'s M2.5 kernel-fix win (0.867 → 0.950–0.966, back to its pre-M2.5
+range) and left `radius` ~4.4% worse than its pre-M2.5 range (0.767–0.792 →
+0.827–0.828); both still beat C++ (ratio < 1.0). In exchange: the
+`knn_fixed3` win, a substantial `dyn_knn_after_churn` win, and query-path
+stack-overflow immunity on degenerate trees that the C++ oracle's native
+recursion still lacks — at the cost of per-query heap allocation for
+queries deeper than 128 levels (see "Deliberate deviations" above). Full
+honest accounting: `docs/benchmarks.md`'s "M2.5 — performance deep-dive"
+section (this is explicitly not a "no regression" story).
 
 ### dim-32/64 knn: the M1-era gap is closed at f32 (M2.5)
 
@@ -496,17 +528,19 @@ the C++ source; full tracker: [`docs/ROADMAP.md`](docs/ROADMAP.md)):
   dim-32 knn gap (~1.3-1.45x) is closed at f32 to parity-or-better via a
   bounds-check-free chunked kernel row walk, and the fixed-dim-3 knn
   residual is substantially closed via an explicit-stack iterative
-  `search_level` (a documented trade-off: it also gave back part of the
-  `dim8`/`radius` gates' margin in exchange, both remaining Rust wins vs
-  C++, plus query-path stack-overflow immunity on degenerate trees C++
-  still lacks). See "Benchmarks" and "Dynamic adaptor (M2)" → "Performance"
-  above, and `docs/benchmarks.md`'s "M2.5 — performance deep-dive" section
-  for the full honest accounting. Future perf leads explicitly **not**
-  taken this milestone: dim-64 f32 (~1.16-1.23x, improved not closed),
-  dim-32 f64 (~1.10-1.11x, improved not closed), the fixed-dim-3 residual's
-  last ~1-4% (attributed to frame store/reload cost, within this host's
-  noise floor), a fast-math/reordered-arithmetic kernel feature flag, and
-  parallel slot rebuilds for the dynamic adaptor.
+  `search_level` (a documented trade-off: it gave back all of `dim8`'s
+  kernel-fix win and left `radius` ~4.4% worse than its pre-M2.5 range, both
+  still Rust wins vs C++, in exchange for that win, the churn win, and
+  query-path stack-overflow immunity on degenerate trees C++ still lacks).
+  See "Benchmarks" and "Dynamic adaptor (M2)" → "Performance" above, and
+  `docs/benchmarks.md`'s "M2.5 — performance deep-dive" section for the
+  full honest accounting. Future perf leads explicitly **not** taken this
+  milestone: dim-64 f32 (1.16–1.23x across T3+T4 runs, improved not
+  closed), dim-32 f64 (~1.10-1.11x, improved not closed), the fixed-dim-3
+  residual's last ~1-4% (attributed by T2's reviewer to frame store/reload
+  cost — not asm-quantified — and within this host's noise floor), a
+  fast-math/reordered-arithmetic kernel feature flag, and parallel slot
+  rebuilds for the dynamic adaptor.
 - **M3 — incremental adaptor** (`KDTreeSingleIndexIncrementalAdaptor`, a
   single scapegoat-style self-balancing tree).
 - **M4 — multithreaded wrapper** (`KDTreeSingleIndexIncrementalAdaptorMT`,

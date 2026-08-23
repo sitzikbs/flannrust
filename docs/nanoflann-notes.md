@@ -156,7 +156,7 @@ for M2+ planning; the repo root `README.md` has the full user-facing story.
   reasonable place to add an explicit finite-coordinate check if silent
   non-termination on bad input ever becomes a real concern.
 - **Speed:** all four perf gates pass with wide margin; build reached
-  parity (ratio 1.018) and `knn_fixed3` closed to a ~4% asm-analyzed residual
+  parity (ratio 1.018) and `knn_fixed3` closed to a ~4% asm-analyzed residual (M1-era analysis, superseded by M2.5-T2)
   gap (recursive `search_level`/`searchLevel` call overhead, present on both
   sides — see `docs/benchmarks.md`). A pre-existing dim-32 knn gap
   (~1.3-1.45x) was found and is out of M1's scope (dim-3/dim-8 only);
@@ -269,18 +269,26 @@ with the fallback: dim-32 f32 1.423x → 0.966–1.008x). **T2** converted
 `search_level` from native self-recursion to an explicit-stack iteration
 (`Frame`/`Phase`/`FrameStack`, `MaybeUninit`-backed inline array + heap-`Vec`
 spill past depth 128), closing most of the fixed-dim-3 residual
-(1.042–1.058x → 1.011–1.040x) and adding query-path stack-overflow immunity
-on degenerate trees (C++'s native `searchLevel` recursion remains exposed)
-— **at a reviewed, documented cost**: it gave back part of
-`knn_dyn_dim8_f64_k10`'s and `radius_dim3_f32`'s prior improvement (both
-remain Rust wins vs C++ throughout, ratio < 1.0) in exchange for the
-fixed-dim-3 win plus a substantial `dyn_knn_after_churn` win
-(0.971–0.976x → 0.873–0.916x in T4's fresh sweep). This is documented as a
-trade-off, not a "no regression" outcome — full accounting in
-`docs/benchmarks.md`'s "M2.5 — performance deep-dive" section. Open
+(1.030–1.063x pre-M2.5 pasted range → 1.011–1.040x; T2's interleaved A/B
+medians 1.052 → 1.0205) and adding query-path stack-overflow immunity
+on degenerate trees (C++'s native `searchLevel` recursion remains exposed;
+the cost side is per-query heap allocation past depth 128) — **at a
+reviewed, documented cost**: it gave back all of `knn_dyn_dim8_f64_k10`'s
+T3 win (0.867 → 0.950–0.966, back inside its pre-M2.5 range 0.944–0.984)
+and left `radius_dim3_f32` ~4.4% worse than its pre-M2.5 range
+(0.767–0.792 → 0.827–0.828); both remain Rust wins vs C++ (ratio < 1.0).
+In exchange: the fixed-dim-3 win plus a substantial `dyn_knn_after_churn`
+win (0.956–0.976x → 0.873–0.916x in T4's fresh sweep). This is documented
+as a trade-off, not a "no regression" outcome — full accounting in
+`docs/benchmarks.md`'s "M2.5 — performance deep-dive" section, every
+pasted run in `docs/EXPERIMENTS.md` §3's "M2.5" subsections. Open
 residuals explicitly not chased this milestone (dim-64 f32, dim-32 f64, the
 fixed-dim-3 last ~1-4%, a fast-math feature flag, parallel slot rebuilds):
-`docs/ROADMAP.md`'s M2.5 entry. Also noted by T4 but not diagnosed: dim-16
-knn shows a large, repeatable jump versus dim-8 unrelated to anything T1/T3
-found, flagged for future profiling — `docs/ROADMAP.md`'s M2.5
-future-perf-leads list.
+`docs/ROADMAP.md`'s M2.5 entry. Also surfaced by T4 and diagnosed in the
+final-review fix wave: dim-16 knn's large, repeatable jump versus dim-8 is
+confirmed curse-of-dimensionality — `frac_points_scanned` climbs from
+0.0176 at dim 8 to 0.4875 at dim 16 (en route to 1.0000 at dim 32), enough
+on its own to explain the timing cliff, no separate code-path issue —
+pasted run in `docs/EXPERIMENTS.md`'s "M2.5 final-review fix wave"
+subsection, lead framing in `docs/ROADMAP.md`'s M2.5 future-perf-leads
+list.

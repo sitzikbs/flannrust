@@ -15,7 +15,9 @@ Machine: WSL2 (Linux 6.6.87.2-microsoft-standard-WSL2), AMD Ryzen 7 9800X3D,
 8 threads visible, `rustc 1.98.0`. All numbers `RUSTFLAGS="-C
 target-cpu=native"`, release profile. C++ oracle built `-O3 -march=native
 -ffp-contract=off` (`crates/nanoflann-ref/build.rs`). WSL2 introduces real
-run-to-run scheduler/thermal jitter (~±5-10% on individual runs). The perf
+run-to-run scheduler/thermal jitter (~±5-10% on individual runs — M1's
+characterization; the repo's canonical noise floor is the later 8-run
+`knn_fixed3` sweep, 0.956–1.192, `docs/EXPERIMENTS.md` "M2.5 task 1"). The perf
 gate table below mixes sample sizes across its columns (see the column
 headers): the "Before Task 14" column is Step 0's baseline, a **median of
 3** timed runs; every "After Task 14" column is a **median of 7** timed runs
@@ -147,7 +149,7 @@ proving the order itself was always vectorizable. A bounds-check-free
 chunked row walk (`DataSource::point_row` + `as_chunks::<4>()`, bit-exact
 with the fallback) closed dim-32 f32 from **1.423× → 0.966×** (gate-style
 knn, leaf=10, measured this session) with zero SIMD intrinsics — see
-`.superpowers/sdd/2026-08-23-nanoflann-rs-m2.5-perf/task-3-report.md`.
+`docs/reports/m2.5/task-3-report.md`.
 Dim-64 improved substantially but not fully (1.918× → 1.228×); further
 dim-64-specific work is out of scope for M2.5-T3, which targeted dim-32.
 
@@ -183,11 +185,22 @@ leaf scan confirms the eval kernel itself is now optimal post-Task-14:
   IDENTICAL summation order so results stay bit-exact) instead of
   `row[d]`-indexing. That closed dim-32 f32 from **1.423× → 0.966×**
   (gate-style knn, leaf=10) without any SIMD intrinsics or reordering — see
-  `.superpowers/sdd/2026-08-23-nanoflann-rs-m2.5-perf/task-3-report.md` for
+  `docs/reports/m2.5/task-3-report.md` for
   the full A/B. The `point_row` fast path from this Task-14 record and
   M2.5-T3's `point_row` are the same trait method; the fix wasn't "add row
   access", it was "make row access bounds-check-free", which needed the
   chunked walk specifically.
+
+**Update (M2.5-T2): the two numbered items below are superseded.** Item
+1's native recursion no longer exists — M2.5 converted `search_level` to
+an explicit-stack iteration (commit `1ecfd46`, fix round `2d23db4`); the
+compiled asm now contains zero `search_level` call targets (re-captured
+at `84c0781`, `docs/EXPERIMENTS.md` "M2.5 asm re-capture" subsection),
+and what that conversion won and gave back is accounted for in this
+file's "M2.5 — performance deep-dive" section. Item 2's 7-run 0.937–1.079
+spread is an older, smaller sample than the repo's canonical 8-run noise
+floor (0.956–1.192, `docs/EXPERIMENTS.md` "M2.5 task 1"). Both retained
+below as the M1 record, not as the current state.
 
 What's left in the ~4-5% gap is architectural, not a missed optimization in
 the hot kernel:
@@ -457,51 +470,62 @@ Same machine/methodology as M1/M2 above (WSL2, AMD Ryzen 7 9800X3D, `rustc
 -ffp-contract=off`). Two changes landed on top of each other: **T3** (a
 bounds-check-free chunked row walk in the `L2`/`L1` kernel, closing the
 dim-32 gap) and **T2** (explicit-stack iterative `search_level`, closing the
-fixed-dim-3 residual — at the cost of giving back part of T3's win on two
-other gates, a deliberate, reviewed trade-off, not a free improvement). Full
+fixed-dim-3 residual — at the cost of giving back all of T3's `dim8` win
+and leaving `radius` ~4.4% above its pre-M2.5 range, a deliberate,
+reviewed trade-off, not a free improvement). Full
 task reports:
-`.superpowers/sdd/2026-08-23-nanoflann-rs-m2.5-perf/task-{2,3,4}-report.md`.
-Every number below was re-measured fresh by this task (T4) at commit
-`2d23db4` (2 runs per workload, pasted in full in `docs/EXPERIMENTS.md`),
-**except the "Post-T3" column**, which is cited from T3's own report as
-measured at commit `549f1ac` (T3's landing commit, before T2 existed) —
-not re-run by T4, since T2 had already superseded that state by the time
-this task started.
+`docs/reports/m2.5/task-{2,3,4}-report.md`.
+Every number in the "Post-T2/final" columns below was re-measured fresh
+by T4 at commit `2d23db4` (2 runs per workload, pasted in full in
+`docs/EXPERIMENTS.md`'s "M2.5 task 4" subsection). The "Post-T3" column is
+T3's own interleaved-A/B "after" medians (3 runs each), pasted in
+`docs/EXPERIMENTS.md`'s "M2.5 task 3" subsection — measured on the T3
+trees landed as `fecbdde` (the four static gates) and `549f1ac` (the two
+dynamic gates, re-measured in T3's fix round), before T2 existed; not
+re-run by T4, since T2 had already superseded that state. The
+"Milestone-start" column is a min–max over every pre-M2.5 gate run pasted
+in this repo (definition under the table).
 
 ### Summary table: milestone-start → post-T3 → post-T2/final
 
 All ratios `rust_ms / cpp_ms`; lower is better for Rust; gate margin is
-`<= 1.25`. "Milestone-start" is the recorded pre-M2.5 range (this file's M1/M2
-sections above); "post-T3" is T3's own single measured run with the kernel
-fix landed, C++ unchanged (T3's report, commit `549f1ac`); "post-T2/final" is
-this task's fresh two-run sweep with both changes landed (commit `2d23db4`).
+`<= 1.25`. "Milestone-start" is the min–max across every pre-M2.5 gate run
+pasted in this repo: this file's M1 table ("After Task 14" and "Final
+single run" columns), the four pre-M2.5 six-gate runs and the
+`perf_gate_dyn` runs in `docs/EXPERIMENTS.md` §3, and the "before" arm of
+T3's interleaved A/B (`docs/EXPERIMENTS.md` "M2.5 task 3") — no value in
+that column is a rounded band; "post-T3" is T3's interleaved-A/B "after"
+median with the kernel fix landed, C++ unchanged; "post-T2/final" is T4's
+fresh two-run sweep with both changes landed (commit `2d23db4`).
 
-| Workload | Milestone-start (recorded range) | Post-T3 (kernel fix only) | Post-T2/final (T4, 2 fresh runs) |
+| Workload | Milestone-start (pre-M2.5 pasted range) | Post-T3 (kernel fix only, A/B after-median) | Post-T2/final (T4, 2 fresh runs) |
 |---|---|---|---|
-| `build_100k_dim3_f32_seq` | ~1.0 | 0.971 | 0.974–1.079 |
-| `knn_fixed3_dim3_f32_k10` | 1.042–1.058 | 1.054 | **1.011–1.040** |
-| `knn_dyn_dim8_f64_k10` | 0.95–0.97 | **0.867** | 0.950–0.966 |
-| `radius_dim3_f32` | 0.77–0.81 | 0.777 | 0.827–0.828 |
+| `build_100k_dim3_f32_seq` | 0.986–1.018 | 0.971 | 0.974–1.079 |
+| `knn_fixed3_dim3_f32_k10` | 1.030–1.063 | 1.054 | **1.011–1.040** |
+| `knn_dyn_dim8_f64_k10` | 0.944–1.091 (0.944–0.984 excluding one flagged outlier) | **0.867** | 0.950–0.966 |
+| `radius_dim3_f32` | 0.767–0.792 | 0.777 | 0.827–0.828 |
 | `dyn_add_20k_dim3_f32` | 1.106–1.237 | 1.123 | 1.121–1.170 |
-| `dyn_knn_after_churn_dim3_f32` | 0.971–0.976 | 0.974 | **0.873–0.916** |
+| `dyn_knn_after_churn_dim3_f32` | 0.956–0.976 | 0.974 | **0.873–0.916** |
 
 **The T2 trade-off, stated plainly — this is not a "no regression" story.**
 `knn_dyn_dim8_f64_k10` and `radius_dim3_f32` both moved measurably worse
 after T2 landed than they were immediately post-T3: T3's kernel fix took
-`dim8` from ~0.95 down to 0.867 (a real win, ~0.083 of ratio), and T2's
-iterative-search conversion gave back essentially all of that win (0.867 →
-0.950–0.966, a give-back of 0.083–0.099 — 100–119% of the win, landing back
-inside the milestone-start band rather than below it);
-`radius` moved from 0.777 (matching the milestone-start band) to
-0.827–0.828, landing about 2% *outside* the milestone-start band's upper
-edge (0.81) — a real, if small, net loss relative to where this crate
-started M2.5, not just relative to T3's peak. This is confirmed reproducible
-(not noise): the task-2 reviewer independently measured raw-ms interleaved
-A/Bs (radius +4.4–7.4%, dim8 +6.4–6.8%, direction-clean across both forward
-and reversed run orderings — see `task-2-report.md` Fix-round-1 Item 2) and
-this task's fresh sweep lands in the same ranges. **It was ruled to land
-anyway**, because `knn_fixed3` improved (1.042–1.058 → 1.011–1.040) and
-`dyn_knn_after_churn` improved dramatically (0.971–0.976 → 0.873–0.916, a
+`dim8` from 0.945 (its own interleaved before-median) down to 0.867 (a
+real win, 0.078 of ratio), and T2's iterative-search conversion gave back
+**all** of that win (0.867 → 0.950–0.966, a give-back of 0.083–0.099
+against a 0.078 win, landing back inside the pre-M2.5 range 0.944–0.984
+rather than below it); `radius` moved from 0.777 (inside the pre-M2.5
+range 0.767–0.792) to 0.827–0.828, about **4.4% above that range's top**
+(0.792) — a real net loss relative to where this crate started M2.5, not
+just relative to T3's peak. This is confirmed reproducible (not noise):
+T2's raw-ms interleaved A/Bs (radius +4.4–7.4%, dim8 +6.4–6.8%,
+direction-clean across both forward and reversed run orderings — pasted
+in `docs/EXPERIMENTS.md`'s "M2.5 task 2" subsection, source
+`task-2-report.md` Fix round 1 Item 2) and this task's fresh sweep land in
+the same ranges. **It was ruled to land anyway**, because `knn_fixed3`
+improved (1.030–1.063 → 1.011–1.040 in the sweeps; T2's interleaved A/B
+medians 1.052 → 1.0205 are the cleaner evidence) and
+`dyn_knn_after_churn` improved dramatically (0.956–0.976 → 0.873–0.916, a
 bigger win in this fresh sweep than T2's own report captured), and because
 the explicit-stack form gives the query path stack-overflow immunity on
 degenerate trees that the old native-recursion form did not have (C++
@@ -512,7 +536,7 @@ milestone-start baseline, not against the C++ oracle.
 
 ### dim-32/64 headline: the M1-era gap is closed at f32
 
-| dim | scalar | milestone-start (T1 diagnostic baseline) | T3 landed (single measured run) | T4 final sweep (2 fresh runs) |
+| dim | scalar | milestone-start (T3's interleaved "before" median, pre-T3 code) | T3 landed (interleaved A/B "after" median, 3 runs) | T4 final sweep (2 fresh runs) |
 |---|---|---|---|---|
 | 32 | f32 | 1.423 | 0.966 | **0.966–1.008** |
 | 32 | f64 | 1.315 | 1.113 | 1.103–1.111 |
@@ -522,7 +546,8 @@ milestone-start baseline, not against the C++ oracle.
 Measured via `cargo run -p xval --release --example m25_diag -- knn`
 (n=100k, 200 queries, k=10, leaf=10 — the "gate-style knn" methodology T1/T3
 used; not one of the six `PERF_GATE`-gated workloads, but reproducible the
-same way, see `docs/EXPERIMENTS.md`).
+same way, see `docs/EXPERIMENTS.md` — the first two columns are pasted in
+its "M2.5 task 3" subsection, the last in "M2.5 task 4").
 
 Mechanism: `L2::eval`/`L1::eval`'s per-component bounds checks split the
 unrolled kernel body into 8 basic blocks and blocked LLVM's SLP vectorizer
@@ -531,9 +556,12 @@ AVX2/AVX-512 with no reordering, proving the order itself was always
 vectorizable. The fix — `DataSource::point_row` plus a bounds-check-free
 `as_chunks::<4>()` row walk computing the IDENTICAL summation order — is
 proven bit-exact with the fallback via a 6-salt-per-dim discriminating test
-sweep (`task-3-report.md` §2, §8.1), **not** a reordering or SIMD intrinsic.
-dim-32 f32 flips from a ~1.42x C++ win to parity-or-better (0.97–1.01x);
-dim-64 f32 improves substantially (1.92x → 1.16–1.23x) but remains open
+sweep (RED captures under two sabotages pasted in `docs/EXPERIMENTS.md`'s
+"M2.5 task 3" subsection; full transcripts `task-3-report.md` §8.1),
+**not** a reordering or SIMD intrinsic. dim-32 f32 flips from a ~1.42x
+C++ win to parity-or-better (0.97–1.01x); dim-64 f32 improves
+substantially (1.918x → 1.16–1.23x across T3+T4 runs: T3's A/B median
+1.228, T4's 1.162–1.171, the fix-wave re-run's 1.169) but remains open
 (see "Honest residuals" below); dim-32/64 f64 both land close to or under
 parity (1.10–1.11x / 0.88x).
 
@@ -560,19 +588,24 @@ above). `SEARCH_STACK_INLINE_CAPACITY = 128` is arbitrary-with-headroom
 produce, ~13-17 levels for a balanced 100k-point/leaf-10 tree) — not
 derived from a principled depth-distribution analysis, and **not** a lever
 that recovers the `radius`/`dim8` give-back above: a capacity-32 variant
-was A/B-tested and did not help (`task-2-report.md` Fix round 1, Items 2
-and 7).
+was A/B-tested and did not help (NEW32 columns in `docs/EXPERIMENTS.md`'s
+"M2.5 task 2" subsection; `task-2-report.md` Fix round 1, Items 2 and 7).
 
 ### Honest residuals (still open after M2.5)
 
-- **Fixed-dim-3 knn**: ~1.01–1.04x in this task's fresh sweep (asm-evidenced
-  ~2% residual attributed to frame store/reload cost in the now-fully-inlined
-  explicit-stack form — `task-2-report.md` Fix round 1, Item 2) — within
-  this host's documented noise floor (0.956–1.192 over 8 runs, T1's
-  report), not chased further.
+- **Fixed-dim-3 knn**: 1.011–1.040x in this task's fresh sweep. What IS
+  asm-evidenced: the walk is fully inlined — zero `search_level` call
+  targets (`docs/EXPERIMENTS.md` "M2.5 asm re-capture"). What is NOT
+  separately measured: the residual's mechanism — the T2 reviewer's
+  diagnosis attributes it to frame store/reload cost in the explicit-stack
+  form (`task-2-report.md` Fix round 1, Item 2), consistent with the
+  give-back A/B data but never quantified from asm, so no "~2%" or any
+  other share of the residual should be read as asm-derived. The whole
+  residual sits inside this host's documented noise floor (0.956–1.192
+  over 8 runs, `docs/EXPERIMENTS.md` "M2.5 task 1"), not chased further.
 - **dim-32 f64**: ~1.10–1.11x — closed substantially (from 1.315x) but not
   to parity; not specifically targeted by T3 (which prioritized f32).
-- **dim-64 f32**: ~1.16–1.23x — improved substantially (from 1.918x) but
+- **dim-64 f32**: 1.16–1.23x across T3+T4 runs — improved substantially (from 1.918x) but
   not closed; T1/T3 both flagged dim-64 as "improved, not eliminated," a
   deliberately smaller-priority residual than dim-32, left open by design
   (T3's target was dim-32).
@@ -580,7 +613,8 @@ and 7).
   — **NOT taken** in M2.5. No arithmetic reordering landed anywhere in the
   default build; T3's chunked row walk (the only kernel change) is proven
   bit-exact with the fallback via multi-salt discriminating tests
-  (`task-3-report.md` §8.1) — parity is intact. A fast-math feature flag
+  (`docs/EXPERIMENTS.md` "M2.5 task 3"; `task-3-report.md` §8.1) — parity
+  is intact. A fast-math feature flag
   (non-default, its own accuracy docs, never in the parity suites) remains
   a possible future lever, unexplored.
 - **Parallel slot rebuilds for the dynamic adaptor**: not touched by M2.5
