@@ -90,6 +90,49 @@ macro_rules! abs_ternary {
     }};
 }
 
+/// Bounds-check-free chunked row walk for `L1::eval` -- same lever as
+/// `l2_eval_row` below, mirrored for sum-of-absolute-differences. The
+/// ternary matches `abs_ternary!` exactly (`if v < 0 { -v } else { v }`);
+/// `zero - v` stands in for unary negation (`Scalar` has no `Neg` bound) and
+/// is bit-identical to `-v` here because this arm is only reached when `v`
+/// is strictly negative (never `-0.0`/`+0.0`), so there is no zero-sign
+/// ambiguity between the two spellings.
+#[inline]
+fn l1_eval_row<T: Scalar>(query: &[T], row: &[T], dim: usize) -> T {
+    let zero = T::default();
+    #[inline]
+    fn abs_t<T: Scalar>(v: T, zero: T) -> T {
+        if v < zero {
+            zero - v
+        } else {
+            v
+        }
+    }
+    let mut result: T = zero;
+    let multof4 = (dim >> 2) << 2;
+    let (qc, _) = query[..multof4].as_chunks::<4>();
+    let (rc, _) = row[..multof4].as_chunks::<4>();
+    for (a, b) in qc.iter().zip(rc.iter()) {
+        let diff0 = abs_t(a[0] - b[0], zero);
+        let diff1 = abs_t(a[1] - b[1], zero);
+        let diff2 = abs_t(a[2] - b[2], zero);
+        let diff3 = abs_t(a[3] - b[3], zero);
+        result = result + ((diff0 + diff1) + (diff2 + diff3));
+    }
+    let d = multof4;
+    let rem = dim - multof4;
+    if rem >= 3 {
+        result = result + abs_t(query[d + 2] - row[d + 2], zero);
+    }
+    if rem >= 2 {
+        result = result + abs_t(query[d + 1] - row[d + 1], zero);
+    }
+    if rem >= 1 {
+        result = result + abs_t(query[d] - row[d], zero);
+    }
+    result
+}
+
 macro_rules! impl_l1 {
     ($t:ty) => {
         impl Distance<$t> for L1 {
@@ -103,6 +146,11 @@ macro_rules! impl_l1 {
                 dim: D,
             ) -> $t {
                 let dim = dim.dim();
+                if let Some(row) = ds.point_row(idx) {
+                    if row.len() >= dim && query.len() >= dim {
+                        return l1_eval_row(query, row, dim);
+                    }
+                }
                 let mut result: $t = 0.0;
                 let multof4 = (dim >> 2) << 2; // largest multiple of 4
                 let mut d = 0usize;
@@ -138,6 +186,50 @@ macro_rules! impl_l1 {
     };
 }
 
+/// Bounds-check-free chunked row walk for `L2::eval`, used whenever
+/// `DataSource::point_row` hands back a contiguous slice. Computes the
+/// IDENTICAL summation as the per-component fallback loop below --
+/// `(d0*d0 + d1*d1) + (d2*d2 + d3*d3)` per 4-wide chunk (via `as_chunks`, one
+/// slice-length check instead of 8 per-element bounds checks), then the same
+/// descending-remainder tail (d+2, d+1, d+0) -- so results are bit-identical;
+/// only the *loads* move (row-indexed rather than `point_component`-indexed).
+/// Row-vs-fallback bit-equality is asserted by
+/// `metric::tests::l2_eval_row_path_bit_equals_fallback_path_all_dims_{f32,f64}`.
+#[inline]
+fn l2_eval_row<T: Scalar>(query: &[T], row: &[T], dim: usize) -> T {
+    let mut result: T = T::default(); // zero, per Scalar's contract
+    let multof4 = (dim >> 2) << 2; // largest multiple of 4
+    let (qc, _) = query[..multof4].as_chunks::<4>();
+    let (rc, _) = row[..multof4].as_chunks::<4>();
+    for (a, b) in qc.iter().zip(rc.iter()) {
+        let diff0 = a[0] - b[0];
+        let diff1 = a[1] - b[1];
+        let diff2 = a[2] - b[2];
+        let diff3 = a[3] - b[3];
+        // Parentheses break the dependency chain -- same order as the
+        // fallback loop / C++.
+        result = result + ((diff0 * diff0 + diff1 * diff1) + (diff2 * diff2 + diff3 * diff3));
+    }
+    // Process last 0-3 components. Replicates the fallback loop's /
+    // C++'s fall-through switch: terms added in descending order d+2, d+1,
+    // d+0.
+    let d = multof4;
+    let rem = dim - multof4;
+    if rem >= 3 {
+        let diff = query[d + 2] - row[d + 2];
+        result = result + diff * diff;
+    }
+    if rem >= 2 {
+        let diff = query[d + 1] - row[d + 1];
+        result = result + diff * diff;
+    }
+    if rem >= 1 {
+        let diff = query[d] - row[d];
+        result = result + diff * diff;
+    }
+    result
+}
+
 macro_rules! impl_l2 {
     ($t:ty) => {
         impl Distance<$t> for L2 {
@@ -151,6 +243,11 @@ macro_rules! impl_l2 {
                 dim: D,
             ) -> $t {
                 let dim = dim.dim();
+                if let Some(row) = ds.point_row(idx) {
+                    if row.len() >= dim && query.len() >= dim {
+                        return l2_eval_row(query, row, dim);
+                    }
+                }
                 let mut result: $t = 0.0;
                 let multof4 = (dim >> 2) << 2; // largest multiple of 4
                 let mut d = 0usize;
@@ -492,6 +589,113 @@ mod tests {
         let expected = (2.0 * core::f64::consts::PI - 6.0).abs();
         assert!((SO2.accum_dist(3.0f64, -3.0, 1) - expected).abs() < 1e-12);
         assert!((SO2.accum_dist(-3.0f64, 3.0, 1) - expected).abs() < 1e-12);
+    }
+
+    // ---- Test 11: L2::eval row path bit-equals the point_component fallback
+    // path. This is the load-bearing invariant for the chunked
+    // bounds-check-free row walk: `FlatSlice` takes the row path (it
+    // overrides `point_row`), while `FallbackOnlySource` forwards
+    // `point_component` but never overrides `point_row` (stays `None`), so
+    // it is forced through the untouched per-component loop. Both must
+    // produce bit-identical results for every dim across all four 4-wide
+    // remainder classes (0/1/2/3) and both scalar types. ----
+
+    /// Wraps a `FlatSlice` but does NOT override `point_row` -- forces
+    /// `L2::eval`/`L1::eval` through the per-component fallback path even
+    /// though the underlying storage is contiguous.
+    struct FallbackOnlySource<'a, T> {
+        inner: FlatSlice<'a, T>,
+    }
+
+    impl<'a, T: Scalar> DataSource<T> for FallbackOnlySource<'a, T> {
+        fn point_count(&self) -> usize {
+            self.inner.point_count()
+        }
+        fn point_component(&self, idx: usize, dim: usize) -> T {
+            self.inner.point_component(idx, dim)
+        }
+        // `point_row` intentionally NOT overridden -- default `None`.
+    }
+
+    const BIT_EQ_DIMS: &[usize] = &[1, 2, 3, 4, 5, 6, 7, 8, 15, 16, 17, 31, 32, 33, 64];
+
+    /// Deterministic, non-integer "random-ish" data -- irrational-ish
+    /// multipliers so summation-order differences would actually show up as
+    /// rounding differences (unlike small exact integers).
+    fn gen_random_ish_f64(dim: usize, salt: f64) -> (Vec<f64>, Vec<f64>) {
+        let q: Vec<f64> = (0..dim).map(|i| ((i as f64) * 0.837421 + salt).sin() * 137.035999).collect();
+        let p: Vec<f64> = (0..dim).map(|i| ((i as f64) * 1.928374 + salt * 1.5).cos() * 271.8281828 + 0.5).collect();
+        (q, p)
+    }
+
+    fn gen_random_ish_f32(dim: usize, salt: f32) -> (Vec<f32>, Vec<f32>) {
+        let q: Vec<f32> = (0..dim).map(|i| ((i as f32) * 0.837421 + salt).sin() * 137.036).collect();
+        let p: Vec<f32> = (0..dim).map(|i| ((i as f32) * 1.928374 + salt * 1.5).cos() * 271.828_2 + 0.5).collect();
+        (q, p)
+    }
+
+    #[test]
+    fn l2_eval_row_path_bit_equals_fallback_path_all_dims_f32() {
+        for &dim in BIT_EQ_DIMS {
+            let (q, p) = gen_random_ish_f32(dim, 3.01772);
+            let flat = FlatSlice::new(&p, dim);
+            let fallback = FallbackOnlySource { inner: flat };
+            let row_result = L2.eval(&q, &flat, 0, DynDim(dim));
+            let fallback_result = L2.eval(&q, &fallback, 0, DynDim(dim));
+            assert_eq!(
+                row_result.to_bits(),
+                fallback_result.to_bits(),
+                "dim={dim} row={row_result} fallback={fallback_result}"
+            );
+        }
+    }
+
+    #[test]
+    fn l2_eval_row_path_bit_equals_fallback_path_all_dims_f64() {
+        for &dim in BIT_EQ_DIMS {
+            let (q, p) = gen_random_ish_f64(dim, 3.01772);
+            let flat = FlatSlice::new(&p, dim);
+            let fallback = FallbackOnlySource { inner: flat };
+            let row_result = L2.eval(&q, &flat, 0, DynDim(dim));
+            let fallback_result = L2.eval(&q, &fallback, 0, DynDim(dim));
+            assert_eq!(
+                row_result.to_bits(),
+                fallback_result.to_bits(),
+                "dim={dim} row={row_result} fallback={fallback_result}"
+            );
+        }
+    }
+
+    #[test]
+    fn l1_eval_row_path_bit_equals_fallback_path_all_dims_f32() {
+        for &dim in BIT_EQ_DIMS {
+            let (q, p) = gen_random_ish_f32(dim, 2.60318);
+            let flat = FlatSlice::new(&p, dim);
+            let fallback = FallbackOnlySource { inner: flat };
+            let row_result = L1.eval(&q, &flat, 0, DynDim(dim));
+            let fallback_result = L1.eval(&q, &fallback, 0, DynDim(dim));
+            assert_eq!(
+                row_result.to_bits(),
+                fallback_result.to_bits(),
+                "dim={dim} row={row_result} fallback={fallback_result}"
+            );
+        }
+    }
+
+    #[test]
+    fn l1_eval_row_path_bit_equals_fallback_path_all_dims_f64() {
+        for &dim in BIT_EQ_DIMS {
+            let (q, p) = gen_random_ish_f64(dim, 2.60318);
+            let flat = FlatSlice::new(&p, dim);
+            let fallback = FallbackOnlySource { inner: flat };
+            let row_result = L1.eval(&q, &flat, 0, DynDim(dim));
+            let fallback_result = L1.eval(&q, &fallback, 0, DynDim(dim));
+            assert_eq!(
+                row_result.to_bits(),
+                fallback_result.to_bits(),
+                "dim={dim} row={row_result} fallback={fallback_result}"
+            );
+        }
     }
 
     // ---- Test 10: stateful custom metric compiles against the trait ----

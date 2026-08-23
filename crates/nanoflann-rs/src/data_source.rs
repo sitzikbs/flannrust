@@ -19,6 +19,23 @@ pub trait DataSource<T: Scalar> {
     fn fill_bbox(&self, _bbox: &mut [Interval<T>]) -> bool {
         false
     }
+
+    /// Contiguous row access fast path. Implementations whose points are
+    /// stored contiguously SHOULD override this and return the full row;
+    /// the default `None` keeps every existing implementation
+    /// source-compatible and routes metrics through [`point_component`]
+    /// unchanged. Contract: when `Some(row)` is returned, `row.len() >=
+    /// dim` and `row[d] == self.point_component(idx, d)` for all `d <
+    /// dim`, where `dim` is whatever dimensionality the caller is
+    /// currently evaluating with (the row is not required to be exactly
+    /// `dim` long -- callers that need fewer than the full row's
+    /// components just read a prefix).
+    ///
+    /// [`point_component`]: DataSource::point_component
+    #[inline]
+    fn point_row(&self, _idx: usize) -> Option<&[T]> {
+        None
+    }
 }
 
 impl<T: Scalar, const N: usize> DataSource<T> for &[[T; N]] {
@@ -30,6 +47,11 @@ impl<T: Scalar, const N: usize> DataSource<T> for &[[T; N]] {
     #[inline]
     fn point_component(&self, idx: usize, dim: usize) -> T {
         self[idx][dim]
+    }
+
+    #[inline]
+    fn point_row(&self, idx: usize) -> Option<&[T]> {
+        Some(&self[idx][..])
     }
 }
 
@@ -68,6 +90,11 @@ impl<'a, T: Scalar> DataSource<T> for FlatSlice<'a, T> {
     #[inline]
     fn point_component(&self, idx: usize, dim: usize) -> T {
         self.data[idx * self.dim + dim]
+    }
+
+    #[inline]
+    fn point_row(&self, idx: usize) -> Option<&[T]> {
+        self.data.get(idx * self.dim..idx * self.dim + self.dim)
     }
 }
 
@@ -118,6 +145,54 @@ mod tests {
         let _ = FlatSlice::new(data, 3);
     }
 
+    // ---- `point_row` contract tests ----
+
+    #[test]
+    fn test_array_slice_point_row_length_and_values() {
+        let points: &[[f32; 3]] = &[[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]];
+        let row0 = points.point_row(0).expect("array-slice point_row must be Some");
+        assert_eq!(row0.len(), 3);
+        for (d, &v) in row0.iter().enumerate() {
+            assert_eq!(v, points.point_component(0, d), "d={d}");
+        }
+    }
+
+    #[test]
+    fn test_array_slice_point_row_boundary_idx() {
+        let points: &[[f64; 4]] = &[[0.0; 4], [1.0, 2.0, 3.0, 4.0], [9.0, 8.0, 7.0, 6.0]];
+        let last = points.len() - 1;
+        let row = points.point_row(last).expect("boundary idx must return Some");
+        assert_eq!(row, &[9.0, 8.0, 7.0, 6.0]);
+    }
+
+    #[test]
+    fn test_flat_slice_point_row_length_and_values() {
+        let data = &[1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+        let flat = FlatSlice::new(data, 3);
+        let row1 = flat.point_row(1).expect("flat-slice point_row must be Some");
+        assert_eq!(row1.len(), 3);
+        for (d, &v) in row1.iter().enumerate() {
+            assert_eq!(v, flat.point_component(1, d), "d={d}");
+        }
+    }
+
+    #[test]
+    fn test_flat_slice_point_row_boundary_idx() {
+        let data = &[1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let flat = FlatSlice::new(data, 3);
+        let last = flat.point_count() - 1;
+        let row = flat.point_row(last).expect("boundary idx must return Some");
+        assert_eq!(row, &[4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn test_flat_slice_point_row_out_of_range_returns_none() {
+        let data = &[1.0f32, 2.0, 3.0, 4.0];
+        let flat = FlatSlice::new(data, 2);
+        // point_count() == 2, so idx 2 is one past the last valid point.
+        assert!(flat.point_row(2).is_none());
+    }
+
     #[test]
     fn test_default_fill_bbox_returns_false() {
         let points: &[[f32; 2]] = &[[1.0, 2.0], [3.0, 4.0]];
@@ -154,5 +229,27 @@ mod tests {
         assert_eq!(bbox[0].high, 2.0);
         assert_eq!(bbox[1].low, 3.0);
         assert_eq!(bbox[1].high, 4.0);
+    }
+
+    #[test]
+    fn test_default_point_row_returns_none_for_custom_data_source() {
+        // A hand-rolled DataSource that does not override `point_row` must
+        // keep routing every metric through `point_component` -- the whole
+        // point of the default being `None`.
+        struct CustomDataSource;
+
+        impl DataSource<f32> for CustomDataSource {
+            fn point_count(&self) -> usize {
+                2
+            }
+
+            fn point_component(&self, _idx: usize, _dim: usize) -> f32 {
+                0.0
+            }
+        }
+
+        let ds = CustomDataSource;
+        assert!(ds.point_row(0).is_none());
+        assert!(ds.point_row(1).is_none());
     }
 }
