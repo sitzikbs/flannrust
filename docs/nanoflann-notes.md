@@ -256,3 +256,28 @@ user-facing story (see its "Dynamic adaptor (M2)" section), and
   M1 remain open — M2 was scoped to the dynamic adaptor itself, not to
   closing those; both, plus parallel slot rebuilds for the dynamic
   adaptor, move to the M2.5 backlog (see `docs/ROADMAP.md`).
+
+## M2.5 outcome (2026-08-23)
+
+M2.5 (performance deep-dive) is complete. Two changes landed, both bit-exact
+parity-preserving (full xval suite green throughout): **T3** root-caused and
+closed the dim-32 knn gap (per-component bounds checks in the `L2`/`L1`
+kernel were blocking LLVM's SLP vectorizer at runtime-known dim — not a
+SIMD/batching problem as M1 had hypothesized; fixed with a bounds-check-free
+chunked row walk, `DataSource::point_row` + `as_chunks::<4>()`, bit-exact
+with the fallback: dim-32 f32 1.423x → 0.966–1.008x). **T2** converted
+`search_level` from native self-recursion to an explicit-stack iteration
+(`Frame`/`Phase`/`FrameStack`, `MaybeUninit`-backed inline array + heap-`Vec`
+spill past depth 128), closing most of the fixed-dim-3 residual
+(1.042–1.058x → 1.011–1.040x) and adding query-path stack-overflow immunity
+on degenerate trees (C++'s native `searchLevel` recursion remains exposed)
+— **at a reviewed, documented cost**: it gave back part of
+`knn_dyn_dim8_f64_k10`'s and `radius_dim3_f32`'s prior improvement (both
+remain Rust wins vs C++ throughout, ratio < 1.0) in exchange for the
+fixed-dim-3 win plus a substantial `dyn_knn_after_churn` win
+(0.971–0.976x → 0.873–0.916x in T4's fresh sweep). This is documented as a
+trade-off, not a "no regression" outcome — full accounting in
+`docs/benchmarks.md`'s "M2.5 — performance deep-dive" section. Open
+residuals explicitly not chased this milestone (dim-64 f32, dim-32 f64, the
+fixed-dim-3 last ~1-4%, a fast-math feature flag, parallel slot rebuilds):
+`docs/ROADMAP.md`'s M2.5 entry.

@@ -449,24 +449,161 @@ because it's exactly the kind of "why does this return `true` with zero
 results" surprise a reader of this benchmarks doc might otherwise hit while
 writing their own microbenchmark against an empty forest.
 
+## M2.5 — performance deep-dive
+
+Same machine/methodology as M1/M2 above (WSL2, AMD Ryzen 7 9800X3D, `rustc
+1.98.0`, `RUSTFLAGS="-C target-cpu=native"`, release profile
+`codegen-units=1`/`lto="thin"`, C++ oracle `-O3 -march=native
+-ffp-contract=off`). Two changes landed on top of each other: **T3** (a
+bounds-check-free chunked row walk in the `L2`/`L1` kernel, closing the
+dim-32 gap) and **T2** (explicit-stack iterative `search_level`, closing the
+fixed-dim-3 residual — at the cost of giving back part of T3's win on two
+other gates, a deliberate, reviewed trade-off, not a free improvement). Full
+task reports:
+`.superpowers/sdd/2026-08-23-nanoflann-rs-m2.5-perf/task-{2,3,4}-report.md`.
+Every number below was re-measured fresh by this task (T4) at commit
+`2d23db4` (2 runs per workload, pasted in full in `docs/EXPERIMENTS.md`).
+
+### Summary table: milestone-start → post-T3 → post-T2/final
+
+All ratios `rust_ms / cpp_ms`; lower is better for Rust; gate margin is
+`<= 1.25`. "Milestone-start" is the recorded pre-M2.5 range (this file's M1/M2
+sections above); "post-T3" is T3's own single measured run with the kernel
+fix landed, C++ unchanged (T3's report, commit `549f1ac`); "post-T2/final" is
+this task's fresh two-run sweep with both changes landed (commit `2d23db4`).
+
+| Workload | Milestone-start (recorded range) | Post-T3 (kernel fix only) | Post-T2/final (T4, 2 fresh runs) |
+|---|---|---|---|
+| `build_100k_dim3_f32_seq` | ~1.0 | 0.971 | 0.974–1.079 |
+| `knn_fixed3_dim3_f32_k10` | 1.042–1.058 | 1.054 | **1.011–1.040** |
+| `knn_dyn_dim8_f64_k10` | 0.95–0.97 | **0.867** | 0.950–0.966 |
+| `radius_dim3_f32` | 0.77–0.81 | 0.777 | 0.827–0.828 |
+| `dyn_add_20k_dim3_f32` | 1.106–1.237 | 1.123 | 1.121–1.170 |
+| `dyn_knn_after_churn_dim3_f32` | 0.971–0.976 | 0.974 | **0.873–0.916** |
+
+**The T2 trade-off, stated plainly — this is not a "no regression" story.**
+`knn_dyn_dim8_f64_k10` and `radius_dim3_f32` both moved measurably worse
+after T2 landed than they were immediately post-T3: T3's kernel fix took
+`dim8` from ~0.95 down to 0.867 (a real win), and T2's iterative-search
+conversion gave back roughly two-thirds of that win (0.867 → 0.950–0.966,
+landing back inside the milestone-start band rather than below it);
+`radius` moved from 0.777 (matching the milestone-start band) to
+0.827–0.828, landing about 2% *outside* the milestone-start band's upper
+edge (0.81) — a real, if small, net loss relative to where this crate
+started M2.5, not just relative to T3's peak. This is confirmed reproducible
+(not noise): the task-2 reviewer independently measured raw-ms interleaved
+A/Bs (radius +4.4–7.4%, dim8 +6.4–6.8%, direction-clean across both forward
+and reversed run orderings — see `task-2-report.md` Fix-round-1 Item 2) and
+this task's fresh sweep lands in the same ranges. **It was ruled to land
+anyway**, because `knn_fixed3` improved (1.042–1.058 → 1.011–1.040) and
+`dyn_knn_after_churn` improved dramatically (0.971–0.976 → 0.873–0.916, a
+bigger win in this fresh sweep than T2's own report captured), and because
+the explicit-stack form gives the query path stack-overflow immunity on
+degenerate trees that the old native-recursion form did not have (C++
+remains exposed — see "Robustness upgrade" below). **Both give-back
+workloads remain Rust wins vs C++ in absolute terms** (both ratios stay
+comfortably under 1.0) — the loss is entirely against this crate's own
+milestone-start baseline, not against the C++ oracle.
+
+### dim-32/64 headline: the M1-era gap is closed at f32
+
+| dim | scalar | milestone-start (T1 diagnostic baseline) | T3 landed (single measured run) | T4 final sweep (2 fresh runs) |
+|---|---|---|---|---|
+| 32 | f32 | 1.423 | 0.966 | **0.966–1.008** |
+| 32 | f64 | 1.315 | 1.113 | 1.103–1.111 |
+| 64 | f32 | 1.918 | 1.228 | 1.162–1.171 |
+| 64 | f64 | 1.213 | 0.874 | 0.879–0.887 |
+
+Measured via `cargo run -p xval --release --example m25_diag -- knn`
+(n=100k, 200 queries, k=10, leaf=10 — the "gate-style knn" methodology T1/T3
+used; not one of the six `PERF_GATE`-gated workloads, but reproducible the
+same way, see `docs/EXPERIMENTS.md`).
+
+Mechanism: `L2::eval`/`L1::eval`'s per-component bounds checks split the
+unrolled kernel body into 8 basic blocks and blocked LLVM's SLP vectorizer
+at runtime-known dim; gcc compiles the *identical* summation order to
+AVX2/AVX-512 with no reordering, proving the order itself was always
+vectorizable. The fix — `DataSource::point_row` plus a bounds-check-free
+`as_chunks::<4>()` row walk computing the IDENTICAL summation order — is
+proven bit-exact with the fallback via a 6-salt-per-dim discriminating test
+sweep (`task-3-report.md` §2, §8.1), **not** a reordering or SIMD intrinsic.
+dim-32 f32 flips from a ~1.42x C++ win to parity-or-better (0.97–1.01x);
+dim-64 f32 improves substantially (1.92x → 1.16–1.23x) but remains open
+(see "Honest residuals" below); dim-32/64 f64 both land close to or under
+parity (1.10–1.11x / 0.88x).
+
+### Robustness upgrade: query stack-overflow immunity on degenerate trees
+
+T2 converted `search_level` from native self-recursion to an explicit-stack
+iteration (`Frame`/`Phase`/`FrameStack`: a `MaybeUninit`-backed 128-frame
+inline array, with a heap-`Vec` spill for depth >= 129). This removes a
+structural risk the C++ oracle still has: nanoflann's `searchLevel` is
+native recursion with no depth bound, so a sufficiently degenerate tree
+queried on a small worker thread can, in principle, overflow the native
+call stack; this port's iterative form cannot, by construction, regardless
+of tree depth. Verified at real scale: `heavy_query_degenerate_trees` (a
+tree of depth ~16,794, this crate's documented degenerate-tree ceiling) now
+exercises the spill path directly (frame 129 onward) rather than relying on
+worker-thread stack size, and passes.
+
+This upgrade has a real, documented cost, not a free lunch: a query deeper
+than 128 levels pays per-query heap reallocation (`overflow: Vec`'s normal
+doubling growth) that the old native-recursion form never paid (zero heap
+allocation at any depth, at the price of the stack-overflow exposure
+above). `SEARCH_STACK_INLINE_CAPACITY = 128` is arbitrary-with-headroom
+(comfortably above every depth this crate's realistic gate/xval workloads
+produce, ~13-17 levels for a balanced 100k-point/leaf-10 tree) — not
+derived from a principled depth-distribution analysis, and **not** a lever
+that recovers the `radius`/`dim8` give-back above: a capacity-32 variant
+was A/B-tested and did not help (`task-2-report.md` Fix round 1, Items 2
+and 7).
+
+### Honest residuals (still open after M2.5)
+
+- **Fixed-dim-3 knn**: ~1.01–1.04x in this task's fresh sweep (asm-evidenced
+  ~2% residual attributed to frame store/reload cost in the now-fully-inlined
+  explicit-stack form — `task-2-report.md` Fix round 1, Item 2) — within
+  this host's documented noise floor (0.956–1.192 over 8 runs, T1's
+  report), not chased further.
+- **dim-32 f64**: ~1.10–1.11x — closed substantially (from 1.315x) but not
+  to parity; not specifically targeted by T3 (which prioritized f32).
+- **dim-64 f32**: ~1.16–1.23x — improved substantially (from 1.918x) but
+  not closed; T1/T3 both flagged dim-64 as "improved, not eliminated," a
+  deliberately smaller-priority residual than dim-32, left open by design
+  (T3's target was dim-32).
+- **Fast-math / reordered-arithmetic kernels**: remains a roadmap idea only
+  — **NOT taken** in M2.5. No arithmetic reordering landed anywhere in the
+  default build; T3's chunked row walk (the only kernel change) is proven
+  bit-exact with the fallback via multi-salt discriminating tests
+  (`task-3-report.md` §8.1) — parity is intact. A fast-math feature flag
+  (non-default, its own accuracy docs, never in the parity suites) remains
+  a possible future lever, unexplored.
+- **Parallel slot rebuilds for the dynamic adaptor**: not touched by M2.5
+  (T2/T3 both worked the query/kernel hot paths, not `add_points`'s
+  sequential rebuild schedule); C++ rebuilds sequentially too, so this
+  remains a documented deviation-not-yet-taken, not a regression.
+
 ## Test status (workspace, current — supersedes both crate-specific counts above)
 
-`cargo test --workspace --all-features` (re-run during the M2 final-review
-fix wave, commit range up to and including that wave's changes): **345
-passed, 0 failed, 15 ignored** (up from M1's 269/0/8, and from 343/0/15 at
-M2's initial completion — the fix wave added two `nanoflann-rs` unit tests
-for the `maximum_point_count` capacity bounds check; M2 itself added the
-`nanoflann-ref` dynamic-oracle tests, `xval`'s dynamic cross-validation
-suite, the report renderer's test file, and the two new dynamic perf
-gates, all counted here). Note: `--all-features` and default features are
-identical invocations here — `parallel` (rayon, on by default) is
+`cargo test --workspace --all-features` (re-run for M2.5 task 4, commit
+`2d23db4`): **359 passed, 0 failed, 15 ignored** (up from M2's
+final-review-fix-wave count of 345/0/15 — M2.5 added `nanoflann-rs`'s
+`search.rs` `FrameStack`/spill tests (T2) and `metric.rs`'s `point_row`
+bit-equality + contract tests (T3), all counted here; M1's original
+269/0/8 remains superseded). Note: `--all-features` and default features
+are identical invocations here — `parallel` (rayon, on by default) is
 `nanoflann-rs`'s only feature, so `cargo test --workspace` alone (as used
 elsewhere in this repo, e.g. the README) exercises exactly the same code.
-`cargo clippy --workspace --all-targets -- -D warnings`: clean. A forced
-rebuild (`touch` every crate's `src/*.rs` then `cargo build --workspace
---all-targets`) produced zero warnings, and so does `cargo doc -p
-nanoflann-rs --no-deps` after a forced rebuild. `cargo test --workspace
---all-features --release -- --ignored --test-threads=1` (heavy suite,
-including M1's two deepest degenerate-tree builds and M2's mutation
-canaries): see `docs/EXPERIMENTS.md`'s reproduction-commands table for the
-exact invocation and this task's captured run.
+`cargo clippy --workspace --all-targets -- -D warnings`: clean (re-run for
+M2.5 task 4). `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps`:
+zero warnings (re-run for M2.5 task 4). `cargo build -p nanoflann-rs
+--no-default-features` + `cargo test -p nanoflann-rs --no-default-features`:
+clean build, **179 passed, 0 failed, 3 ignored** (re-run for M2.5 task 4).
+`cargo test --workspace --all-features --release -- --ignored
+--test-threads=1` (heavy suite, including M1's two deepest degenerate-tree
+builds, M2's mutation canaries, and M2.5's `heavy_query_degenerate_trees`
+spill-path exercise): **0 failed, 151.80s** for the `nanoflann-rs` unit-test
+binary (re-run for M2.5 task 4) — see `docs/EXPERIMENTS.md`'s
+reproduction-commands table for the exact invocation and this task's fully
+captured run, plus both miri commands (Stacked Borrows and Tree Borrows)
+validating `search.rs`'s `unsafe` `FrameStack` code.

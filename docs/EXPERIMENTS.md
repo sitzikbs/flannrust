@@ -27,6 +27,7 @@ toolchain check, both re-run for this document:
 | C++ compiler | `c++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0` | `$CXX --version`, falls back to `c++ --version` (`cxx_compiler_version()`) |
 | nanoflann (C++) version | 1.12.1, commit `7812aa0` | vendored tag, `crates/nanoflann-ref/cpp/nanoflann.hpp` |
 | git SHA at time of writing | `b90fa57` (branch `m2-dynamic` HEAD immediately before the prior documentation round's three commits, `3e9b8d6`/`3cc1f5b`/`5f671a0`); this document's M2 final-review fix wave starts from `5f671a0` | `git rev-parse --short HEAD` + `git status --porcelain` dirty check (`git_sha()`) |
+| git SHA, M2.5 task 4 (regression sweep + docs) | `2d23db4` (branch `m2p5-perf`, HEAD after T2's fix round 2 lands — both T2 and T3 fully landed) — every M2.5 number in this document's §3 "M2.5" subsections and in `docs/benchmarks.md`'s "M2.5 — performance deep-dive" section was measured at this exact commit | `git rev-parse --short HEAD`, working tree clean (`git status --porcelain` empty) |
 
 ### Vendored C++ header provenance
 
@@ -404,6 +405,118 @@ exactly the kind of range-widening honest re-measurement is expected to
 produce, and is reported as measured rather than rounded down to match a
 previously-published figure.
 
+### M2.5 task 4: full regression sweep (commit `2d23db4`, milestone close-out)
+
+Both of T2 (explicit-stack iterative `search_level`) and T3 (bounds-check-free
+chunked kernel row walk) are landed at this commit. Every command below was
+run fresh for this task; full workspace `cargo build --workspace --release`
+(with `RUSTFLAGS="-C target-cpu=native"`) preceded all timed runs, and the
+two miri commands (§3's "Miri" subsection above) were also both re-run —
+see their results at the end of this subsection.
+
+**Six perf gates, run 1** (`PERF_GATE=1 RUSTFLAGS="-C target-cpu=native"
+cargo test -p xval --release --test perf_gate -- --ignored perf_gate
+--test-threads=1 --nocapture`):
+```
+PERF_GATE perf_gate_build_100k_dim3_f32_seq: rust=9.955ms cpp=9.224ms ratio=1.079
+PERF_GATE perf_gate_dyn_add_20k_dim3_f32: rust=3.793ms cpp=3.383ms ratio=1.121
+PERF_GATE perf_gate_dyn_knn_after_churn_dim3_f32: rust=28.514ms cpp=32.650ms ratio=0.873
+PERF_GATE perf_gate_knn_dim3_f32_k10: rust=7.136ms cpp=6.859ms ratio=1.040
+PERF_GATE perf_gate_knn_dyn_dim8_f64_k10: rust=170.552ms cpp=179.529ms ratio=0.950
+PERF_GATE perf_gate_radius_dim3_f32: rust=4.993ms cpp=6.040ms ratio=0.827
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 3.82s
+```
+
+**Six perf gates, run 2** (same command, minutes later, no code changes in
+between):
+```
+PERF_GATE perf_gate_build_100k_dim3_f32_seq: rust=9.918ms cpp=10.182ms ratio=0.974
+PERF_GATE perf_gate_dyn_add_20k_dim3_f32: rust=3.939ms cpp=3.366ms ratio=1.170
+PERF_GATE perf_gate_dyn_knn_after_churn_dim3_f32: rust=28.443ms cpp=31.053ms ratio=0.916
+PERF_GATE perf_gate_knn_dim3_f32_k10: rust=7.047ms cpp=6.969ms ratio=1.011
+PERF_GATE perf_gate_knn_dyn_dim8_f64_k10: rust=171.509ms cpp=177.602ms ratio=0.966
+PERF_GATE perf_gate_radius_dim3_f32: rust=4.917ms cpp=5.940ms ratio=0.828
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 3.81s
+```
+
+All twelve gate invocations pass the 1.25 margin. Honest ranges across
+these two fresh runs: `build_100k` 0.974–1.079, `dyn_add` 1.121–1.170,
+`dyn_knn_after_churn` **0.873–0.916** (notably better than the
+0.971–0.976 previously recorded — T2's churn win, confirmed), `knn_fixed3`
+1.011–1.040 (T2's win, confirmed), `knn_dyn_dim8_f64_k10` 0.950–0.966
+(T2's give-back from T3's post-fix 0.867, landing back inside the
+milestone-start 0.95–0.97 band), `radius_dim3_f32` 0.827–0.828 (T2's
+give-back from T3's post-fix 0.777, landing ~2% outside the milestone-start
+0.77–0.81 band's upper edge — the one figure in this sweep that sits
+outside its recorded historical range, honestly reported, not smoothed
+over).
+
+**dim-32/64, run 1** (`RUSTFLAGS="-C target-cpu=native" cargo run -p xval
+--release --example m25_diag -- knn`, n=100k, 200 queries, k=10, leaf=10 —
+same "gate-style knn" methodology T1/T3 used; dim 8/16 rows omitted here,
+not part of this task's scope):
+```
+dim,scalar,rust_ms,cpp_ms,ratio
+32,f32,199.803,206.866,0.966
+32,f64,357.606,324.088,1.103
+64,f32,425.920,363.746,1.171
+64,f64,667.777,759.691,0.879
+```
+
+**dim-32/64, run 2** (same command, minutes later):
+```
+dim,scalar,rust_ms,cpp_ms,ratio
+32,f32,202.357,200.815,1.008
+32,f64,354.508,319.199,1.111
+64,f32,422.310,363.564,1.162
+64,f64,676.539,762.898,0.887
+```
+
+Both runs also printed dim-8/16 rows (omitted above, out of this task's
+dim-32/64 scope) — dim-16 showed an unexplained large jump versus dim-8
+(both f32/f64 ~76–88ms vs. dim-8's ~3.2–3.5ms, consistent across both runs,
+so not noise) that is plausibly a curse-of-dimensionality traversal cliff
+at this dataset/leaf-size combination, not measured or root-caused further
+— out of scope (T1/T3 only diagnosed dim-32/64), flagged here so it isn't
+silently dropped from the record.
+
+**Full test suite** (`cargo test --workspace --all-features`): **359
+passed, 0 failed, 15 ignored** (up from 345/0/15 recorded at M2's
+final-review fix wave).
+
+**Heavy/`--ignored` suite** (`cargo test --workspace --all-features
+--release -- --ignored --test-threads=1`): **0 failed** across all 15
+previously-ignored tests; the `nanoflann-rs` unit-test binary (the four
+heavy build/query tests, including `heavy_query_degenerate_trees` at depth
+~16,794, now exercising T2's `FrameStack` spill path) finished in
+**151.80s**; all six `perf_gate_*` tests pass (self-skipping without
+`PERF_GATE=1`, as before); all five mutation canaries
+(`xval_dynamic`/`xval_knn`/`xval_radius_box`) still correctly detect their
+injected mutations.
+
+**Clippy** (`cargo clippy --workspace --all-targets -- -D warnings`):
+clean, zero warnings.
+
+**Rustdoc** (`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps`):
+clean, zero warnings.
+
+**`--no-default-features`** (`cargo build -p nanoflann-rs
+--no-default-features` then `cargo test -p nanoflann-rs
+--no-default-features`): clean build; **179 passed, 0 failed, 3 ignored**.
+
+**Miri** (both commands from §3's "Miri" subsection above, re-run for this
+task):
+```
+$ cargo +nightly miri test -p nanoflann-rs --lib -- search
+test result: ok. 34 passed; 0 failed; 1 ignored; 0 measured; 152 filtered out; finished in 488.12s
+
+$ MIRIFLAGS="-Zmiri-tree-borrows" cargo +nightly miri test -p nanoflann-rs --lib -- search
+test result: ok. 34 passed; 0 failed; 1 ignored; 0 measured; 152 filtered out; finished in 488.12s
+```
+Both clean under Stacked Borrows and Tree Borrows — no UB detected in
+`FrameStack`'s `unsafe` code, including under the real spill path
+(`spill_boundary_deep_tree_knn_and_radius_match_brute_force`).
+
 ### Criterion benches (full sweep — ~15 minutes; smoke forms below for a quick check)
 
 ```
@@ -566,16 +679,28 @@ exact run's JSON).
 ## 5. Number provenance
 
 Every figure that appears in `README.md` or `docs/benchmarks.md` traces to
-one of the commands in §3 and one field/line in its output, as follows.
+one of the commands in §3 and one field/line in its output, as follows. The
+four M1-era single-value gate figures below (`build_100k` 1.018,
+`knn_fixed3` 1.042, `knn_dyn_dim8_f64_k10` 0.973, `radius` 0.767) and the
+original `dyn_knn_after_churn` range (0.971–0.976) are **milestone-start
+recorded values**, kept as provenance for `docs/benchmarks.md`'s M2.5
+summary table's "milestone-start" column — they are **superseded** as
+current-state figures by the M2.5 rows further down this table (`README.md`
+and `docs/benchmarks.md`'s live "Benchmarks"/"M2.5" sections cite the M2.5
+ranges, not these).
 
 | Claim (where it appears) | Regenerating command | JSON field / gate line |
 |---|---|---|
-| `build_100k_dim3_f32_seq` ratio 1.018 (README, `docs/benchmarks.md`) | Perf gate command, §3 | `PERF_GATE perf_gate_build_100k_dim3_f32_seq: ... ratio=...` |
-| `knn_fixed3_dim3_f32_k10` ratio 1.042 | Perf gate command, §3 | `PERF_GATE perf_gate_knn_dim3_f32_k10: ... ratio=...` |
-| `knn_dyn_dim8_f64_k10` ratio 0.973 | Perf gate command, §3 | `PERF_GATE perf_gate_knn_dyn_dim8_f64_k10: ... ratio=...` |
-| `radius_dim3_f32` ratio 0.767 | Perf gate command, §3 | `PERF_GATE perf_gate_radius_dim3_f32: ... ratio=...` |
-| `dyn_add_20k_dim3_f32` range 1.106–1.237 (README "Dynamic adaptor (M2)", `docs/benchmarks.md`) | Perf gate command with `perf_gate_dyn` filter, §3 | `PERF_GATE perf_gate_dyn_add_20k_dim3_f32: ... ratio=...` |
-| `dyn_knn_after_churn_dim3_f32` range 0.971–0.976 (corrected live-tombstone workload, README "Dynamic adaptor (M2)", `docs/benchmarks.md`) | Perf gate command with `perf_gate_dyn` filter, §3, "M2 final-review fix wave" subsection | `PERF_GATE perf_gate_dyn_knn_after_churn_dim3_f32: ... ratio=...` |
+| `build_100k_dim3_f32_seq` ratio 1.018 (milestone-start, `docs/benchmarks.md` M2.5 table) | Perf gate command, §3 | `PERF_GATE perf_gate_build_100k_dim3_f32_seq: ... ratio=...` |
+| `knn_fixed3_dim3_f32_k10` ratio 1.042 (milestone-start, `docs/benchmarks.md` M2.5 table) | Perf gate command, §3 | `PERF_GATE perf_gate_knn_dim3_f32_k10: ... ratio=...` |
+| `knn_dyn_dim8_f64_k10` ratio 0.973 (milestone-start, `docs/benchmarks.md` M2.5 table) | Perf gate command, §3 | `PERF_GATE perf_gate_knn_dyn_dim8_f64_k10: ... ratio=...` |
+| `radius_dim3_f32` ratio 0.767 (milestone-start, `docs/benchmarks.md` M2.5 table) | Perf gate command, §3 | `PERF_GATE perf_gate_radius_dim3_f32: ... ratio=...` |
+| `dyn_add_20k_dim3_f32` range 1.106–1.237 (still current, unaffected by M2.5, README "Dynamic adaptor (M2)", `docs/benchmarks.md`) | Perf gate command with `perf_gate_dyn` filter, §3 | `PERF_GATE perf_gate_dyn_add_20k_dim3_f32: ... ratio=...` |
+| `dyn_knn_after_churn_dim3_f32` range 0.971–0.976 (milestone-start, `docs/benchmarks.md` M2.5 table) | Perf gate command with `perf_gate_dyn` filter, §3, "M2 final-review fix wave" subsection | `PERF_GATE perf_gate_dyn_knn_after_churn_dim3_f32: ... ratio=...` |
+| **M2.5 final six-gate ranges** (`build_100k` 0.974–1.079, `knn_fixed3` 1.011–1.040, `dim8` 0.950–0.966, `radius` 0.827–0.828, `dyn_add` 1.121–1.170, `dyn_knn_after_churn` 0.873–0.916 — README "Perf gate" table, `docs/benchmarks.md` M2.5 summary table's "Post-T2/final" column) | Perf gate command, §3, "M2.5 task 4" subsection | `PERF_GATE perf_gate_*: ... ratio=...`, both pasted runs |
+| **M2.5 dim-32/64 final ranges** (dim32 f32 0.966–1.008, dim32 f64 1.103–1.111, dim64 f32 1.162–1.171, dim64 f64 0.879–0.887 — README "dim-32/64 knn" table, `docs/benchmarks.md` M2.5 dim-32/64 table) | `cargo run -p xval --release --example m25_diag -- knn`, §3, "M2.5 task 4" subsection | stdout CSV, `dim,scalar,rust_ms,cpp_ms,ratio` rows for dim 32/64 |
+| M2.5 test-status counts (359 passed / 0 failed / 15 ignored; `--no-default-features` 179/0/3; heavy suite 0 failed, 151.80s) | Full test suite + heavy suite + `--no-default-features` commands, §3, "M2.5 task 4" subsection | terminal `test result:` lines |
+| Miri clean (Stacked Borrows + Tree Borrows, re-run for M2.5 task 4) | Miri commands, §3 | terminal `test result: ok. 34 passed; 0 failed; 1 ignored` for each aliasing model |
 | Churned-forest accuracy row (1.0/1.0/bit-exact at eps=0) | Report chain, §3 | `report.json`'s `accuracy[].workload == "dyn_churn_dim3_f32_k10_eps0"`: `rust_exact_tie_aware_vs_bruteforce`, `cpp_exact_tie_aware_vs_bruteforce`, `rust_eq_cpp_bitexact` |
 | Static accuracy rows (uniform/with_duplicates, eps ∈ {0, 0.1, 1}) | Report chain, §3 | `report.json`'s `accuracy[]` array, one row per `{dataset}_dim{d}_f32_k10_eps{e}` workload |
 | `knn_fixed3` headline table (k=1/10/100, f32/f64) | Full criterion sweep (§3; smoke form shown covers `k10/f32`) | `bench_knn.rs`'s `knn_fixed3/{lib}/{scalar}/k{k}` groups |
@@ -584,7 +709,7 @@ one of the commands in §3 and one field/line in its output, as follows.
 | `leaf_max_size` sweep table | Full criterion sweep (§3; smoke form shown covers `leaf=10/1024`) | `bench_build.rs`'s `leaf_sweep/{lib}/{leaf}/{phase}` groups |
 | Parallel build 1.75× win (M1), `build_1M_dim3_f32_par` (report tile) | Report chain, §3 | `report.json`'s `speed[].workload == "build_1M_dim3_f32_par"`: `ratio` |
 | `dyn_add`/`dyn_churn`/`dyn_knn_after_churn` criterion numbers | Full criterion sweep (§3; smoke form shown covers `dyn_add/rust`) | `bench_dynamic.rs`'s three groups |
-| Test-status counts (343 passed / 0 failed / 15 ignored) | Full test suite, §3 | terminal `test result:` line summed across all binaries — see `docs/benchmarks.md`'s "Test status (workspace, current)" section |
+| Test-status counts (343 passed at M2 initial completion, superseded by 345 at M2's final-review fix wave, superseded by **359** at M2.5 task 4 — current figure) | Full test suite, §3, "M2.5 task 4" subsection | terminal `test result:` line summed across all binaries — see `docs/benchmarks.md`'s "Test status (workspace, current)" section |
 | Heavy-suite pass (0 failed, incl. depth ~2115/~16794 builds and mutation canaries) | Heavy/`--ignored` suite, §3 | terminal `test result:` line per binary |
 | CPU model / kernel / compiler / git SHA / WSL flag (this doc's §1 table) | Report chain, §3, or `report_data` alone | `report.json`'s `meta.{cpu_model,kernel,cxx_compiler,git_sha,wsl}` |
 | `--bad`/`--good` verdict tiles, HTML scorecard | Report chain, §3 | `report.html`'s `<div class="tiles">` block, computed live from `report.json` — never hardcoded (see `crates/xval/tests/render_report_test.rs` for the test suite proving this) |
