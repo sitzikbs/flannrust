@@ -1,4 +1,4 @@
-//! M2's judge: op-sequence cross-validation between `nanoflann_rs::dynamic::
+//! M2's judge: op-sequence cross-validation between `flannrust::dynamic::
 //! DynamicKdTree` and the C++ oracle's `KDTreeSingleIndexDynamicAdaptor`
 //! (`nanoflann_ref::RefDynIndexF32`/`RefDynIndexF64`). Drives IDENTICAL
 //! add/remove/re-add sequences through both forests, over the SAME
@@ -22,7 +22,7 @@
 //! oracle slot-order).
 
 use nanoflann_ref::{RefDynIndexF32, RefDynIndexF64};
-use nanoflann_rs::{DynDim, DynamicKdTreeBuilder, ResultItem, SearchParams};
+use flannrust::{DynDim, DynamicKdTreeBuilder, ResultItem, SearchParams};
 use xval::{
     apply_dyn_op_f32, apply_dyn_op_f64, assert_dyn_structure_equal_f32, assert_dyn_structure_equal_f64,
     assert_knn_equal_f32, assert_knn_equal_f64, assert_radius_equal_f32, assert_radius_equal_f64,

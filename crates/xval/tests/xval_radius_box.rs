@@ -99,7 +99,7 @@ macro_rules! radius_sorted_true_test {
                                 // pairs -- UNSTABLE, so exact-distance ties get
                                 // an implementation-defined order, unlike KNN's
                                 // insertion-order-sorted incremental insert.
-                                // nanoflann-rs's own RadiusResultSet::sort
+                                // flannrust's own RadiusResultSet::sort
                                 // (result_set.rs) documents this exact latitude
                                 // and picks a stable sort as "one deterministic
                                 // choice within it" -- so positional comparison

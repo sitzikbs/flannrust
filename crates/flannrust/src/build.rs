@@ -13,7 +13,7 @@
 //!
 //! Every control-flow choice below (comparison operators, swap order,
 //! std::min/std::max argument order) is called out against the C++ source it
-//! mirrors, because nanoflann-rs's contract is bit-identical trees, not just
+//! mirrors, because flannrust's contract is bit-identical trees, not just
 //! "a valid kd-tree".
 
 use crate::bbox::Interval;

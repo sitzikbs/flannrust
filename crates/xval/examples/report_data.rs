@@ -34,7 +34,7 @@
 //!   from `xval::score_query_f32`'s `rel_dist_errors`.
 
 use nanoflann_ref::{Metric, RefDynIndexF32, RefIndex3F32, RefIndexF32};
-use nanoflann_rs::{ConstDim, DynDim, DynamicKdTreeBuilder, KdTreeBuilder, ResultItem, SearchParams, L2};
+use flannrust::{ConstDim, DynDim, DynamicKdTreeBuilder, KdTreeBuilder, ResultItem, SearchParams, L2};
 use std::io::Write;
 use xval::{
     apply_dyn_op_f32, brute_force_knn_l2_f32, brute_force_knn_l2_live_f32, build_rust_f32, cfg_seed, cpu_model,
@@ -52,7 +52,7 @@ const SCORING_NOTE: &str = "exact_tie_aware_vs_bruteforce: true iff the k return
 /// (an independently-written summation is not reliably bit-exact against
 /// either tree's internal arithmetic, so GT must route through the same
 /// kernel).
-const GT_METHODOLOGY_NOTE: &str = "ground-truth distances computed via the library's own L2 metric kernel (nanoflann_rs::L2::eval, the same code path KdTree::knn_search uses internally for leaf points), NOT an independently-written summation; point SELECTION is a dumb linear scan over every index, independent of any tree's traversal order.";
+const GT_METHODOLOGY_NOTE: &str = "ground-truth distances computed via the library's own L2 metric kernel (flannrust::L2::eval, the same code path KdTree::knn_search uses internally for leaf points), NOT an independently-written summation; point SELECTION is a dumb linear scan over every index, independent of any tree's traversal order.";
 
 /// One-line description of the speed-timing allocation methodology,
 /// embedded verbatim in the emitted JSON's `meta.speed_methodology` field

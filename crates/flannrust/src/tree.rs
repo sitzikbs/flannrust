@@ -406,7 +406,7 @@ where
 
         if !matches!(threads, BuildThreads::Sequential) {
             panic!(
-                "nanoflann-rs was compiled without the 'parallel' feature; BuildThreads::Auto/Threads need it"
+                "flannrust was compiled without the 'parallel' feature; BuildThreads::Auto/Threads need it"
             );
         }
 
@@ -1323,7 +1323,7 @@ mod no_parallel_tests {
     use crate::params::BuildThreads;
 
     #[test]
-    #[should_panic(expected = "nanoflann-rs was compiled without the 'parallel' feature")]
+    #[should_panic(expected = "flannrust was compiled without the 'parallel' feature")]
     fn build_with_auto_threads_panics_without_parallel_feature() {
         let pts: Vec<[f64; 2]> = vec![[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]];
         let _ = KdTreeBuilder::new(ConstDim::<2>, pts.as_slice())

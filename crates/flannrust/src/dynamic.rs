@@ -318,7 +318,7 @@ where
 /// # Example
 ///
 /// ```
-/// use nanoflann_rs::{ConstDim, DynamicKdTreeBuilder};
+/// use flannrust::{ConstDim, DynamicKdTreeBuilder};
 ///
 /// let pts: Vec<[f64; 2]> = vec![[0.0, 0.0], [5.0, 5.0], [10.0, 10.0]];
 /// let mut tree = DynamicKdTreeBuilder::new(ConstDim::<2>, pts.as_slice()).build();

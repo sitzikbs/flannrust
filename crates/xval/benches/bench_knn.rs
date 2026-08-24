@@ -23,7 +23,7 @@
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use nanoflann_ref::{Metric, RefIndex3F32, RefIndex3F64, RefIndexF32, RefIndexF64};
-use nanoflann_rs::{ConstDim, KdTreeBuilder, L2};
+use flannrust::{ConstDim, KdTreeBuilder, L2};
 use xval::{build_rust_f32, build_rust_f64, cfg_seed, queries, to_array3, to_f32, uniform, BuildThreads, RoundRobin, XMetric};
 
 const N: usize = 100_000;

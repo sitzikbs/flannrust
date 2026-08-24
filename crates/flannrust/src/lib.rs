@@ -51,7 +51,7 @@
 //! # Example
 //!
 //! ```
-//! use nanoflann_rs::{ConstDim, KdTreeBuilder};
+//! use flannrust::{ConstDim, KdTreeBuilder};
 //!
 //! let pts: &[[f64; 3]] = &[
 //!     [0.0, 0.0, 0.0],

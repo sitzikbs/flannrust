@@ -189,6 +189,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d45db016d36b838f563236e9193d0ee6ce38f3f68b6c94e914b4929c96bbb890"
 
 [[package]]
+name = "flannrust"
+version = "0.1.0"
+dependencies = [
+ "rayon",
+]
+
+[[package]]
 name = "futures-core"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -294,13 +301,6 @@ name = "nanoflann-ref"
 version = "0.0.0"
 dependencies = [
  "cc",
-]
-
-[[package]]
-name = "nanoflann-rs"
-version = "0.1.0"
-dependencies = [
- "rayon",
 ]
 
 [[package]]
@@ -672,8 +672,8 @@ name = "xval"
 version = "0.0.0"
 dependencies = [
  "criterion",
+ "flannrust",
  "nanoflann-ref",
- "nanoflann-rs",
  "rand",
  "rand_chacha",
  "serde",

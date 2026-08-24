@@ -17,7 +17,7 @@
 // `as_chunks::<4>()` form clippy prefers (both measured, both bit-identical).
 #![allow(clippy::chunks_exact_to_as_chunks)]
 
-use nanoflann_rs::{ConstDim, DynDim, FlatSlice, L2, Distance};
+use flannrust::{ConstDim, DynDim, FlatSlice, L2, Distance};
 
 #[inline(never)]
 #[no_mangle]
@@ -74,8 +74,8 @@ pub fn probe_row_chunks_f32(q: &[f32], row: &[f32], dim: usize) -> f32 {
     result
 }
 
-type Tree3<'a> = nanoflann_rs::KdTree<f32, ConstDim<3>, &'a [[f32; 3]], L2, u32>;
-type TreeDyn<'a> = nanoflann_rs::KdTree<f32, DynDim, FlatSlice<'a, f32>, L2, u32>;
+type Tree3<'a> = flannrust::KdTree<f32, ConstDim<3>, &'a [[f32; 3]], L2, u32>;
+type TreeDyn<'a> = flannrust::KdTree<f32, DynDim, FlatSlice<'a, f32>, L2, u32>;
 
 /// Forces the `ConstDim<3>` / `&[[f32;3]]` monomorphization of the whole
 /// query path, so `search_level::<f32, ConstDim<3>, ...>` shows up as its own
@@ -109,13 +109,13 @@ fn main() {
 
     let pts3: Vec<[f32; 3]> = (0..1000).map(|i| [i as f32, (i * 7 % 13) as f32, (i * 3 % 5) as f32]).collect();
     let sl: &[[f32; 3]] = &pts3;
-    let t3 = nanoflann_rs::KdTreeBuilder::new(ConstDim::<3>, sl).with_metric(L2).leaf_max_size(10).build();
+    let t3 = flannrust::KdTreeBuilder::new(ConstDim::<3>, sl).with_metric(L2).leaf_max_size(10).build();
     let mut oi = vec![0u32; 10];
     let mut od = vec![0.0f32; 10];
     println!("{}", probe_knn3(&t3, &[1.0, 2.0, 3.0], &mut oi, &mut od));
 
     let flat: Vec<f32> = (0..1000 * 32).map(|i| (i % 97) as f32).collect();
-    let tdyn = nanoflann_rs::KdTreeBuilder::new(DynDim(32), FlatSlice::new(&flat, 32))
+    let tdyn = flannrust::KdTreeBuilder::new(DynDim(32), FlatSlice::new(&flat, 32))
         .with_metric(L2)
         .leaf_max_size(10)
         .build();

@@ -118,8 +118,8 @@ build_matrix_test!(build_matrix_f32, f32, build_rust_f32, RefIndexF32, |v: &Vec<
 // exponential_spacing (dim 1) -- deep degenerate tree parity. Run on a
 // 32 MiB stack thread: the C++ oracle's `divideTree` is UNBOUNDED native
 // recursion (unmodified nanoflann.hpp), and this spine construction is
-// EXACTLY the one nanoflann-rs's own `heavy_exponential_build_1m` test
-// (crates/nanoflann-rs/src/build.rs) measured reaching depth ~2115 at
+// EXACTLY the one flannrust's own `heavy_exponential_build_1m` test
+// (crates/flannrust/src/build.rs) measured reaching depth ~2115 at
 // n=1M -- at n=1000/10_000 depth is capped near n-1 but still far beyond
 // what a default ~2 MiB test thread stack safely holds for a
 // template-heavy recursive C++ function. The ITERATIVE Rust builder
@@ -135,7 +135,7 @@ build_matrix_test!(build_matrix_f32, f32, build_rust_f32, RefIndexF32, |v: &Vec<
 /// was tried first and found to hang/OOM. Root cause: `exponential_spacing`'s
 /// spine starts at `2^1023`
 /// (f64::MAX-ish) to stress f64's dynamic range, per the formula proven
-/// degenerate in nanoflann-rs's `heavy_exponential_build_1m` (an f64-ONLY
+/// degenerate in flannrust's `heavy_exponential_build_1m` (an f64-ONLY
 /// test -- no f32 analog exists there). `2^1023` is ~900 orders of magnitude
 /// past f32::MAX (~2^128), so casting saturates: 896 of the first 1000 spine
 /// values become the EXACT SAME `f32::INFINITY`. Building a KD-tree over
@@ -209,7 +209,7 @@ fn build_exponential_spacing_n1000_both_scalars() {
 // Parallel build cross-language parity (task 12): Rust `BuildThreads::Auto`
 // vs C++ `n_thread_build=4` -- C++'s `divideTreeConcurrent` also partitions
 // the whole range BEFORE spawning worker threads (confirmed in
-// `crates/nanoflann-rs/src/build.rs`'s `SubtreeBuilder::build` doc comment,
+// `crates/flannrust/src/build.rs`'s `SubtreeBuilder::build` doc comment,
 // which cites having read `divideTreeConcurrent`, nanoflann.hpp ~1422-1479),
 // so its `vAcc_` is identical to what its OWN sequential build produces --
 // meaning this closes the loop cross-language: Rust's `Auto` build must

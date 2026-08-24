@@ -1,4 +1,4 @@
-//! Cross-validation suite: same data, same queries, Rust `nanoflann-rs`
+//! Cross-validation suite: same data, same queries, Rust `flannrust`
 //! `KdTree` vs the in-process C++ nanoflann 1.12.1 oracle (`nanoflann-ref`),
 //! compared BIT-EXACTLY (`ties = false`, positional, is the default
 //! everywhere; `ties = true` relaxes ONLY index order within EXACT
@@ -21,7 +21,7 @@
 //! Rust side would be handicapped to a generic-x86-64 baseline instruction
 //! set while the C++ side already gets the host's full ISA.
 
-use nanoflann_rs::{
+use flannrust::{
     BuildThreads as RustBuildThreads, Distance, DynDim, FlatSlice, Interval, KdTree, KdTreeBuilder,
     ResultItem, SearchParams, L1, L2, L2Simple, SO2, SO3,
 };
@@ -105,7 +105,7 @@ pub fn all_identical(n: usize, dim: usize) -> Vec<f64> {
 /// Dim-1 dataset with exponentially shrinking gaps: `2^1023, 2^1022, ...`
 /// down to (near) the smallest positive value f64 can hold, then padded with
 /// `0.0` to reach `n` points. This is the EXACT spine construction
-/// `nanoflann-rs`'s `heavy_exponential_build_1m` test (crates/nanoflann-rs/
+/// `flannrust`'s `heavy_exponential_build_1m` test (crates/flannrust/
 /// src/build.rs) proved produces a maximally degenerate `middle_split` tree
 /// (each split peels ~1-2 points, so depth grows ~linearly with `n` up to
 /// f64's ~2098-halving dynamic-range ceiling) -- reused verbatim here so the
@@ -183,7 +183,7 @@ pub fn to_f32(v: &[f64]) -> Vec<f32> {
 
 /// Reshapes a row-major flat buffer (`n*3` elements) into `n` fixed-size
 /// `[T; 3]` points, for the `ConstDim::<3>` benchmark/report arms (the
-/// `&[[T; 3]]` `DataSource` impl in `nanoflann_rs::data_source`). Panics if
+/// `&[[T; 3]]` `DataSource` impl in `flannrust::data_source`). Panics if
 /// `flat.len()` is not a multiple of 3.
 pub fn to_array3<T: Copy>(flat: &[T]) -> Vec<[T; 3]> {
     assert_eq!(flat.len() % 3, 0, "to_array3: flat.len() ({}) must be a multiple of 3", flat.len());
@@ -476,9 +476,9 @@ impl XMetric {
     }
 }
 
-/// Build-thread policy for `build_rust_*`. Mirrors `nanoflann_rs::BuildThreads`
+/// Build-thread policy for `build_rust_*`. Mirrors `flannrust::BuildThreads`
 /// 1:1 (kept as xval's own type rather than a re-export so `tests/*.rs` don't
-/// need to depend on `nanoflann-rs`'s feature flags to name a variant) --
+/// need to depend on `flannrust`'s feature flags to name a variant) --
 /// `to_rust` maps it onto the real thing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BuildThreads {
@@ -687,7 +687,7 @@ macro_rules! define_rust_index {
 
         /// Builds a `$Name` over flat row-major `data` (`n*dim` elements)
         /// via `DynDim` + `FlatSlice`, the given `metric`/`leaf`/`threads`
-        /// (mapped onto `nanoflann_rs::BuildThreads` via `to_rust`).
+        /// (mapped onto `flannrust::BuildThreads` via `to_rust`).
         pub fn $build_fn<'a>(
             data: &'a [$t],
             dim: usize,
@@ -757,7 +757,7 @@ define_rust_index!(RustIndexF32, build_rust_f32, f32);
 macro_rules! impl_brute_force_knn {
     ($name:ident, $t:ty) => {
         /// Linear-scan k-NN ground truth under squared L2, computed via the
-        /// LIBRARY's own `L2` metric kernel (`nanoflann_rs::L2::eval`, via a
+        /// LIBRARY's own `L2` metric kernel (`flannrust::L2::eval`, via a
         /// `FlatSlice` over `data`) -- NOT an independently-written
         /// summation; see this module's doc comment above for why that
         /// distinction is load-bearing for bit-exact scoring. Tie-broken by
@@ -1135,7 +1135,7 @@ pub fn with_ctx<F: FnOnce()>(ctx: impl std::fmt::Display, f: F) {
 
 // ============================================================================
 // M2 Task 4 -- dynamic (add/remove) cross-validation helpers. Everything
-// below drives IDENTICAL op sequences through `nanoflann_rs::dynamic::
+// below drives IDENTICAL op sequences through `flannrust::dynamic::
 // DynamicKdTree` and `nanoflann_ref::RefDynIndexF32/F64` so `tests/
 // xval_dynamic.rs` can compare structure + query results bit-exact after
 // EVERY step. See `nanoflann_ref::RefDynIndexF32`'s doc comment for the
@@ -1146,7 +1146,7 @@ pub fn with_ctx<F: FnOnce()>(ctx: impl std::fmt::Display, f: F) {
 // ============================================================================
 
 use nanoflann_ref::{RefDynIndexF32, RefDynIndexF64};
-use nanoflann_rs::{DataSource, DynamicKdTree, Scalar};
+use flannrust::{DataSource, DynamicKdTree, Scalar};
 
 /// Fixed backing buffer (`data`, `n_capacity = data.len() / dim` points)
 /// with a growable LOGICAL size -- the Rust-side twin of the oracle's own
@@ -1438,7 +1438,7 @@ pub struct DynOpStats {
 /// Computes [`DynOpStats`] by replaying `ops` against a hand-simulated
 /// slot-residency model (see the struct's doc comment). `first0bit` is
 /// `dynamic.rs`'s private `First0Bit` duplicated here -- it's `pub(crate)`
-/// to `nanoflann-rs`, not part of xval's dependency surface -- purely so
+/// to `flannrust`, not part of xval's dependency surface -- purely so
 /// this simulation can determine, from a running `point_count` alone, which
 /// slot a genuinely-new index lands in and which lower slots a merge
 /// swallows.
@@ -1625,7 +1625,7 @@ macro_rules! define_dyn_apply {
         pub fn $apply_fn<'a, 'b>(
             op: &DynOp,
             growable: &'b GrowableFlat<'a, $t>,
-            rust_tree: &mut DynamicKdTree<$t, nanoflann_rs::DynDim, &'b GrowableFlat<'a, $t>>,
+            rust_tree: &mut DynamicKdTree<$t, flannrust::DynDim, &'b GrowableFlat<'a, $t>>,
             oracle: &mut $RefDyn<'a>,
         ) {
             match *op {
@@ -1655,7 +1655,7 @@ macro_rules! define_dyn_apply {
         /// found (call through `with_ctx` at the call site to attach
         /// seed/op-index context).
         pub fn $assert_struct_fn<'a>(
-            rust_tree: &DynamicKdTree<$t, nanoflann_rs::DynDim, &GrowableFlat<'a, $t>>,
+            rust_tree: &DynamicKdTree<$t, flannrust::DynDim, &GrowableFlat<'a, $t>>,
             oracle: &$RefDyn<'a>,
         ) {
             let r_tc = rust_tree.tree_count();

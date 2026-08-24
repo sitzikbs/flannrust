@@ -1,5 +1,5 @@
 //! Criterion DYNAMIC (add/remove/re-add) benchmarks: Rust `DynamicKdTree`
-//! (`nanoflann_rs::dynamic`) vs the C++ oracle's
+//! (`flannrust::dynamic`) vs the C++ oracle's
 //! `KDTreeSingleIndexDynamicAdaptor` (`nanoflann_ref::RefDynIndexF32`), same
 //! process, same timer, same data -- n = 100_000 capacity, dim 3, f32, leaf
 //! 10. Reuses M2 Task 4's cross-validation plumbing directly (`xval::
@@ -8,7 +8,7 @@
 //!
 //! METHODOLOGY NOTE: nanoflann's dynamic `addPoints` is inherently
 //! O(heavy) per point -- every call re-walks the merge-and-rebuild loop
-//! (nanoflann.hpp:2647-2675; see `crates/nanoflann-rs/src/dynamic.rs`'s
+//! (nanoflann.hpp:2647-2675; see `crates/flannrust/src/dynamic.rs`'s
 //! `add_points` doc comment for the exact schedule), NOT an amortized-O(1)
 //! insert: a genuinely-new point can trigger a cascading rebuild of every
 //! slot up to the highest slot a binary-counter-style merge touches. Our
@@ -44,7 +44,7 @@
 //!   GUARANTEED (pigeonhole: any 4096 consecutive integers contain exactly
 //!   one value congruent to 4095 mod 4096) to pass through a point_count
 //!   whose binary representation ends in >= 12 one-bits, forcing a REAL
-//!   cascading merge across slots 0..=11+ (see `nanoflann_rs::dynamic::
+//!   cascading merge across slots 0..=11+ (see `flannrust::dynamic::
 //!   DynamicKdTree::add_points`'s doc comment) that also migrates the
 //!   still-removed tombstones' recorded slot. This reaches a realistic
 //!   post-churn structure (LIVE tombstones present, real merges, tombstone
@@ -65,7 +65,7 @@
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use nanoflann_ref::RefDynIndexF32;
-use nanoflann_rs::{DynDim, DynamicKdTreeBuilder};
+use flannrust::{DynDim, DynamicKdTreeBuilder};
 use xval::{cfg_seed, queries, sample_distinct_indices, to_f32, uniform, GrowableFlat, RoundRobin};
 
 const CAP: usize = 100_000;

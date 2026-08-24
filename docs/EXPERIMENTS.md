@@ -10,6 +10,9 @@ each section's captured output.
 
 ## 1. Environment
 
+The library crate was renamed `nanoflann-rs` → `flannrust` on 2026-08-23
+(M-py T0); pasted outputs earlier than that show the old name/paths.
+
 Real values, captured via `report_data`'s own self-describing `meta` block
 (`cargo run -p xval --release --example report_data`, meta-capture helpers
 in `crates/xval/src/lib.rs`: `cpu_model`/`kernel_version`/
@@ -249,15 +252,15 @@ Borrows (`-Zmiri-tree-borrows`, a stricter/different model) can each catch
 UB the other misses:
 
 ```
-cargo +nightly miri test -p nanoflann-rs --lib -- search
-MIRIFLAGS="-Zmiri-tree-borrows" cargo +nightly miri test -p nanoflann-rs --lib -- search
+cargo +nightly miri test -p flannrust --lib -- search
+MIRIFLAGS="-Zmiri-tree-borrows" cargo +nightly miri test -p flannrust --lib -- search
 ```
 
 Expected runtime: **~8 minutes each** (miri interprets every instruction,
 ~50-100x slower than native; the `-- search` filter selects the 35 lib
 tests whose path contains `search` — 28 in `search.rs`'s own test module
 plus 7 elsewhere whose names contain `search` (5 in `tree::tests`, 2 in
-`dynamic::tests`; `cargo test -p nanoflann-rs --lib -- search --list`
+`dynamic::tests`; `cargo test -p flannrust --lib -- search --list`
 enumerates them) — 34 run + 1 `#[ignore]`d heavy test skipped, since miri
 interpreting a depth-~16 794 degenerate-tree query would run for hours). Includes
 `spill_boundary_deep_tree_knn_and_radius_match_brute_force`, which is the

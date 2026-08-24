@@ -24,7 +24,7 @@
 //! `--test-threads=1` (gate timings must not share the machine with a
 //! sibling test's CPU load).
 
-use nanoflann_rs::{ConstDim, DynDim, DynamicKdTreeBuilder, KdTreeBuilder, ResultItem, L2};
+use flannrust::{ConstDim, DynDim, DynamicKdTreeBuilder, KdTreeBuilder, ResultItem, L2};
 use nanoflann_ref::{Metric, RefDynIndexF32, RefIndex3F32, RefIndexF32, RefIndexF64};
 use xval::{
     build_rust_f32, build_rust_f64, cfg_seed, queries, sample_distinct_indices, timed_median_ms, to_array3, to_f32,
@@ -340,7 +340,7 @@ fn perf_gate_dyn_knn_after_churn_dim3_f32() {
     // point_count whose binary representation ends in >= 12 one-bits --
     // i.e. `first0bit` returns >= 12 for at least one point in the batch,
     // forcing a REAL cascading merge across slots 0..=11+ (see
-    // `nanoflann_rs::dynamic::DynamicKdTree::add_points`'s doc comment for
+    // `flannrust::dynamic::DynamicKdTree::add_points`'s doc comment for
     // the merge/rebuild schedule), which also MIGRATES the still-removed
     // tombstones' recorded slot. An earlier version of this workload
     // removed 5k and reactivated all 5k, leaving ZERO tombstones and ZERO

@@ -8,7 +8,7 @@
 //! instead of only at the next manual `cargo bench` run.
 
 use nanoflann_ref::{Metric, RefDynIndexF32, RefIndex3F32, RefIndex3F64, RefIndexF32, RefIndexF64};
-use nanoflann_rs::{ConstDim, DynDim, DynamicKdTreeBuilder, KdTreeBuilder, L2};
+use flannrust::{ConstDim, DynDim, DynamicKdTreeBuilder, KdTreeBuilder, L2};
 use xval::{
     build_rust_f32, build_rust_f64, cfg_seed, queries, sample_distinct_indices, to_array3, to_f32, uniform,
     BuildThreads, GrowableFlat, RoundRobin, XMetric,

@@ -1,4 +1,4 @@
-# nanoflann-rs
+# flannrust
 
 A Rust port of [nanoflann](https://github.com/jlblancoc/nanoflann) 1.12.1,
 targeting bit-exact result parity with the C++ reference implementation and
@@ -12,7 +12,7 @@ remain future milestones (see "Roadmap" below).
 
 ## Attribution & license
 
-`nanoflann-rs` is a derivative port of [nanoflann](https://github.com/jlblancoc/nanoflann),
+`flannrust` is a derivative port of [nanoflann](https://github.com/jlblancoc/nanoflann),
 credited to Jose Luis Blanco-Claraco et al., which itself builds on FLANN by
 Marius Muja and David G. Lowe. This crate is licensed under BSD-2-Clause (see
 [`LICENSE`](LICENSE)); the vendored, unmodified C++ header
@@ -34,7 +34,7 @@ and [`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md).
 ## Quickstart
 
 ```rust
-use nanoflann_rs::{ConstDim, KdTreeBuilder};
+use flannrust::{ConstDim, KdTreeBuilder};
 
 let pts: &[[f64; 3]] = &[
     [0.0, 0.0, 0.0],
@@ -51,7 +51,7 @@ assert_eq!(found, 2);
 assert_eq!(indices[0], 0); // nearest point is [0.0, 0.0, 0.0]
 ```
 
-(This is `crates/nanoflann-rs/src/lib.rs`'s crate-doc doctest, run under
+(This is `crates/flannrust/src/lib.rs`'s crate-doc doctest, run under
 `cargo test --workspace` on every commit.)
 
 ## Behavioral contracts
@@ -153,7 +153,7 @@ but only honors `BuildThreads::Sequential` (the default); it panics if
 ## Safety (`unsafe` in this crate)
 
 This crate contains exactly two `unsafe` blocks, both in
-`crates/nanoflann-rs/src/search.rs`'s `FrameStack` (M2.5): a
+`crates/flannrust/src/search.rs`'s `FrameStack` (M2.5): a
 `MaybeUninit::assume_init_read` in `pop` and an `assume_init_mut` in
 `top_mut`, reading back frames of the explicit-stack query walk from a
 fixed 128-slot inline array that is deliberately left uninitialized
@@ -288,7 +288,7 @@ M1 was defined as done only when all four hold — current status:
    ~16794) pass in release; empty/`k > n`/duplicate edge cases covered.
    **Met**.
 4. **Hygiene** — `cargo test --workspace` green with zero warnings (forced
-   rebuild, including `cargo doc -p nanoflann-rs --no-deps`),
+   rebuild, including `cargo doc -p flannrust --no-deps`),
    `--no-default-features` builds, doctests pass. **Met**.
 
 M2 (dynamic adaptor) was held to the same bar — bit-exact structure and
@@ -383,7 +383,7 @@ a precondition**: it only applies when the `DataSource` impl overrides
 adaptor's `GrowableFlat` all do); a custom `DataSource` that only
 implements `point_component` falls back to the per-component loop and gets
 none of this fix — see `DataSource::point_row`'s doc comment
-(`crates/nanoflann-rs/src/data_source.rs`) for what to implement to opt in.
+(`crates/flannrust/src/data_source.rs`) for what to implement to opt in.
 Result, this task's (T4's) fresh two-run sweep:
 
 | dim | scalar | before M2.5 | after M2.5 |
@@ -418,7 +418,7 @@ every mutation. Every newly-added point walks a binary-counter pattern
 (`first0bit`) to pick which slot absorbs it, merging and rebuilding every
 lower slot into it; removal is lazy (a tombstone flag, `vind` untouched
 until an unrelated merge happens to touch that slot). Full mechanism,
-verified against the C++ source line-for-line: `crates/nanoflann-rs/src/dynamic.rs`'s
+verified against the C++ source line-for-line: `crates/flannrust/src/dynamic.rs`'s
 module and `add_points` doc comments; source facts:
 [`docs/nanoflann-notes.md`](docs/nanoflann-notes.md)'s "M2 outcome" section.
 

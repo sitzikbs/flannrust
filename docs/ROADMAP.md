@@ -1,4 +1,4 @@
-# nanoflann-rs Roadmap
+# flannrust Roadmap
 
 Tracked milestones and standing requirements. Each milestone runs the same pipeline as M1: per-task implementer + independent review gate + fix loops + final whole-branch review, with bit-exact cross-validation as the non-negotiable bar wherever parity is claimed.
 
@@ -97,14 +97,14 @@ Full sweep, provenance, and every pasted run: `docs/benchmarks.md` +
 
 ## M-py — Python bindings (user directive, 2026-08-22: "most people use Python these days")
 
-Goal: make nanoflann-rs usable from Python so it can replace the common Python routes to nanoflann (e.g. pynanoflann) and compete with `scipy.spatial.cKDTree`.
+Goal: make flannrust usable from Python so it can replace the common Python routes to nanoflann (e.g. pynanoflann) and compete with `scipy.spatial.cKDTree`.
 
 - PyO3 + maturin crate (`crates/nanoflann-py`), zero-copy NumPy input (borrow the array, no copy — mirrors the Rust zero-copy DataSource contract), f32/f64, dims fixed {2,3} fast paths + runtime dim.
 - API modeled on what Python users already know (`build(points)`, `query(q, k)`, `query_radius(q, r)`), GIL released during build/query, parallel build exposed.
 - Benchmarks vs `scipy.spatial.cKDTree` and `pynanoflann` on the same seeded datasets — these are the numbers Python users care about; extend the report generator with a Python section.
 - Correctness: cross-validate the bindings against the Rust core (bit-exact) and against brute force.
 - Packaging: wheels via maturin, CI matrix later.
-- **API lead**: ship a row-major `Vec<T>`-backed `DataSource` impl (analogous to `FlatSlice` but owned) with `point_row` pre-overridden, so Python-bound NumPy buffers (row-major by default) get the M2.5 dim-32/64 kernel speedup for free instead of silently falling back to the per-component loop — see `crates/nanoflann-rs/src/data_source.rs`'s `point_row` doc comment for the precondition this closes.
+- **API lead**: ship a row-major `Vec<T>`-backed `DataSource` impl (analogous to `FlatSlice` but owned) with `point_row` pre-overridden, so Python-bound NumPy buffers (row-major by default) get the M2.5 dim-32/64 kernel speedup for free instead of silently falling back to the per-component loop — see `crates/flannrust/src/data_source.rs`'s `point_row` doc comment for the precondition this closes.
 
 ## M-pub — Announcement readiness (blog post + repo launch)
 
@@ -112,6 +112,6 @@ Cross-the-t's checklist before anything public:
 - **Re-run the full evaluation on bare-metal Linux** (current numbers are WSL2; the documented noise floor is `knn_fixed3` 0.956–1.192 across 8 runs of one unchanged tree — `docs/EXPERIMENTS.md` "M2.5 task 1"). Publish only the bare-metal numbers; keep WSL2 as a secondary data point.
 - **Claims audit**: every performance/parity sentence in the post traces to the generated report + EXPERIMENTS.md; independent re-review of the draft post against the data.
 - **Licensing/attribution**: nanoflann is BSD-2-Clause — vendored header retains its license text; README + post credit Blanco-Claraco et al. and link upstream; our LICENSE chosen (BSD-2 to match, or MIT/Apache-2.0 dual — decide explicitly).
-- **CI**: GitHub Actions running the workspace tests + `--no-default-features` + (nightly job) heavy/ignored tests and perf gates on a dedicated runner. **The miri job is required, not optional**: `search.rs`'s `FrameStack` (M2.5 task 2) is this crate's first `unsafe` code, and both aliasing models (Stacked Borrows + Tree Borrows: `cargo +nightly miri test -p nanoflann-rs --lib -- search`, once plain and once with `MIRIFLAGS="-Zmiri-tree-borrows"`, see `docs/EXPERIMENTS.md`'s "Miri" subsection) must stay green on every change that touches `search.rs`, not just at milestone close-out — a nightly-only or manual-only miri run would let a regression sit undetected for however long the interval is.
+- **CI**: GitHub Actions running the workspace tests + `--no-default-features` + (nightly job) heavy/ignored tests and perf gates on a dedicated runner. **The miri job is required, not optional**: `search.rs`'s `FrameStack` (M2.5 task 2) is this crate's first `unsafe` code, and both aliasing models (Stacked Borrows + Tree Borrows: `cargo +nightly miri test -p flannrust --lib -- search`, once plain and once with `MIRIFLAGS="-Zmiri-tree-borrows"`, see `docs/EXPERIMENTS.md`'s "Miri" subsection) must stay green on every change that touches `search.rs`, not just at milestone close-out — a nightly-only or manual-only miri run would let a regression sit undetected for however long the interval is.
 - **crates.io publish dry run**, docs.rs rendering check, README badges honest (no green-checkmark theater).
 - Blog post draft: the story is (1) bit-exact parity as a verification method (in-process oracle, tree-permutation equality, mutation canaries), (2) the wins (1.7× parallel build, 1.2–1.3× radius, M2.5's dim-32 fix), (3) honest residuals (dim-64/dim-32-f64 still open, the fixed-dim-3 last ~1-4%, and the M2.5 T2 trade-off — dim8 gave back all of its T3 win and radius landed ~4.4% worse than its pre-M2.5 range, both still < 1.0 vs C++, in exchange for the fixed-dim-3 win, the churn win, and stack-overflow immunity) — credibility comes from publishing the losses too.
