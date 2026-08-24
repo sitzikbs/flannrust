@@ -224,6 +224,40 @@ def cross_check(ftree, pnf, dim, dtype, metric, seed, label):
     progress(f"cross-check OK ({label}): 10/10 index match, max rel dist err {float(rel.max()):.2e}")
 
 
+def radius_cross_check(ftree, ctree, pnf, dim, dtype, r_sq, seed, label):
+    """Pre-timing correctness gate for the radius codepath -- `cross_check()`
+    above only exercises knn (`query`/`kneighbors`); `query_radius`/
+    `query_ball_point`/`radius_neighbors` are different code with their own
+    unit mapping (ours squared, theirs euclidean via sqrt), boundary
+    inclusivity, and selection-count logic, all otherwise unguarded. Compares
+    INDEX SETS (not order -- cKDTree/pynanoflann radius results are
+    unsorted) across all three engines on a 10-query tie-free sample at the
+    exact radius a timed cell is about to use. `seed` must be independent of
+    whatever query point `r_sq` was calibrated from (radius_workload's `r_sq`
+    sits exactly on that point's k-th-neighbor distance -- a genuine
+    engine-boundary-convention tie there, not a bug; a fresh uniform sample
+    at a different seed has ~0 probability of landing on that exact same
+    boundary, since distances over continuous uniform data are essentially
+    never exactly equal). Aborts with a clear error on any mismatch."""
+    q = make_points(10, dim, dtype, seed=seed, kind="uniform")
+    r_euclid = math.sqrt(r_sq)
+
+    f_idxs, _ = ftree.query_radius(q, r_sq, workers=1)
+    c_idxs = ctree.query_ball_point(q, r_euclid, workers=1)
+    _, p_idxs = pnf.radius_neighbors(q, radius=r_euclid, n_jobs=1)
+
+    for i in range(len(q)):
+        f_set = {int(x) for x in np.asarray(f_idxs[i])}
+        c_set = {int(x) for x in c_idxs[i]}
+        p_set = {int(x) for x in np.asarray(p_idxs[i])}
+        if not (f_set == c_set == p_set):
+            raise SystemExit(
+                f"bench_py: radius cross-check FAILED ({label}, row {i}): index sets differ -- "
+                f"flannrust={sorted(f_set)} ckdtree={sorted(c_set)} pynanoflann={sorted(p_set)}"
+            )
+    progress(f"radius cross-check OK ({label}): 10/10 rows index-set match (flannrust/cKDTree/pynanoflann)")
+
+
 # ============================================================================
 # workloads
 # ============================================================================
@@ -358,6 +392,10 @@ def radius_workload():
         d_sel, _ = ftree.query(q[0].reshape(1, -1), k=target_k)
         r_sq = float(d_sel[0, -1])
         r_euclid = math.sqrt(r_sq)
+
+        radius_cross_check(
+            ftree, ctree, pnf, dim, dtype, r_sq, _seed("radius_cc2", n, target_k), f"radius_dim3_f32_{label}"
+        )
 
         timings = timed_median_interleaved(
             {

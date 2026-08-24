@@ -109,6 +109,20 @@ fn html_escape(s: &str) -> String {
     out
 }
 
+/// Adaptive-precision ms formatting: fixed `.3` decimals renders every
+/// sub-millisecond value (e.g. the single-query-loop row's per-call times,
+/// ~0.002 ms) as an indistinguishable "0.002" -- widen to 6 decimals below
+/// 1.0 ms so distinct sub-ms values (e.g. 0.001968 vs 0.002273) stay
+/// legible; every other row's values are >> 1 ms and render identically to
+/// before (still `.3`).
+fn fmt_ms(v: f64) -> String {
+    if v.abs() < 1.0 {
+        format!("{v:.6}")
+    } else {
+        format!("{v:.3}")
+    }
+}
+
 /// Reuses the base template's existing `.pill` classes (`good`/`fail`) for
 /// the ratio cells -- `ratio < 1.0` means flannrust is faster (per the
 /// brief: "ratios < 1.0 = flannrust faster"), styled the same "good" green
@@ -138,18 +152,18 @@ fn render_python_workload_rows(workloads: &[PyWorkload]) -> String {
             format!(
                 r#"<tr{title_attr}>
 <td>{name}{overhead_badge}</td>
-<td class="num">{f_ms:.3}</td>
-<td class="num">{c_ms:.3}</td>
-<td class="num">{p_ms:.3}</td>
+<td class="num">{f_ms}</td>
+<td class="num">{c_ms}</td>
+<td class="num">{p_ms}</td>
 <td class="num">{c_ratio}</td>
 <td class="num">{p_ratio}</td>
 </tr>"#,
                 title_attr = title_attr,
                 name = html_escape(&w.name),
                 overhead_badge = overhead_badge,
-                f_ms = w.flannrust_ms,
-                c_ms = w.ckdtree_ms,
-                p_ms = w.pynanoflann_ms,
+                f_ms = fmt_ms(w.flannrust_ms),
+                c_ms = fmt_ms(w.ckdtree_ms),
+                p_ms = fmt_ms(w.pynanoflann_ms),
                 c_ratio = ratio_pill(w.ratio_ckdtree),
                 p_ratio = ratio_pill(w.ratio_pynanoflann),
             )
