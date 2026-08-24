@@ -101,7 +101,7 @@ Goal: make flannrust usable from Python so it can replace the common Python rout
 
 - **Parity, scoped by binding controller ruling**: `pynanoflann` 0.10.0 (only PyPI release) vendors nanoflann 1.5.5 vs. flannrust's own 1.12.1 C++ oracle — a version-gap summation-order artifact produces exactly-1-ULP squared-distance differences at `dim >= 3`, not a flannrust defect. Parity claim: tie-free KNN index-sequence parity (96/96 nodes, bit-exact) + dim=2 distance bit-exactness (4/4) hold unconditionally; 16 nodes attributable to the documented mechanism are pinned `xfail(strict=True)`, not silently dropped. Full root-cause writeup: `docs/EXPERIMENTS.md`.
 - The row-major owned `DataSource` (`OwnedRows`, `crates/flannrust/src/data_source.rs`) shipped with `point_row` pre-overridden, so Python-bound NumPy buffers get the M2.5 dim-32/64 kernel speedup for free — this closed the API lead originally flagged here.
-- Full task reports: `.superpowers/sdd/2026-08-23-flannrust-m-py-python-bindings/task-{0..6}-report.md` (gitignored; decisive outputs reproduced in `docs/EXPERIMENTS.md`).
+- Full task reports: `docs/reports/m-py/task-{0..6}-report.md` (decisive outputs also reproduced in `docs/EXPERIMENTS.md`).
 
 ## M-pub — Announcement readiness (blog post + repo launch)
 
