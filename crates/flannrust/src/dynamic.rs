@@ -418,6 +418,32 @@ where
         self.removed.len()
     }
 
+    /// The `DataSource` this forest was built over.
+    pub fn dataset(&self) -> &DS {
+        &self.dataset
+    }
+
+    /// Mutable access to the underlying `DataSource` -- e.g. an
+    /// `OwnedRows` a caller grows in place (`dataset_mut().push_rows(..)`)
+    /// before calling `add_points` to bring the forest's bookkeeping up to
+    /// date with the newly-appended rows.
+    ///
+    /// # Append-only contract
+    ///
+    /// Between `add_points` calls, only APPEND to the dataset -- never
+    /// shrink it below any index already passed to `add_points` (as either
+    /// `start`/`end_inclusive` of a growth call or a reactivated index).
+    /// The forest's `tree_index`/`removed` bookkeeping and every slot's
+    /// `vind` hold dataset indices that must stay resolvable for the
+    /// forest's lifetime; truncating the dataset out from under them (or
+    /// otherwise mutating already-added rows in a way that changes their
+    /// coordinates) is a caller bug this type cannot detect -- the next
+    /// query would silently read stale/out-of-bounds data instead of
+    /// panicking.
+    pub fn dataset_mut(&mut self) -> &mut DS {
+        &mut self.dataset
+    }
+
     /// Add every dataset index in `[start, end_inclusive]` (END-INCLUSIVE,
     /// matching C++'s `addPoints(IndexType start, IndexType end)` with its
     /// `idx <= end` loop condition, nanoflann.hpp:2629-2676). A `start >
@@ -1744,5 +1770,66 @@ mod tests {
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
         assert_eq!(dists, sorted, "sorted=true must yield ascending distances across multiple slot passes");
         assert!(out.len() >= 2, "test must actually exercise multiple slots' worth of results");
+    }
+
+    // ---------------------------------------------------------------
+    // `OwnedRows` round-trip: build over `OwnedRows::with_capacity`, grow
+    // it via `dataset_mut().push_rows(..)` + `add_points` in 3 batches, then
+    // one `remove_point`. Results must equal a fresh static `KdTree` built
+    // over the same live rows.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn dynamic_over_owned_rows_matches_fresh_static_tree_over_live_rows() {
+        use crate::data_source::{FlatSlice, OwnedRows};
+        use crate::tree::KdTreeBuilder;
+
+        const DIM: usize = 2;
+        // batch3's second point (dataset idx 6) is removed below.
+        let batch1: [f64; 6] = [0.0, 0.0, 10.0, 0.0, 0.0, 10.0];
+        let batch2: [f64; 4] = [5.0, 5.0, -5.0, 3.0];
+        let batch3: [f64; 4] = [2.0, -7.0, 9.0, 9.0];
+
+        let mut tree = DynamicKdTreeBuilder::new(ConstDim::<DIM>, OwnedRows::<f64>::with_capacity(DIM, 0))
+            .maximum_point_count(1000)
+            .build();
+
+        tree.dataset_mut().push_rows(&batch1);
+        tree.add_points(0, 2);
+
+        tree.dataset_mut().push_rows(&batch2);
+        tree.add_points(3, 4);
+
+        tree.dataset_mut().push_rows(&batch3);
+        tree.add_points(5, 6);
+
+        assert!(tree.remove_point(6), "point 6 must be live before removal");
+        assert_eq!(tree.active_count(), 6);
+
+        let query = [1.0, 1.0];
+        let k = 3;
+        let mut idx = [0u32; 3];
+        let mut dist = [0.0f64; 3];
+        let found = tree.knn_search(&query, &mut idx, &mut dist);
+        assert_eq!(found, k);
+
+        // Live rows are exactly the first 6 points (dataset idx 0..=5) in
+        // original order -- point 6 was appended last and only lazily
+        // tombstoned, so the underlying buffer's first 6*DIM elements are
+        // untouched and already line up index-for-index with the dynamic
+        // forest's own point indices.
+        let live_rows = &tree.dataset().as_slice()[..6 * DIM];
+        let fresh = KdTreeBuilder::new(ConstDim::<DIM>, FlatSlice::new(live_rows, DIM)).build();
+        let mut want_idx = [0u32; 3];
+        let mut want_dist = [0.0f64; 3];
+        let want_found = fresh.knn_search(&query, &mut want_idx, &mut want_dist);
+        assert_eq!(want_found, k);
+
+        // Compare as index sets (order-independent) paired with distances.
+        let mut got: Vec<(u32, f64)> = idx.iter().copied().zip(dist.iter().copied()).collect();
+        let mut want: Vec<(u32, f64)> = want_idx.iter().copied().zip(want_dist.iter().copied()).collect();
+        got.sort_by_key(|&(i, _)| i);
+        want.sort_by_key(|&(i, _)| i);
+        assert_eq!(got, want, "dynamic-over-OwnedRows knn must match a fresh static tree over the same live rows");
     }
 }

@@ -494,6 +494,15 @@ where
         &self.vind
     }
 
+    /// The `DataSource` this tree was built over. Per the A8 module doc,
+    /// the tree snapshots `vind`/`size` at `build()` time -- this accessor
+    /// reflects the LIVE dataset (visible to a caller reading it directly,
+    /// e.g. an `OwnedRows` grown after `build()`), but growth there is
+    /// invisible to search until a rebuild.
+    pub fn dataset(&self) -> &DS {
+        &self.dataset
+    }
+
     fn ctx(&self) -> SearchCtx<'_, T, D, DS, M, Idx> {
         SearchCtx {
             ds: &self.dataset,
