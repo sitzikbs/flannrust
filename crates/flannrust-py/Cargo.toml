@@ -1,0 +1,20 @@
+[package]
+name = "flannrust-py"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.98.0"
+publish = false
+
+[lib]
+# The Python extension module is imported as `flannrust` (matches the
+# workspace's published-name decision), regardless of this crate's own
+# Cargo name `flannrust-py` (needed because `flannrust` is already taken
+# by the core crate this depends on).
+name = "flannrust"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.29.2", features = ["extension-module", "abi3-py39"] }
+numpy = "0.29.0"
+rayon = "1"
+flannrust = { path = "../flannrust" }

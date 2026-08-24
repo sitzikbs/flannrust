@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/flannrust", "crates/nanoflann-ref", "crates/xval"]
+members = ["crates/flannrust", "crates/nanoflann-ref", "crates/xval", "crates/flannrust-py"]
 default-members = ["crates/flannrust", "crates/nanoflann-ref", "crates/xval"]
 
 # The C++ oracle (nanoflann-ref) is always compiled as one translation unit at
