@@ -131,14 +131,18 @@ impl KDTree {
             if d == 0 {
                 return Err(PyValueError::new_err("points must have dim >= 1"));
             }
-            let tree = build_f32(metric_norm, d, data, leaf_size, build_threads);
+            // `data`/`n`/`d`/`leaf_size`/`build_threads` are plain Rust
+            // values (no Python objects) by this point, so the (possibly
+            // parallel, potentially large) build can run with the GIL
+            // released.
+            let tree = py.detach(|| build_f32(metric_norm, d, data, leaf_size, build_threads));
             return Ok(KDTree { tree, n, dim: d, leaf_size, metric: metric_norm.to_string(), dtype: "float32" });
         }
         if let Ok((data, n, d)) = as_rows_2d::<f64>(&arr) {
             if d == 0 {
                 return Err(PyValueError::new_err("points must have dim >= 1"));
             }
-            let tree = build_f64(metric_norm, d, data, leaf_size, build_threads);
+            let tree = py.detach(|| build_f64(metric_norm, d, data, leaf_size, build_threads));
             return Ok(KDTree { tree, n, dim: d, leaf_size, metric: metric_norm.to_string(), dtype: "float64" });
         }
         Err(PyTypeError::new_err("points dtype must be float32 or float64"))
