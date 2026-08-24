@@ -98,6 +98,22 @@ pynanoflann's side -- verified empirically via a controlled boundary
 probe, independent of the 1-ULP summation-order artifact above).
 
 metric: only l2/l1 (pynanoflann does not support l2_simple).
+
+Controller ruling (fix round 1/5, accepted): the version gap above is an
+ENVIRONMENT ARTIFACT, not a flannrust defect. Parity is re-scoped to what
+holds unconditionally -- tie-free knn index sequences (full matrix,
+`test_knn_index_parity_uniform_full_matrix`) and dim==2 distance
+bit-exactness (`test_knn_distance_bitexact_dim2_positive_control`), both
+still hard/strict/green. The 16 parametrized nodes attributable to the
+1.5.5-vs-1.12.1 gap (10 in `test_radius_index_parity_uniform_full_matrix`
+at dim in {8, 32}/float32; 6 in
+`test_knn_and_radius_tie_multiset_clustered_duplicates` at dim in
+{3, 8, 32}/float32) are pinned as `xfail(strict=True)` via
+`_xfail_if_known` below, keyed by their exact parametrization tuple --
+verified to fail deterministically across two independent runs before
+being marked, per the ruling. `strict=True` means a future pynanoflann
+release vendoring a newer nanoflann (closing the summation-order gap)
+will XPASS loudly here, which is the desired outcome.
 """
 import math
 import zlib
@@ -178,6 +194,47 @@ def _sorted_pnf_radius_result(dists_row, idxs_row):
     return np.asarray(idxs_row, dtype=np.uint32)[order], np.asarray(dists_row)[order]
 
 
+_ULP_GAP_REASON = "nanoflann 1.5.5 (pynanoflann) vs 1.12.1 summation-order gap: 1-ULP boundary flip"
+
+# Exact (n, dim, dtype, leaf, metric) tuples of
+# `test_radius_index_parity_uniform_full_matrix` nodes confirmed (twice,
+# independently) to fail deterministically due to the documented 1-ULP
+# summation-order gap -- see module docstring.
+_RADIUS_XFAIL_NODES = {
+    (1000, 32, "float32", 1, "l2"),
+    (1000, 32, "float32", 64, "l2"),
+    (20000, 8, "float32", 1, "l2"),
+    (20000, 8, "float32", 1, "l1"),
+    (20000, 8, "float32", 10, "l2"),
+    (20000, 8, "float32", 10, "l1"),
+    (20000, 8, "float32", 64, "l2"),
+    (20000, 32, "float32", 1, "l2"),
+    (20000, 32, "float32", 10, "l2"),
+    (20000, 32, "float32", 64, "l2"),
+}
+
+# Same idea for `test_knn_and_radius_tie_multiset_clustered_duplicates`
+# (keyed by (kind, dim, dtype, leaf, metric); n is fixed at 1000 there).
+_TIE_MULTISET_XFAIL_NODES = {
+    ("clustered", 3, "float32", 1, "l1"),
+    ("clustered", 3, "float32", 64, "l1"),
+    ("clustered", 8, "float32", 1, "l2"),
+    ("clustered", 8, "float32", 64, "l2"),
+    ("clustered", 32, "float32", 1, "l2"),
+    ("clustered", 32, "float32", 64, "l2"),
+}
+
+
+def _xfail_if_known(request, known_nodes, key, reason=_ULP_GAP_REASON, strict=True):
+    """Targeted condition helper (per-node, not a blanket test-function
+    mark): registers `xfail(strict=strict)` on the CURRENT parametrized
+    node, iff `key` is in `known_nodes`. Must run before the test's
+    assertions so a node that unexpectedly starts passing (e.g. a future
+    pynanoflann release) is recorded as XPASS, not silently skipped."""
+    if key in known_nodes:
+        request.node.add_marker(pytest.mark.xfail(reason=reason, strict=strict))
+
+
 # =======================================================================
 # 1. KNN index-sequence parity, tie-free ("uniform") data: the ONE clean,
 #    unambiguous condition -- full spec'd matrix, k in {1, 10}, strict.
@@ -212,7 +269,10 @@ def test_knn_index_parity_uniform_full_matrix(n, dim, dtype, leaf, metric):
 #    data: full spec'd matrix, strict, UNMODIFIED. Per the escalation
 #    finding (b), this is EXPECTED to show some real failures at the
 #    strict `<` boundary for dim in {8, 32} with enough candidates
-#    (n=20000) -- left as-is per "never loosen a tolerance to get green".
+#    (n=20000). Controller-ruled ENVIRONMENT ARTIFACT: the specific 10
+#    nodes that hit it are pinned via `_xfail_if_known`/`_RADIUS_XFAIL_NODES`
+#    below (strict=True, per-node -- not a blanket test-function mark, and
+#    no assertion/tolerance was changed).
 # =======================================================================
 
 @pytest.mark.parametrize("metric", METRICS)
@@ -220,7 +280,9 @@ def test_knn_index_parity_uniform_full_matrix(n, dim, dtype, leaf, metric):
 @pytest.mark.parametrize("dtype", DTYPES)
 @pytest.mark.parametrize("dim", DIMS)
 @pytest.mark.parametrize("n", NS)
-def test_radius_index_parity_uniform_full_matrix(n, dim, dtype, leaf, metric):
+def test_radius_index_parity_uniform_full_matrix(request, n, dim, dtype, leaf, metric):
+    _xfail_if_known(request, _RADIUS_XFAIL_NODES, (n, dim, dtype, leaf, metric))
+
     pts = make_points(n, dim, dtype, seed=_seed("uniform", n, dim), kind="uniform")
     q = _make_queries(pts, dim, dtype, _nq(n), seed=_seed("uniform", n, dim, "q"))
 
@@ -255,7 +317,9 @@ def test_radius_index_parity_uniform_full_matrix(n, dim, dtype, leaf, metric):
 #    a test-design fix (an inherently unprovable property), not a
 #    tolerance loosening. Everything else is checked strictly, and (per
 #    finding (c)) some near-tie-boundary mismatches from the SAME 1-ULP
-#    artifact are expected and left unmodified.
+#    artifact are expected; the specific 6 nodes that hit it are pinned via
+#    `_xfail_if_known`/`_TIE_MULTISET_XFAIL_NODES` below (strict=True,
+#    per-node).
 # =======================================================================
 
 def _tie_groups(dists):
@@ -288,7 +352,9 @@ def _assert_tie_multiset_parity(r_idx, r_dist, c_idx, c_dist, ctx, may_truncate=
 @pytest.mark.parametrize("dtype", DTYPES)
 @pytest.mark.parametrize("dim", DIMS)
 @pytest.mark.parametrize("kind", ["clustered", "duplicates"])
-def test_knn_and_radius_tie_multiset_clustered_duplicates(kind, dim, dtype, leaf, metric):
+def test_knn_and_radius_tie_multiset_clustered_duplicates(request, kind, dim, dtype, leaf, metric):
+    _xfail_if_known(request, _TIE_MULTISET_XFAIL_NODES, (kind, dim, dtype, leaf, metric))
+
     n = 1000
     pts = make_points(n, dim, dtype, seed=_seed(kind, n, dim), kind=kind)
     q = _make_queries(pts, dim, dtype, _nq(n), seed=_seed(kind, n, dim, "q"))
