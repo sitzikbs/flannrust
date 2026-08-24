@@ -10,12 +10,15 @@
 use pyo3::prelude::*;
 
 mod convert;
+mod dynamic_tree;
 mod static_tree;
 
+use dynamic_tree::DynamicKDTree;
 use static_tree::KDTree;
 
 #[pymodule]
 fn flannrust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<KDTree>()?;
+    m.add_class::<DynamicKDTree>()?;
     Ok(())
 }
