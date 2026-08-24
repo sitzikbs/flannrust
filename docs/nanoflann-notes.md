@@ -199,7 +199,7 @@ user-facing story (see its "Dynamic adaptor (M2)" section), and
   instead of silent corruption on an illegal one. Full contract, including
   the exact reactivation exemption and its own oracle-verified regression
   test (`readd_point_1_reactivates_it_f32`), is in
-  `crates/nanoflann-rs/src/dynamic.rs`'s `add_points` doc comment.
+  `crates/flannrust/src/dynamic.rs`'s `add_points` doc comment.
 - **The per-call maxIndex/slot-0-retouch quirk**: nanoflann's rebuild pass
   after the per-point loop always runs `for (int i = 0; i <= maxIndex; ++i)`
   where `maxIndex` starts at `0` regardless of what happened in the loop —

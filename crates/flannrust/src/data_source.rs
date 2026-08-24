@@ -1,6 +1,7 @@
 //! Zero-copy dataset access: the `DataSource` trait callers implement to
-//! hand their point cloud to a `KdTreeBuilder`, plus two built-in
-//! implementations (`&[[T; N]]` and the row-major `FlatSlice`).
+//! hand their point cloud to a `KdTreeBuilder`, plus three built-in
+//! implementations (`&[[T; N]]`, the row-major `FlatSlice`, and the owned
+//! row-major `OwnedRows`).
 
 use crate::bbox::Interval;
 use crate::scalar::Scalar;

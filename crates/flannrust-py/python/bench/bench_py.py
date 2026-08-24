@@ -330,11 +330,12 @@ def batched_knn_dim3_workload():
 
     rows = []
     for workers, label in [(1, "workers1"), (-1, "workersNeg1")]:
+        n_jobs = _pnf_jobs(workers)
         timings = timed_median_interleaved(
             {
                 "flannrust": lambda w=workers: ftree.query(q, k=k, workers=w),
                 "ckdtree": lambda w=workers: ctree.query(q, k=k, workers=w),
-                "pynanoflann": lambda w=workers: pnf.kneighbors(q, k, n_jobs=_pnf_jobs(w)),
+                "pynanoflann": lambda j=n_jobs: pnf.kneighbors(q, k, n_jobs=j),
             }
         )
         rows.append(

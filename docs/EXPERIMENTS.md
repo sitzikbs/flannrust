@@ -33,6 +33,7 @@ toolchain check, both re-run for this document:
 | git SHA, M2.5 task 4 (regression sweep + docs) | `2d23db4` (branch `m2p5-perf`, HEAD after T2's fix round lands — both T2 and T3 fully landed) — every number in §3's "M2.5 task 4" subsection and in `docs/benchmarks.md`'s M2.5 "Post-T2/final" columns was measured at this exact commit. The other M2.5 §3 subsections each state their own commit: T1's noise sweep (`crates/nanoflann-rs` and `crates/nanoflann-ref` byte-identical to `41abdb6`; T1's diagnostic examples committed as `9b2e85f`), T3's post-T3 A/B (trees landed as `fecbdde` and `549f1ac`), T2's give-back A/B (`549f1ac` vs. the T2 fix-round tree landed as `2d23db4`), the final-review fix wave (`4b9fbc3`), and the asm re-capture (`84c0781`) | `git rev-parse --short HEAD`, working tree clean (`git status --porcelain` empty) |
 | git SHA, M2.5 final-review fix wave (miri re-capture + dim-16 CSV + M8 count) | `4b9fbc3` — the tree those runs were captured on. `crates/` differs from `2d23db4` only by doc comments (`git diff --stat 2d23db4 4b9fbc3 -- crates/`: `data_source.rs`, `lib.rs`, `m25_diag.rs`, doc text only), so the timed code is the `2d23db4` code | `git rev-parse --short HEAD` |
 | git SHA, asm re-capture (§3 "M2.5 asm re-capture" subsection, 2026-08-23) | `84c0781` — `crates/` vs. `2d23db4`: doc comments plus one `debug_assert!`-gated helper in `metric.rs` (`git diff 2d23db4 84c0781 -- crates/`) that compiles to nothing in `--release` | `git rev-parse --short HEAD`, `git status --porcelain` clean for `crates/` |
+| git SHA, M-py task 6 (docs + final sweep, this document's "M-py" subsection) | `0cea30c` (branch `m-py`, HEAD after T5's fix round lands — T0 through T5 fully landed) at measurement time, with T6's own changes staged but not yet committed: one-line doc-comment fixes (`data_source.rs`, this file's two stale-path fixes, `nanoflann-notes.md`), one new `flannrust` unit test (`tree.rs::dataset_returns_the_built_over_data_source`), one new pytest test (`test_query_radius_box.py`'s workers determinism case), and one bench-script line move (`bench_py.py`'s `_pnf_jobs` precompute) — none of which touch any timed code path, so every number below is representative of `0cea30c`'s compiled behavior | `git rev-parse --short HEAD` |
 
 ### Vendored C++ header provenance
 
@@ -242,7 +243,7 @@ a sibling test's load.
 
 ### Miri (undefined-behavior check for `search.rs`'s `unsafe`)
 
-`crates/nanoflann-rs/src/search.rs`'s `FrameStack` (M2.5 task 2, explicit-
+`crates/flannrust/src/search.rs`'s `FrameStack` (M2.5 task 2, explicit-
 stack iterative `search_level`) is this crate's first and only `unsafe`
 code — two small blocks (`assume_init_read`/`assume_init_mut`) implementing
 a fixed-capacity inline frame buffer with a heap-`Vec` spill. Requires
@@ -343,7 +344,7 @@ knn loop ran. Since every removal was undone, `removed_len() == 0` at query
 time — the timed loop never once ran tombstone-filtered search against a
 forest with any live tombstones, and no `add_points` call in the setup ever
 triggered a merge deep enough to matter (reactivation never touches slot
-membership at all, see `nanoflann_rs::dynamic::DynamicKdTree::add_points`'s
+membership at all, see `flannrust::dynamic::DynamicKdTree::add_points`'s
 doc comment). This was fixed in both `crates/xval/tests/perf_gate.rs` and
 `crates/xval/benches/bench_dynamic.rs`: the corrected workload builds 95,000
 points, removes 5,000, reactivates only half (2,500 — leaving 2,500 LIVE
@@ -1054,6 +1055,233 @@ pointed at the same workload.
 fingerprint (see §1's table — those values were read directly from this
 exact run's JSON).
 
+### M-py: Python bindings environment, parity, and two bench runs (range honesty)
+
+Python environment (`crates/flannrust-py/.venv`, captured live by
+`bench_py.py`'s own `build_meta()` in every run's `meta` block — never
+hand-typed):
+
+```
+python 3.12.11, numpy 2.5.2, scipy 1.18.1, pynanoflann 0.10.0
+```
+
+Same machine/methodology as every other section of this document (WSL2,
+AMD Ryzen 7 9800X3D, `RUSTFLAGS="-C target-cpu=native"`). Rebuild the
+bindings before any timed run:
+
+```
+export PATH="$HOME/.cargo/bin:$PATH"
+cd crates/flannrust-py
+RUSTFLAGS="-C target-cpu=native" .venv/bin/maturin develop --release
+```
+
+Full test suite (Rust + Python, exact commands used for T6's final
+verification, see the "Verify" section of `task-6-report.md`):
+
+```
+cargo test --workspace          # compiles+tests flannrust-py too, once the venv's PYO3 env is active
+cd crates/flannrust-py && .venv/bin/python -m pytest python/tests -q
+cargo clippy --workspace --all-targets -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc -p flannrust --no-deps
+cargo build -p flannrust --no-default-features
+```
+
+Bench (methodology, cross-checks, and full result-row table for the first
+of the two runs below: `task-5-report.md`'s "Bench methodology, as run" and
+"Full result rows" sections — reproduced here since that report is
+gitignored):
+
+```
+cd crates/flannrust-py
+export RUSTFLAGS="-C target-cpu=native"
+.venv/bin/python python/bench/bench_py.py > /tmp/report_py.json
+```
+~7 minutes wall clock, dominated by the dim-32 knn cell (curse-of-dimensionality
+makes kd-tree pruning far less effective at dim 32 for all three engines —
+same phenomenon `docs/EXPERIMENTS.md`'s M2.5 dim-16/32 sections document for
+the Rust-vs-C++ side).
+
+#### Parity: what "M-py parity" means, scoped per the controller's binding ruling
+
+`pynanoflann` 0.10.0 (the only release on PyPI) vendors its own copy of
+`nanoflann.hpp` at version **1.5.5** (`NANOFLANN_VERSION 0x155`), while
+flannrust's own C++ xval reference (`crates/nanoflann-ref/cpp/nanoflann.hpp`)
+is **1.12.1** — the exact version the Rust kernel is deliberately bit-matched
+against (`crates/flannrust/src/metric.rs`'s `l2_eval_row`). Between 1.5.5 and
+1.12.1, nanoflann's `L2_Adaptor`/`L1_Adaptor::evalMetric` changed how the
+4-wide unrolled loop's partial sums combine (sequential chain in 1.5.5 vs.
+pairwise in 1.12.1) and the `dim < 4` remainder loop's iteration order
+flipped — floating-point addition is commutative but not associative, so
+these two valid summation orders produce squared-distance results differing
+by exactly 1 ULP for any `dim >= 3`. This is a version-gap environment
+artifact against this one specific `pynanoflann` build, not a flannrust
+defect — verified via code diff and empirical measurement (dim=2: 0/3000
+mismatches, provably immune 2-term sum; dim=3: 339/3000; dim=8: 626/3000;
+dim=32: 1195/3000, every mismatch exactly 1 ULP, never flipping which point
+is nearest at ordinary tie-free scale). Full root-cause writeup, code diff,
+and the escalation trail: `task-3-report.md`'s "Escalation" section
+(gitignored — reproduced here) and
+`crates/flannrust-py/python/tests/test_parity_pynanoflann.py`'s module
+docstring (checked into the repo, not gitignored — the authoritative live
+copy of this finding).
+
+**Controller ruling (binding, accepted in task-3's fix round 1/5):** the
+parity claim is scoped to what holds unconditionally against this
+`pynanoflann` build: (a) tie-free KNN index-sequence parity across the full
+spec'd matrix (dims `{2,3,8,32}` × `{f32,f64}` × leaf `{1,10,64}` × metric
+`{l2,l1}` × `k ∈ {1,10}`, 200 seeded queries, 20 for n=20000) — **96/96
+nodes pass, bit-exact index sequences**; (b) `dim==2` KNN distance-value
+bit-exactness (a pure 2-term, commutative-only sum, provably immune to the
+1.5.5-vs-1.12.1 gap) — **4/4 pass**. The 16 parametrized nodes attributable
+to the documented 1-ULP boundary-flip mechanism (10 in radius-index parity,
+6 in the tie-multiset comparison, both dim ∈ {8,32}/float32) are pinned as
+targeted `xfail(strict=True)` — not blanket-marked whole test functions —
+so an unexpected pass would show up loudly (XPASS) rather than being
+silently absorbed. Combined suite run
+(`.venv/bin/pytest python/tests/test_parity_pynanoflann.py -q`):
+`0 failed, 244 passed, 27 xfailed, 1 xpassed` (the 1 xpassed is a
+pre-existing, documented `strict=False` data-dependent dim=3/float64/l1
+flake in the distance-bit-exactness xfail, not a new issue). No tolerance
+was ever loosened anywhere in this suite to force a green result.
+
+#### Rust perf gates, re-run for T6 (confirms the T1–T5 rename/additions didn't move anything)
+
+```
+$ PERF_GATE=1 RUSTFLAGS="-C target-cpu=native" cargo test -p xval --release \
+  --test perf_gate -- --ignored perf_gate --test-threads=1 --nocapture
+
+PERF_GATE perf_gate_build_100k_dim3_f32_seq: rust=10.848ms cpp=9.520ms ratio=1.139
+PERF_GATE perf_gate_dyn_add_20k_dim3_f32: rust=3.923ms cpp=3.530ms ratio=1.111
+PERF_GATE perf_gate_dyn_knn_after_churn_dim3_f32: rust=29.985ms cpp=33.286ms ratio=0.901
+PERF_GATE perf_gate_knn_dim3_f32_k10: rust=7.334ms cpp=7.171ms ratio=1.023
+PERF_GATE perf_gate_knn_dyn_dim8_f64_k10: rust=179.656ms cpp=187.852ms ratio=0.956
+PERF_GATE perf_gate_radius_dim3_f32: rust=5.240ms cpp=6.204ms ratio=0.845
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 4.06s
+```
+All six pass the 1.25 margin with wide room. Comparing against
+`docs/benchmarks.md`'s M2.5 "Post-T2/final" ranges (`build_100k`
+0.974–1.079, `knn_fixed3` 1.011–1.040, `dim8` 0.950–0.966, `radius`
+0.827–0.828, `dyn_add` 1.121–1.170, `dyn_knn_after_churn` 0.873–0.916):
+`dyn_add` (1.111), `dyn_knn_after_churn` (0.901), `knn_fixed3` (1.023), and
+`dim8` (0.956) all land inside or within a couple points of their recorded
+ranges — ordinary WSL2 noise (§1). Two widen the previously-recorded range
+honestly, not as a regression (M-py's T0–T5 changes never touched
+`crates/flannrust`'s query/build/kernel code, only added `flannrust-py` on
+top and one rename): `build_100k` at **1.139** sits above the prior
+0.974–1.079 band (new honest range **0.974–1.139**), and `radius_dim3_f32`
+at **0.845** sits above the prior 0.827–0.828 band (new honest range
+**0.827–0.845**) — both comfortably under the 1.25 gate, both single
+additional data points widening an already-narrow recorded band, consistent
+with this host's documented noise floor (`knn_fixed3` 0.956–1.192 over 8
+runs, "M2.5 task 1" above), not a code-driven change.
+
+#### Bench run 1 (from `task-5-report.md`, gitignored — reproduced verbatim here)
+
+`meta`: `git_sha=509cd36`, `date=2026-08-24T08:19:25Z`, `rustflags=-C target-cpu=native`.
+
+| workload | flannrust_ms | ckdtree_ms | pynanoflann_ms | ratio_ckdtree | ratio_pynanoflann |
+|---|---|---|---|---|---|
+| build_100k_dim3_f32_threads1 | 9.576 | 11.669 | 17.552 | 0.821 | 0.546 |
+| build_1M_dim3_f32_threads1 | 130.388 | 132.147 | 239.969 | 0.987 | 0.543 |
+| knn_batched_dim3_f32_k10_q200k_workers1 | 306.391 | 430.344 | 289.668 | 0.712 | 1.058 |
+| knn_batched_dim3_f32_k10_q200k_workersNeg1 | 45.095 | 63.362 | 45.075 | 0.712 | 1.000 |
+| knn_dim8_float64_k10_workers1 | 392.347 | 510.625 | 318.081 | 0.768 | 1.233 |
+| knn_dim32_float32_k10_workers1 | 22023.360 | 43101.397 | 25082.533 | 0.511 | 0.878 |
+| radius_dim3_f32_sel10 | 2.606 | 4.082 | 4.415 | 0.638 | 0.590 |
+| radius_dim3_f32_sel1000 | 66.102 | 129.133 | 230.621 | 0.512 | 0.287 |
+| single_query_loop_dim3_f32_k10_percall_ms | 0.001968 | 0.007245 | 0.002273 | 0.272 | 0.866 |
+
+(`threadsNone_parallel_build` rows omitted from this table — same
+apples-to-oranges caveat as every other section of this document; both
+runs agree they're not a same-config parity claim, see the row `note` in
+the raw JSON.)
+
+#### Bench run 2 (fresh, run for this task — range honesty per the brief)
+
+```
+$ export PATH="$HOME/.cargo/bin:$PATH"
+$ cd crates/flannrust-py
+$ RUSTFLAGS="-C target-cpu=native" .venv/bin/maturin develop --release   # rebuilt first
+$ RUSTFLAGS="-C target-cpu=native" .venv/bin/python python/bench/bench_py.py > /tmp/report_py_run2.json
+```
+`meta`: `git_sha=0cea30c`, `date=2026-08-24T08:49:29Z`, `rustflags=-C target-cpu=native`
+(same `python 3.12.11`/`numpy 2.5.2`/`scipy 1.18.1`/`pynanoflann 0.10.0` as
+run 1). All cross-checks passed, including the radius-specific cross-check
+added in task 5's fix round (`radius_cross_check`, exercised twice — once
+per selectivity — right before `radius_workload`'s timed cells):
+
+```
+[bench_py] cross-check OK (build_100k_dim3_f32 dataset): 10/10 index match, max rel dist err 1.09e-07
+[bench_py] cross-check OK (build_1M_dim3_f32 dataset): 10/10 index match, max rel dist err 1.18e-07
+[bench_py] cross-check OK (knn_batched_dim3_f32 dataset): 10/10 index match, max rel dist err 1.07e-07
+[bench_py] cross-check OK (knn_dim8_float64 dataset): 10/10 index match, max rel dist err 2.05e-16
+[bench_py] cross-check OK (knn_dim32_float32 dataset): 10/10 index match, max rel dist err 1.40e-07
+[bench_py] cross-check OK (radius_dim3_f32 dataset): 10/10 index match, max rel dist err 1.13e-07
+[bench_py] radius cross-check OK (radius_dim3_f32_sel10): 10/10 rows index-set match (flannrust/cKDTree/pynanoflann)
+[bench_py] radius cross-check OK (radius_dim3_f32_sel1000): 10/10 rows index-set match (flannrust/cKDTree/pynanoflann)
+[bench_py] cross-check OK (single_query_loop dataset): 10/10 index match, max rel dist err 1.18e-07
+```
+
+| workload | flannrust_ms | ckdtree_ms | pynanoflann_ms | ratio_ckdtree | ratio_pynanoflann |
+|---|---|---|---|---|---|
+| build_100k_dim3_f32_threads1 | 9.956 | 12.012 | 17.739 | 0.829 | 0.561 |
+| build_1M_dim3_f32_threads1 | 132.574 | 138.466 | 240.421 | 0.957 | 0.551 |
+| knn_batched_dim3_f32_k10_q200k_workers1 | 353.626 | 426.143 | 290.905 | 0.830 | 1.216 |
+| knn_batched_dim3_f32_k10_q200k_workersNeg1 | 51.310 | 62.042 | 57.285 | 0.827 | 0.896 |
+| knn_dim8_float64_k10_workers1 | 395.028 | 520.524 | 316.390 | 0.759 | 1.249 |
+| knn_dim32_float32_k10_workers1 | 22234.437 | 43737.826 | 24741.719 | 0.508 | 0.899 |
+| radius_dim3_f32_sel10 | 2.550 | 4.154 | 4.392 | 0.614 | 0.581 |
+| radius_dim3_f32_sel1000 | 66.663 | 131.109 | 232.162 | 0.508 | 0.287 |
+| single_query_loop_dim3_f32_k10_percall_ms | 0.002255 | 0.007501 | 0.002293 | 0.301 | 0.983 |
+
+#### Honest ranges across both runs (the figures `docs/benchmarks.md`'s M-py section and the README Python section cite)
+
+| workload | ratio_ckdtree range | ratio_pynanoflann range |
+|---|---|---|
+| `build_100k_dim3_f32_threads1` | 0.821–0.829 | 0.546–0.561 |
+| `build_1M_dim3_f32_threads1` | 0.957–0.987 | 0.543–0.551 |
+| `knn_batched_dim3_f32_k10_q200k_workers1` | **0.712–0.830** | 1.058–1.216 |
+| `knn_batched_dim3_f32_k10_q200k_workersNeg1` | **0.712–0.827** | 0.896–1.000 |
+| `knn_dim8_float64_k10_workers1` | 0.759–0.768 | 1.233–1.249 |
+| `knn_dim32_float32_k10_workers1` | 0.508–0.511 | **0.878–0.899** |
+| `radius_dim3_f32_sel10` | 0.614–0.638 | 0.581–0.590 |
+| `radius_dim3_f32_sel1000` | 0.508–0.512 | 0.287 (identical both runs) |
+| `single_query_loop_dim3_f32_k10_percall_ms` (overhead-bound; ratio, not ms) | 0.272–0.301 | 0.866–0.983 |
+
+(Bold ranges are the three spec'd success-criteria cells, all fully inside
+their gates across both runs.)
+
+#### Success criteria vs. the M-py spec (honest accounting, both runs)
+
+1. **Batched knn dim3 f32 ≤ 1.00 vs cKDTree, workers 1 and −1**: **MET**
+   both runs, both worker counts — range 0.712–0.830.
+2. **Build ≤ 1.00 vs pynanoflann**: **MET** both runs, both sizes — range
+   0.543–0.561 (100k), 0.543–0.551 (1M).
+3. **dim-32 ≤ 1.10 vs pynanoflann**: **MET** both runs — range 0.878–0.899.
+4. **Per-call overhead measured**: **MET** — `single_query_loop_*_percall_ms`
+   row, both runs (flannrust ≈2.0–2.3µs/call, cKDTree ≈7.2–7.5µs/call,
+   pynanoflann ≈2.3µs/call; ratios in the table above, explicitly labeled
+   `overhead-bound` in the rendered report so it isn't read as a
+   steady-state throughput number).
+
+**Honest misses, published alongside** (not spec'd success criteria, not
+gating, but reported for completeness per this repo's standing "publish the
+losses too" convention): `knn_batched_dim3_f32_k10_q200k_workers1` vs.
+pynanoflann ranges **1.058–1.216** (flannrust 6–22% slower there across the
+two runs); `knn_dim8_float64_k10_workers1` vs. pynanoflann ranges
+**1.233–1.249** (flannrust 23–25% slower, the most consistent miss in the
+whole matrix — both runs agree closely, so this reads as a genuine gap, not
+noise). At `workers=-1` the batched-dim3-vs-pynanoflann ratio drops to
+0.896–1.000 (near parity or better) — the miss is specifically a
+single-threaded-call-overhead shape, not an algorithmic one. flannrust beats
+cKDTree on every single row, both runs, without exception. See
+`docs/ROADMAP.md`'s M-pub section for the open investigation this dim8 f64
+gap motivates (pynanoflann's 1.5.5 kernel/pybind11 marshalling vs. this
+crate's own 1.12.1-oracle cross-check, which independently measures
+flannrust at 0.95x against the C++ reference at the same dim/dtype — so the
+gap is specifically a pynanoflann-vs-flannrust shape, not a flannrust
+regression against its own C++ ground truth).
+
 ## 4. Methodology
 
 - **Seeds — the `cfg_seed` scheme**: every xval test derives its data/query
@@ -1195,6 +1423,10 @@ cite the M2.5 ranges, not these).
 | Heavy-suite pass (0 failed, incl. depth ~2115/~16794 builds and mutation canaries) | Heavy/`--ignored` suite, §3 | terminal `test result:` line per binary |
 | CPU model / kernel / compiler / git SHA / WSL flag (this doc's §1 table) | Report chain, §3, or `report_data` alone | `report.json`'s `meta.{cpu_model,kernel,cxx_compiler,git_sha,wsl}` |
 | `--bad`/`--good` verdict tiles, HTML scorecard | Report chain, §3 | `report.html`'s `<div class="tiles">` block, computed live from `report.json` — never hardcoded (see `crates/xval/tests/render_report_test.rs` for the test suite proving this) |
+| M-py parity scope (96/96 tie-free knn index-sequence nodes, 4/4 dim-2 distance bit-exactness, 16 nodes pinned `xfail(strict=True)`, combined suite `0 failed, 244 passed, 27 xfailed, 1 xpassed`) — README Python section, `docs/benchmarks.md` M-py section | `.venv/bin/pytest python/tests/test_parity_pynanoflann.py -q` and `python/tests -q`, §3 "M-py" subsection | pasted `pytest` summary lines; source `task-3-report.md` "Escalation"/"Parity suite" sections and `test_parity_pynanoflann.py`'s module docstring |
+| M-py perf-gate re-run (T6, confirms T0–T5 didn't move Rust-side perf; honest range widening on `build_100k` 0.974–1.139 and `radius` 0.827–0.845) | Perf gate command, §3 "M-py" subsection | `PERF_GATE perf_gate_*: ... ratio=...` lines, this task's single run |
+| M-py bench success criteria (batched knn dim3 vs cKDTree 0.712–0.830; build vs pynanoflann 0.543–0.561/0.543–0.551; dim32 vs pynanoflann 0.878–0.899; per-call overhead ≈2.0–2.3µs) — README Python section, `docs/benchmarks.md` M-py section, `docs/ROADMAP.md` M-py entry | `bench_py.py`, §3 "M-py" subsection, both pasted runs | `report_py.json`'s `workloads[]`, `ratio_ckdtree`/`ratio_pynanoflann`/`*_ms` fields |
+| M-py honest misses (`knn_batched_..._workers1` vs pynanoflann 1.058–1.216; `knn_dim8_float64_..._workers1` vs pynanoflann 1.233–1.249) — README Python section, `docs/benchmarks.md` M-py section, `docs/ROADMAP.md` M-pub dim8 lead | `bench_py.py`, §3 "M-py" subsection, both pasted runs | same `report_py.json` fields as the row above |
 
 ## 6. See also
 

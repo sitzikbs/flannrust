@@ -69,6 +69,25 @@ def test_query_radius_1d_query_returns_length_1_lists(dtype):
 
 
 # ---------------------------------------------------------------------
+# query_radius: workers=-1 (parallel across queries) matches workers=1
+# (sequential) exactly -- analogous to test_behavior.py's
+# test_workers_parallel_matches_sequential for `query`.
+# ---------------------------------------------------------------------
+
+def test_query_radius_workers_parallel_matches_sequential(dtype):
+    pts = make_points(2000, 3, dtype)
+    q = make_points(200, 3, dtype, seed=9)
+    tree = flannrust.KDTree(pts)
+    idxs1, dists1 = tree.query_radius(q, r=5.0, workers=1)
+    idxs2, dists2 = tree.query_radius(q, r=5.0, workers=-1)
+    assert len(idxs1) == len(idxs2)
+    for a, b in zip(idxs1, idxs2):
+        np.testing.assert_array_equal(a, b)
+    for a, b in zip(dists1, dists2):
+        np.testing.assert_array_equal(a, b)
+
+
+# ---------------------------------------------------------------------
 # query_box: inclusive face boundaries on a 4x4x4 grid (matches the Rust
 # core's `find_within_box_face_inclusion` unit test).
 # ---------------------------------------------------------------------

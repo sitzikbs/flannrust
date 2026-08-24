@@ -1095,6 +1095,13 @@ mod tests {
         assert_eq!(got, (0u32..37).collect::<Vec<u32>>());
     }
 
+    #[test]
+    fn dataset_returns_the_built_over_data_source() {
+        let pts = seeded_points::<3>(0x1234, 37, 25.0);
+        let tree = KdTreeBuilder::new(ConstDim::<3>, pts.as_slice()).build();
+        assert_eq!(tree.dataset().point_count(), 37);
+    }
+
     // ---------------------------------------------------------------
     // Test 12 (A8): stale-growth snapshot
     // ---------------------------------------------------------------
