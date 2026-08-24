@@ -173,6 +173,29 @@ def test_workers_capped_matches_sequential(dtype):
     np.testing.assert_array_equal(d1, d2)
 
 
+def test_threads_overflow_raises_valueerror():
+    # threads=2**32 used to truncate to 0 via `as u32` and panic on
+    # `NonZeroU32::new(0).unwrap()` inside the FFI boundary. Must be a
+    # clean ValueError instead.
+    pts = make_points(10, 3, "float32")
+    with pytest.raises(ValueError):
+        flannrust.KDTree(pts, threads=2**32)
+
+
+def test_workers_huge_is_capped_and_matches_sequential(dtype):
+    # workers=2**40 used to be passed straight to
+    # `rayon::ThreadPoolBuilder::num_threads`, which would spend minutes
+    # spawning threads and then panic across the FFI boundary. Must be
+    # capped at the CPU count and return promptly with correct results.
+    pts = make_points(300, 3, dtype)
+    q = make_points(50, 3, dtype, seed=6)
+    tree = flannrust.KDTree(pts)
+    d1, i1 = tree.query(q, k=5, workers=1)
+    d2, i2 = tree.query(q, k=5, workers=2**40)
+    np.testing.assert_array_equal(i1, i2)
+    np.testing.assert_array_equal(d1, d2)
+
+
 # ---------------------------------------------------------------------
 # r= turns query into rknn (M1 test recipe: 10 colinear points, squared
 # distances 1..100 from the origin)

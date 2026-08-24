@@ -13,7 +13,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyList;
 use rayon::prelude::*;
 
-use crate::convert::{as_rows_2d, ndim, to_ndarray};
+use crate::convert::{as_rows_2d, capped_workers, ndim, to_ndarray};
 
 /// The 10-way monomorphization matrix: `{f32, f64} x {ConstDim<2>,
 /// ConstDim<3>, DynDim}` for `L2`, plus `{f32, f64} x DynDim` for `L1`/
@@ -85,9 +85,10 @@ fn parse_threads(threads: Option<i64>) -> PyResult<BuildThreads> {
     match threads {
         None => Ok(BuildThreads::Auto),
         Some(1) => Ok(BuildThreads::Sequential),
-        Some(n) if n > 1 => Ok(BuildThreads::Threads(NonZeroU32::new(n as u32).unwrap())),
+        Some(n) if n > 1 && n <= i64::from(u32::MAX) => Ok(BuildThreads::Threads(NonZeroU32::new(n as u32).unwrap())),
         Some(n) => Err(PyValueError::new_err(format!(
-            "threads must be None or a positive integer (got {n})"
+            "threads must be None or a positive integer <= {} (got {n})",
+            u32::MAX
         ))),
     }
 }
@@ -322,7 +323,7 @@ where
             };
             if workers > 1 {
                 // Cap at exactly `workers` rayon workers via a scoped pool.
-                let pool = rayon::ThreadPoolBuilder::new().num_threads(workers as usize).build().expect("thread pool build");
+                let pool = rayon::ThreadPoolBuilder::new().num_threads(capped_workers(workers)).build().expect("thread pool build");
                 pool.install(run);
             } else {
                 // workers == -1: the ambient/global rayon pool (all cores).
@@ -382,7 +383,7 @@ where
                 results.par_iter_mut().zip(query_data.par_chunks(d)).for_each(|(out, q)| search_one(q, out));
             };
             if workers > 1 {
-                let pool = rayon::ThreadPoolBuilder::new().num_threads(workers as usize).build().expect("thread pool build");
+                let pool = rayon::ThreadPoolBuilder::new().num_threads(capped_workers(workers)).build().expect("thread pool build");
                 pool.install(run);
             } else {
                 run();

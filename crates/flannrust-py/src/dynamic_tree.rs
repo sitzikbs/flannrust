@@ -11,7 +11,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyList;
 use rayon::prelude::*;
 
-use crate::convert::{as_rows_2d, ndim, to_ndarray};
+use crate::convert::{as_rows_2d, capped_workers, ndim, to_ndarray};
 
 /// The same 10-way monomorphization matrix as [`crate::static_tree::StaticTree`],
 /// wrapping [`DynamicKdTree`] instead of the static `KdTree`.
@@ -333,7 +333,7 @@ where
                     .for_each(|((oi, od), q)| search_one(q, oi, od));
             };
             if workers > 1 {
-                let pool = rayon::ThreadPoolBuilder::new().num_threads(workers as usize).build().expect("thread pool build");
+                let pool = rayon::ThreadPoolBuilder::new().num_threads(capped_workers(workers)).build().expect("thread pool build");
                 pool.install(run);
             } else {
                 run();
@@ -391,7 +391,7 @@ where
                 results.par_iter_mut().zip(query_data.par_chunks(d)).for_each(|(out, q)| search_one(q, out));
             };
             if workers > 1 {
-                let pool = rayon::ThreadPoolBuilder::new().num_threads(workers as usize).build().expect("thread pool build");
+                let pool = rayon::ThreadPoolBuilder::new().num_threads(capped_workers(workers)).build().expect("thread pool build");
                 pool.install(run);
             } else {
                 run();

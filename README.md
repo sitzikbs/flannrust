@@ -593,9 +593,10 @@ build, not a flannrust defect — full root-cause writeup:
 nodes, bit-exact) plus `dim=2` KNN distance-value bit-exactness (4/4,
 provably immune to the version gap)** — not a blanket "bit-exact
 everywhere" claim; the 16 nodes attributable to the documented 1-ULP
-boundary-flip mechanism (radius search and near-tie/duplicate data at
-dim ∈ {8,32}/float32 specifically) are pinned as strict `xfail`, not
-silently dropped. No tolerance was ever loosened to force a green result.
+boundary-flip mechanism (radius search at dim ∈ {8,32}/float32, and
+near-tie/duplicate data at dim ∈ {3,8,32}/float32) are pinned as strict
+`xfail`, not silently dropped. No tolerance was ever loosened to force a
+green result.
 
 ### Benchmarks
 
@@ -655,7 +656,8 @@ re-deriving from the C++ source; full tracker:
   formats don't map byte-for-byte onto this crate's index-based node arena,
   so this needs its own format).
 - **M-py — Python bindings (complete)**: `KDTree`/`DynamicKDTree` PyO3
-  bindings, zero-copy NumPy build input, GIL released during build/query,
+  bindings, copy-in NumPy build input (one copy at construction; zero-copy
+  input deferred), GIL released during build/query,
   benchmarked against `scipy.spatial.cKDTree` and `pynanoflann` — see
   "Python bindings (M-py)" above for the API, the scoped parity claim, and
   the honest bench accounting (all three spec'd speed gates met; two

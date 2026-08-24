@@ -64,3 +64,14 @@ fn dtype_mismatch<T>() -> PyErr {
         std::any::type_name::<T>()
     ))
 }
+
+/// Caps a validated `workers > 1` count at the number of available CPUs
+/// before it's handed to `rayon::ThreadPoolBuilder`. Without this, a caller
+/// passing an absurd value (e.g. `workers=2**40`) makes rayon spend minutes
+/// spawning threads and then panic building the pool -- since a query can
+/// never usefully run on more threads than there are cores, silently
+/// clamping is correct behavior, not a validation error.
+pub fn capped_workers(workers: i64) -> usize {
+    let cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    (workers as usize).min(cpus)
+}

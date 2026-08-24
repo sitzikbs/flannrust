@@ -1133,8 +1133,9 @@ spec'd matrix (dims `{2,3,8,32}` × `{f32,f64}` × leaf `{1,10,64}` × metric
 nodes pass, bit-exact index sequences**; (b) `dim==2` KNN distance-value
 bit-exactness (a pure 2-term, commutative-only sum, provably immune to the
 1.5.5-vs-1.12.1 gap) — **4/4 pass**. The 16 parametrized nodes attributable
-to the documented 1-ULP boundary-flip mechanism (10 in radius-index parity,
-6 in the tie-multiset comparison, both dim ∈ {8,32}/float32) are pinned as
+to the documented 1-ULP boundary-flip mechanism (10 in radius-index parity at
+dim ∈ {8,32}/float32, 6 in the tie-multiset comparison at
+dim ∈ {3,8,32}/float32) are pinned as
 targeted `xfail(strict=True)` — not blanket-marked whole test functions —
 so an unexpected pass would show up loudly (XPASS) rather than being
 silently absorbed. Combined suite run

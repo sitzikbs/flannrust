@@ -650,12 +650,12 @@ holds unconditionally**:
   `k ∈ {1,10}`): **96/96 nodes pass, bit-exact**.
 - **dim=2 KNN distance-value bit-exactness** (a pure 2-term sum, provably
   immune to the version gap): **4/4 pass**.
-- 16 parametrized nodes (radius-index parity and tie-multiset comparison,
-  both dim ∈ {8,32}/float32 — the documented 1-ULP boundary-flip mechanism)
-  are pinned as targeted `xfail(strict=True)`, not blanket-marked whole
-  test functions, so an unexpected pass surfaces loudly. No tolerance was
-  ever loosened. Combined suite: `0 failed, 244 passed, 27 xfailed, 1
-  xpassed`.
+- 16 parametrized nodes (radius-index parity at dim ∈ {8,32}/float32, and
+  tie-multiset comparison at dim ∈ {3,8,32}/float32 — the documented 1-ULP
+  boundary-flip mechanism) are pinned as targeted `xfail(strict=True)`,
+  not blanket-marked whole test functions, so an unexpected pass surfaces
+  loudly. No tolerance was ever loosened. Combined suite: `0 failed, 244
+  passed, 27 xfailed, 1 xpassed`.
 
 ### Success criteria vs. spec (honest accounting, both bench runs)
 
