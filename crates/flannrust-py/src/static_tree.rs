@@ -6,10 +6,11 @@
 use std::num::NonZeroU32;
 use std::ops::Deref;
 
-use flannrust::{BuildThreads, ConstDim, Distance, DynDim, KdTree, KdTreeBuilder, L1, L2, L2Simple, OwnedRows, Scalar, SearchParams};
+use flannrust::{BuildThreads, ConstDim, Distance, DynDim, Interval, KdTree, KdTreeBuilder, L1, L2, L2Simple, OwnedRows, ResultItem, Scalar, SearchParams};
 use numpy::{Element, IntoPyArray, PyArray1, PyArrayMethods};
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::PyList;
 use rayon::prelude::*;
 
 use crate::convert::{as_rows_2d, ndim, to_ndarray};
@@ -193,6 +194,38 @@ impl KDTree {
 
         for_each_variant!(&self.tree, t => do_query(py, t, &arr, k, r, eps, workers, is_1d))
     }
+
+    /// `r` is the SQUARED radius for `l2`/`l2_simple` (unsquared for `l1`),
+    /// strict `<` -- same convention as `query`'s `r=`. Returns two lists
+    /// (length `m`, or `1` for a `(d,)` query) of ragged 1-D arrays:
+    /// `(idxs, dists)`. `sorted=False` returns traversal order.
+    #[pyo3(signature = (x, r, sorted=true, eps=0.0, workers=1))]
+    fn query_radius<'py>(&self, py: Python<'py>, x: &Bound<'py, PyAny>, r: f64, sorted: bool, eps: f32, workers: i64) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
+        if !(workers == -1 || workers >= 1) {
+            return Err(PyValueError::new_err(format!("workers must be -1 or >= 1 (got {workers})")));
+        }
+
+        let arr = to_ndarray(py, x)?;
+        for_each_variant!(&self.tree, t => do_query_radius(py, t, &arr, r, sorted, eps, workers))
+    }
+
+    /// Inclusive box `[lo, hi]`, traversal order, `uint32` indices. Single
+    /// box only (no batching, no params -- nanoflann's box search has
+    /// none).
+    fn query_box<'py>(&self, py: Python<'py>, lo: &Bound<'py, PyAny>, hi: &Bound<'py, PyAny>) -> PyResult<Py<PyAny>> {
+        let lo_arr = to_ndarray(py, lo)?;
+        let hi_arr = to_ndarray(py, hi)?;
+        let lo_rank = ndim(&lo_arr)?;
+        if lo_rank != 1 {
+            return Err(PyValueError::new_err(format!("lo must be 1-D (d,), got {lo_rank}-D")));
+        }
+        let hi_rank = ndim(&hi_arr)?;
+        if hi_rank != 1 {
+            return Err(PyValueError::new_err(format!("hi must be 1-D (d,), got {hi_rank}-D")));
+        }
+
+        for_each_variant!(&self.tree, t => do_query_box(py, t, &lo_arr, &hi_arr))
+    }
 }
 
 fn build_f32(metric: &str, d: usize, data: Vec<f32>, leaf_size: usize, threads: BuildThreads) -> StaticTree {
@@ -307,4 +340,94 @@ where
         let dist2d = dist_arr.reshape((m, k))?;
         Ok((dist2d.into_any().unbind(), idx2d.into_any().unbind()))
     }
+}
+
+/// Runs `tree.radius_search(x, r, sorted, eps, workers)`, returning
+/// `(idxs, dists)` as two Python lists of length `m` (ragged 1-D numpy
+/// arrays per query row).
+fn do_query_radius<'py, T, D, M>(
+    py: Python<'py>,
+    tree: &KdTree<T, D, OwnedRows<T>, M>,
+    x: &Bound<'py, PyAny>,
+    r: f64,
+    sorted: bool,
+    eps: f32,
+    workers: i64,
+) -> PyResult<(Py<PyAny>, Py<PyAny>)>
+where
+    T: Scalar + Element,
+    D: flannrust::Dim,
+    M: Distance<T, DistanceType = T> + Sync,
+{
+    let (query_data, m, d) = as_rows_2d::<T>(x)?;
+    let expected_dim = tree.dim();
+    if d != expected_dim {
+        return Err(PyValueError::new_err(format!("x has dim {d}, tree has dim {expected_dim}")));
+    }
+
+    let radius = T::from_f64(r);
+    let params = SearchParams { eps, sorted };
+    let mut results: Vec<Vec<ResultItem<u32, T>>> = vec![Vec::new(); m];
+
+    py.detach(|| {
+        let search_one = |q: &[T], out: &mut Vec<ResultItem<u32, T>>| {
+            tree.radius_search_with(q, radius, out, &params);
+        };
+        if workers == 1 {
+            for (out, q) in results.iter_mut().zip(query_data.chunks(d)) {
+                search_one(q, out);
+            }
+        } else {
+            let mut run = || {
+                results.par_iter_mut().zip(query_data.par_chunks(d)).for_each(|(out, q)| search_one(q, out));
+            };
+            if workers > 1 {
+                let pool = rayon::ThreadPoolBuilder::new().num_threads(workers as usize).build().expect("thread pool build");
+                pool.install(run);
+            } else {
+                run();
+            }
+        }
+    });
+
+    let idx_list = PyList::empty(py);
+    let dist_list = PyList::empty(py);
+    for res in results {
+        let mut idxs = Vec::with_capacity(res.len());
+        let mut dists = Vec::with_capacity(res.len());
+        for item in res {
+            idxs.push(item.index);
+            dists.push(item.distance);
+        }
+        idx_list.append(idxs.into_pyarray(py))?;
+        dist_list.append(dists.into_pyarray(py))?;
+    }
+
+    Ok((idx_list.into_any().unbind(), dist_list.into_any().unbind()))
+}
+
+/// Runs `tree.find_within_box(lo, hi)`, returning a `uint32` numpy array of
+/// point indices in traversal order.
+fn do_query_box<'py, T, D, M>(py: Python<'py>, tree: &KdTree<T, D, OwnedRows<T>, M>, lo: &Bound<'py, PyAny>, hi: &Bound<'py, PyAny>) -> PyResult<Py<PyAny>>
+where
+    T: Scalar + Element,
+    D: flannrust::Dim,
+    M: Distance<T>,
+{
+    let (lo_data, _, lo_d) = as_rows_2d::<T>(lo)?;
+    let (hi_data, _, hi_d) = as_rows_2d::<T>(hi)?;
+    let expected_dim = tree.dim();
+    if lo_d != expected_dim {
+        return Err(PyValueError::new_err(format!("lo has dim {lo_d}, tree has dim {expected_dim}")));
+    }
+    if hi_d != expected_dim {
+        return Err(PyValueError::new_err(format!("hi has dim {hi_d}, tree has dim {expected_dim}")));
+    }
+
+    let bounds: Vec<Interval<T>> = lo_data.iter().zip(hi_data.iter()).map(|(&low, &high)| Interval { low, high }).collect();
+
+    let mut out: Vec<u32> = Vec::new();
+    py.detach(|| tree.find_within_box(&bounds, &mut out));
+
+    Ok(out.into_pyarray(py).into_any().unbind())
 }
