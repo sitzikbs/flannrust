@@ -423,7 +423,7 @@ impl_so3!(f64);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data_source::FlatSlice;
+    use crate::data_source::{FlatSlice, OwnedRows};
     use crate::dim::{ConstDim, DynDim};
 
     // ---- Test 1: L2 dim-2 exact ----
@@ -793,6 +793,88 @@ mod tests {
                 fallback_result.to_bits(),
                 "salt={salt} row={row_result} fallback={fallback_result}"
             );
+        }
+    }
+
+    // ---- Test 11d: same row-vs-fallback bit-equality invariant, but over
+    // `OwnedRows` (M-py) instead of `FlatSlice` -- confirms the M2.5 row
+    // kernel engages identically regardless of which row-major `DataSource`
+    // backs it. Narrower dim sweep {3, 8, 32} than the full `BIT_EQ_DIMS`
+    // list above (that list's job is already done by the `FlatSlice`
+    // tests); this just needs to show `OwnedRows` itself takes the row
+    // path bit-for-bit. ----
+
+    const OWNED_ROWS_BIT_EQ_DIMS: &[usize] = &[3, 8, 32];
+
+    #[test]
+    fn l2_eval_row_path_bit_equals_fallback_path_owned_rows_f32() {
+        for &dim in OWNED_ROWS_BIT_EQ_DIMS {
+            for &salt in SALTS_F32 {
+                let (q, p) = gen_random_ish_f32(dim, salt);
+                let owned = OwnedRows::new(p, dim);
+                let fallback = FallbackOnly(&owned);
+                let row_result = L2.eval(&q, &owned, 0, DynDim(dim));
+                let fallback_result = L2.eval(&q, &fallback, 0, DynDim(dim));
+                assert_eq!(
+                    row_result.to_bits(),
+                    fallback_result.to_bits(),
+                    "dim={dim} salt={salt} row={row_result} fallback={fallback_result}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn l2_eval_row_path_bit_equals_fallback_path_owned_rows_f64() {
+        for &dim in OWNED_ROWS_BIT_EQ_DIMS {
+            for &salt in SALTS_F64 {
+                let (q, p) = gen_random_ish_f64(dim, salt);
+                let owned = OwnedRows::new(p, dim);
+                let fallback = FallbackOnly(&owned);
+                let row_result = L2.eval(&q, &owned, 0, DynDim(dim));
+                let fallback_result = L2.eval(&q, &fallback, 0, DynDim(dim));
+                assert_eq!(
+                    row_result.to_bits(),
+                    fallback_result.to_bits(),
+                    "dim={dim} salt={salt} row={row_result} fallback={fallback_result}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn l1_eval_row_path_bit_equals_fallback_path_owned_rows_f32() {
+        for &dim in OWNED_ROWS_BIT_EQ_DIMS {
+            for &salt in SALTS_F32 {
+                let (q, p) = gen_random_ish_f32(dim, salt);
+                let owned = OwnedRows::new(p, dim);
+                let fallback = FallbackOnly(&owned);
+                let row_result = L1.eval(&q, &owned, 0, DynDim(dim));
+                let fallback_result = L1.eval(&q, &fallback, 0, DynDim(dim));
+                assert_eq!(
+                    row_result.to_bits(),
+                    fallback_result.to_bits(),
+                    "dim={dim} salt={salt} row={row_result} fallback={fallback_result}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn l1_eval_row_path_bit_equals_fallback_path_owned_rows_f64() {
+        for &dim in OWNED_ROWS_BIT_EQ_DIMS {
+            for &salt in SALTS_F64 {
+                let (q, p) = gen_random_ish_f64(dim, salt);
+                let owned = OwnedRows::new(p, dim);
+                let fallback = FallbackOnly(&owned);
+                let row_result = L1.eval(&q, &owned, 0, DynDim(dim));
+                let fallback_result = L1.eval(&q, &fallback, 0, DynDim(dim));
+                assert_eq!(
+                    row_result.to_bits(),
+                    fallback_result.to_bits(),
+                    "dim={dim} salt={salt} row={row_result} fallback={fallback_result}"
+                );
+            }
         }
     }
 

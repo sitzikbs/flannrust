@@ -244,7 +244,7 @@ enum Phase {
 /// doc), so a typical query — whose tree is only ~15 levels deep — pays to
 /// initialize (zero) all 128 slots for nothing. `[Frame::default(); 128]`
 /// compiles to a ~4 KiB `memset` call plus an inlined stack-clash guard-page
-/// probe on every query (measured: `crates/nanoflann-rs`'s dim-3 gate median
+/// probe on every query (measured: `crates/flannrust`'s dim-3 gate median
 /// ratio moved 1.06 -> 1.14, a real regression — see task-2-report.md's
 /// asm/measurement evidence). `[const { MaybeUninit::uninit() }; N]` — an
 /// inline-`const` array-repeat expression, so it doesn't need `Dist: Copy`

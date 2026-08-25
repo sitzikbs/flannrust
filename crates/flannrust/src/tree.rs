@@ -406,7 +406,7 @@ where
 
         if !matches!(threads, BuildThreads::Sequential) {
             panic!(
-                "nanoflann-rs was compiled without the 'parallel' feature; BuildThreads::Auto/Threads need it"
+                "flannrust was compiled without the 'parallel' feature; BuildThreads::Auto/Threads need it"
             );
         }
 
@@ -492,6 +492,15 @@ where
     /// exposed for introspection and cross-validation.
     pub fn point_indices(&self) -> &[Idx] {
         &self.vind
+    }
+
+    /// The `DataSource` this tree was built over. Per the A8 module doc,
+    /// the tree snapshots `vind`/`size` at `build()` time -- this accessor
+    /// reflects the LIVE dataset (visible to a caller reading it directly,
+    /// e.g. an `OwnedRows` grown after `build()`), but growth there is
+    /// invisible to search until a rebuild.
+    pub fn dataset(&self) -> &DS {
+        &self.dataset
     }
 
     fn ctx(&self) -> SearchCtx<'_, T, D, DS, M, Idx> {
@@ -1086,6 +1095,13 @@ mod tests {
         assert_eq!(got, (0u32..37).collect::<Vec<u32>>());
     }
 
+    #[test]
+    fn dataset_returns_the_built_over_data_source() {
+        let pts = seeded_points::<3>(0x1234, 37, 25.0);
+        let tree = KdTreeBuilder::new(ConstDim::<3>, pts.as_slice()).build();
+        assert_eq!(tree.dataset().point_count(), 37);
+    }
+
     // ---------------------------------------------------------------
     // Test 12 (A8): stale-growth snapshot
     // ---------------------------------------------------------------
@@ -1323,7 +1339,7 @@ mod no_parallel_tests {
     use crate::params::BuildThreads;
 
     #[test]
-    #[should_panic(expected = "nanoflann-rs was compiled without the 'parallel' feature")]
+    #[should_panic(expected = "flannrust was compiled without the 'parallel' feature")]
     fn build_with_auto_threads_panics_without_parallel_feature() {
         let pts: Vec<[f64; 2]> = vec![[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]];
         let _ = KdTreeBuilder::new(ConstDim::<2>, pts.as_slice())

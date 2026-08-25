@@ -24,7 +24,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use nanoflann_ref::{Metric, RefIndex3F32, RefIndexF32, RefIndexF64};
-use nanoflann_rs::{
+use flannrust::{
     ConstDim, DataSource, Dim, Distance, DynDim, FlatSlice, KdTreeBuilder, L2,
 };
 use xval::{
@@ -599,7 +599,7 @@ fn count_probe() {
         let tree = KdTreeBuilder::new(DynDim(dim), ds)
             .with_metric(CountingL2)
             .leaf_max_size(leaf)
-            .threads(nanoflann_rs::BuildThreads::Sequential)
+            .threads(flannrust::BuildThreads::Sequential)
             .build();
         EVAL_COUNT.store(0, Ordering::Relaxed);
         ACCUM_COUNT.store(0, Ordering::Relaxed);
@@ -662,7 +662,7 @@ fn dump_probe(dir: &str) {
         let tree = KdTreeBuilder::new(DynDim(dim), ds)
             .with_metric(CountingL2)
             .leaf_max_size(leaf)
-            .threads(nanoflann_rs::BuildThreads::Sequential)
+            .threads(flannrust::BuildThreads::Sequential)
             .build();
         EVAL_COUNT.store(0, Ordering::Relaxed);
         ACCUM_COUNT.store(0, Ordering::Relaxed);
@@ -720,7 +720,7 @@ fn sweep_probe() {
         let rust = KdTreeBuilder::new(ConstDim::<3>, slice)
             .with_metric(L2)
             .leaf_max_size(leaf)
-            .threads(nanoflann_rs::BuildThreads::Sequential)
+            .threads(flannrust::BuildThreads::Sequential)
             .build();
         let cpp = RefIndex3F32::build(&data32, leaf, 1);
         let mut oi = vec![0u32; K];

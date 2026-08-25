@@ -22,7 +22,7 @@
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use nanoflann_ref::{Metric, RefIndexF32};
-use nanoflann_rs::ResultItem;
+use flannrust::ResultItem;
 use xval::{build_rust_f32, cfg_seed, queries, to_f32, uniform, BuildThreads, RoundRobin, XMetric};
 
 const N: usize = 100_000;

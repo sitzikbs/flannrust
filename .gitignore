@@ -1,2 +1,6 @@
 /target
 .superpowers/
+.venv/
+*.so
+__pycache__/
+*.pyc

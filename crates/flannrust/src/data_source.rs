@@ -1,6 +1,7 @@
 //! Zero-copy dataset access: the `DataSource` trait callers implement to
-//! hand their point cloud to a `KdTreeBuilder`, plus two built-in
-//! implementations (`&[[T; N]]` and the row-major `FlatSlice`).
+//! hand their point cloud to a `KdTreeBuilder`, plus three built-in
+//! implementations (`&[[T; N]]`, the row-major `FlatSlice`, and the owned
+//! row-major `OwnedRows`).
 
 use crate::bbox::Interval;
 use crate::scalar::Scalar;
@@ -125,6 +126,105 @@ impl<'a, T: Scalar> DataSource<T> for FlatSlice<'a, T> {
     #[inline]
     fn point_row(&self, idx: usize) -> Option<&[T]> {
         self.data.get(idx * self.dim..idx * self.dim + self.dim)
+    }
+}
+
+/// Owned row-major buffer: point `i` occupies `data[i*dim .. (i+1)*dim]`
+/// (the owning counterpart to [`FlatSlice`], for callers -- e.g. the
+/// upcoming Python bindings -- that need to build up a dataset
+/// incrementally rather than handing over a borrowed slice up front).
+#[derive(Debug, Clone)]
+pub struct OwnedRows<T> {
+    data: Vec<T>,
+    dim: usize,
+}
+
+impl<T: Scalar> OwnedRows<T> {
+    /// Panics if `dim == 0` or `data.len()` is not a multiple of `dim`.
+    pub fn new(data: Vec<T>, dim: usize) -> Self {
+        assert!(dim > 0, "OwnedRows dimension must be > 0");
+        assert!(
+            data.len().is_multiple_of(dim),
+            "OwnedRows data length {} is not a multiple of dim {}",
+            data.len(),
+            dim
+        );
+        Self { data, dim }
+    }
+
+    /// An empty buffer with `dim` fixed and room pre-reserved for
+    /// `n_points` rows (`Vec::with_capacity(dim * n_points)`). Panics if
+    /// `dim == 0`.
+    pub fn with_capacity(dim: usize, n_points: usize) -> Self {
+        assert!(dim > 0, "OwnedRows dimension must be > 0");
+        Self { data: Vec::with_capacity(dim * n_points), dim }
+    }
+
+    /// Appends whole rows. Panics if `rows.len()` is not a multiple of
+    /// `dim()`.
+    pub fn push_rows(&mut self, rows: &[T]) {
+        assert!(
+            rows.len().is_multiple_of(self.dim),
+            "OwnedRows::push_rows length {} is not a multiple of dim {}",
+            rows.len(),
+            self.dim
+        );
+        self.data.extend_from_slice(rows);
+    }
+
+    /// The dimensionality this `OwnedRows` was constructed with.
+    pub fn dim(&self) -> usize {
+        self.dim
+    }
+
+    /// Number of points currently stored.
+    pub fn len(&self) -> usize {
+        self.data.len() / self.dim
+    }
+
+    /// `true` iff no points have been stored yet.
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
+    /// The full backing buffer, row-major (`data[i*dim + d]` = point `i`'s
+    /// component `d`).
+    pub fn as_slice(&self) -> &[T] {
+        &self.data
+    }
+}
+
+impl<T: Scalar> DataSource<T> for OwnedRows<T> {
+    #[inline]
+    fn point_count(&self) -> usize {
+        self.data.len() / self.dim
+    }
+
+    #[inline]
+    fn point_component(&self, idx: usize, dim: usize) -> T {
+        self.data[idx * self.dim + dim]
+    }
+
+    #[inline]
+    fn point_row(&self, idx: usize) -> Option<&[T]> {
+        self.data.get(idx * self.dim..idx * self.dim + self.dim)
+    }
+}
+
+impl<T: Scalar> DataSource<T> for &OwnedRows<T> {
+    #[inline]
+    fn point_count(&self) -> usize {
+        (**self).point_count()
+    }
+
+    #[inline]
+    fn point_component(&self, idx: usize, dim: usize) -> T {
+        (**self).point_component(idx, dim)
+    }
+
+    #[inline]
+    fn point_row(&self, idx: usize) -> Option<&[T]> {
+        (**self).point_row(idx)
     }
 }
 
@@ -259,6 +359,91 @@ mod tests {
         assert_eq!(bbox[0].high, 2.0);
         assert_eq!(bbox[1].low, 3.0);
         assert_eq!(bbox[1].high, 4.0);
+    }
+
+    // ---- `OwnedRows` ----
+
+    #[test]
+    fn test_owned_rows_new_point_count_and_component() {
+        let rows = OwnedRows::new(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], 3);
+        assert_eq!(rows.point_count(), 2);
+        assert_eq!(rows.point_component(0, 0), 1.0);
+        assert_eq!(rows.point_component(0, 2), 3.0);
+        assert_eq!(rows.point_component(1, 2), 6.0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_owned_rows_new_dim_zero_panics() {
+        let _ = OwnedRows::new(vec![1.0f32, 2.0, 3.0], 0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_owned_rows_new_non_multiple_length_panics() {
+        let _ = OwnedRows::new(vec![1.0f32, 2.0, 3.0, 4.0, 5.0], 3);
+    }
+
+    #[test]
+    fn test_owned_rows_with_capacity_starts_empty() {
+        let rows: OwnedRows<f64> = OwnedRows::with_capacity(4, 10);
+        assert_eq!(rows.dim(), 4);
+        assert_eq!(rows.len(), 0);
+        assert!(rows.is_empty());
+        assert!(rows.as_slice().is_empty());
+    }
+
+    #[test]
+    fn test_owned_rows_push_rows_grows_len_and_values() {
+        let mut rows: OwnedRows<f64> = OwnedRows::with_capacity(3, 0);
+        rows.push_rows(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(rows.len(), 2);
+        assert!(!rows.is_empty());
+        assert_eq!(rows.as_slice(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(rows.point_component(1, 0), 4.0);
+
+        rows.push_rows(&[7.0, 8.0, 9.0]);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows.point_component(2, 2), 9.0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_owned_rows_push_rows_ragged_input_panics() {
+        let mut rows: OwnedRows<f32> = OwnedRows::with_capacity(3, 0);
+        rows.push_rows(&[1.0, 2.0]); // not a multiple of dim 3
+    }
+
+    #[test]
+    fn test_owned_rows_point_row_length_and_values() {
+        let rows = OwnedRows::new(vec![1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0], 3);
+        // "`None` never returned for valid idx": exercise every valid idx.
+        for idx in 0..rows.len() {
+            let row = rows.point_row(idx).expect("OwnedRows point_row must be Some for valid idx");
+            assert!(row.len() >= 3);
+            for (d, &v) in row.iter().enumerate().take(3) {
+                assert_eq!(v, rows.point_component(idx, d), "idx={idx} d={d}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_owned_rows_point_row_boundary_idx() {
+        let rows = OwnedRows::new(vec![1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0], 3);
+        let last = rows.len() - 1;
+        let row = rows.point_row(last).expect("boundary idx must return Some");
+        assert_eq!(row, &[4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn test_owned_rows_data_source_impl_for_reference() {
+        // `DataSource` must be implemented for `&OwnedRows<T>` too (needed
+        // so a caller can borrow instead of consuming the owned buffer).
+        let rows = OwnedRows::new(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], 3);
+        let by_ref: &OwnedRows<f32> = &rows;
+        assert_eq!(by_ref.point_count(), 2);
+        assert_eq!(by_ref.point_component(1, 1), 5.0);
+        assert_eq!(by_ref.point_row(0), Some(&[1.0f32, 2.0, 3.0][..]));
     }
 
     #[test]

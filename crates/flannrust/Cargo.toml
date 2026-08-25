@@ -1,5 +1,5 @@
 [package]
-name = "nanoflann-rs"
+name = "flannrust"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.98.0"

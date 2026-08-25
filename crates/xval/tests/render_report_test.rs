@@ -83,7 +83,7 @@ fn render_produces_html_with_no_placeholder_residue() {
 fn render_includes_title_and_doctype() {
     let html = xval::render(FIXTURE).expect("render should succeed");
     assert!(html.contains("<!doctype html>") || html.contains("<!DOCTYPE html>"), "missing doctype");
-    assert!(html.contains("<title>nanoflann-rs Scorecard</title>"), "missing/wrong <title>");
+    assert!(html.contains("<title>flannrust Scorecard</title>"), "missing/wrong <title>");
 }
 
 #[test]

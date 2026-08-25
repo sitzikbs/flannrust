@@ -28,7 +28,7 @@
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use nanoflann_ref::{Metric, RefIndex3F32, RefIndexF32};
-use nanoflann_rs::{ConstDim, KdTreeBuilder, L2};
+use flannrust::{ConstDim, KdTreeBuilder, L2};
 use std::time::Duration;
 use xval::{build_rust_f32, cfg_seed, queries, to_array3, to_f32, uniform, BuildThreads, RoundRobin, XMetric};
 

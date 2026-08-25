@@ -3,7 +3,7 @@
 //! (`ties = false`) unless a section says otherwise. See the task-11 brief
 //! for the exact config matrix this file implements.
 
-use nanoflann_rs::ConstDim;
+use flannrust::ConstDim;
 use nanoflann_ref::{RefIndexF32, RefIndexF64};
 use xval::{
     all_identical, build_rust_f32, build_rust_f64, cfg_seed, clustered, on_circle_so2, queries,
@@ -339,7 +339,7 @@ fn const_dim_3_spot_check_f64() {
     let q = queries(qseed, &data, 3, n_queries);
 
     let pts: Vec<[f64; 3]> = data.chunks(3).map(|c| [c[0], c[1], c[2]]).collect();
-    let rust_tree = nanoflann_rs::KdTreeBuilder::new(ConstDim::<3>, pts.as_slice()).build();
+    let rust_tree = flannrust::KdTreeBuilder::new(ConstDim::<3>, pts.as_slice()).build();
     let cpp_idx = RefIndexF64::build(&data, 3, XMetric::L2.to_ref(), 10, 1);
 
     for qi in 0..n_queries {
@@ -400,9 +400,9 @@ fn empty_tree_knn_returns_zero_both_sides_f32() {
 #[test]
 #[ignore]
 fn mutation_canary_tie_rule() {
-    use nanoflann_rs::data_source::FlatSlice;
-    use nanoflann_rs::dim::DynDim;
-    use nanoflann_rs::result_set::SmallestIndexWins;
+    use flannrust::data_source::FlatSlice;
+    use flannrust::dim::DynDim;
+    use flannrust::result_set::SmallestIndexWins;
 
     let dim = 3usize;
     let n = 300usize;
@@ -416,7 +416,7 @@ fn mutation_canary_tie_rule() {
     let q = queries(qseed, &data, dim, 30);
 
     let ds = FlatSlice::new(&data, dim);
-    let rust_tree = nanoflann_rs::KdTreeBuilder::new(DynDim(dim), ds)
+    let rust_tree = flannrust::KdTreeBuilder::new(DynDim(dim), ds)
         .leaf_max_size(leaf)
         .tie_break::<SmallestIndexWins>()
         .build();

@@ -1,6 +1,6 @@
 BSD 2-Clause License
 
-Copyright (c) 2026 nanoflann-rs contributors
+Copyright (c) 2026 flannrust contributors
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions are met:
@@ -32,7 +32,7 @@ This project vendors, unmodified, a copy of nanoflann 1.12.1
 (https://github.com/jlblancoc/nanoflann) at
 `crates/nanoflann-ref/cpp/nanoflann.hpp`, used only as a C++ cross-validation
 and benchmark oracle (see `crates/nanoflann-ref`) -- it is not part of the
-`nanoflann-rs` Rust library. That file carries, and retains verbatim, its own
+`flannrust` Rust library. That file carries, and retains verbatim, its own
 original license header, reproduced below exactly as it appears in the
 vendored file:
 

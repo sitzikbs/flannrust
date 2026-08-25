@@ -1,4 +1,4 @@
-# nanoflann-rs
+# flannrust
 
 A Rust port of [nanoflann](https://github.com/jlblancoc/nanoflann) 1.12.1,
 targeting bit-exact result parity with the C++ reference implementation and
@@ -8,11 +8,13 @@ fixed at build time, and the **dynamic** Bentley–Saxe forest
 (`KDTreeSingleIndexDynamicAdaptor` -> `DynamicKdTree`, see "Dynamic
 adaptor" below) supporting point add/remove after construction. Incremental
 (single self-balancing tree) and multithreaded-background-rebuild indexes
-remain future milestones (see "Roadmap" below).
+remain future milestones (see "Roadmap" below). Both indexes are also
+available from Python (`KDTree`/`DynamicKDTree`, PyO3 bindings — see
+"Python bindings (M-py)" below).
 
 ## Attribution & license
 
-`nanoflann-rs` is a derivative port of [nanoflann](https://github.com/jlblancoc/nanoflann),
+`flannrust` is a derivative port of [nanoflann](https://github.com/jlblancoc/nanoflann),
 credited to Jose Luis Blanco-Claraco et al., which itself builds on FLANN by
 Marius Muja and David G. Lowe. This crate is licensed under BSD-2-Clause (see
 [`LICENSE`](LICENSE)); the vendored, unmodified C++ header
@@ -34,7 +36,7 @@ and [`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md).
 ## Quickstart
 
 ```rust
-use nanoflann_rs::{ConstDim, KdTreeBuilder};
+use flannrust::{ConstDim, KdTreeBuilder};
 
 let pts: &[[f64; 3]] = &[
     [0.0, 0.0, 0.0],
@@ -51,7 +53,7 @@ assert_eq!(found, 2);
 assert_eq!(indices[0], 0); // nearest point is [0.0, 0.0, 0.0]
 ```
 
-(This is `crates/nanoflann-rs/src/lib.rs`'s crate-doc doctest, run under
+(This is `crates/flannrust/src/lib.rs`'s crate-doc doctest, run under
 `cargo test --workspace` on every commit.)
 
 ## Behavioral contracts
@@ -153,7 +155,7 @@ but only honors `BuildThreads::Sequential` (the default); it panics if
 ## Safety (`unsafe` in this crate)
 
 This crate contains exactly two `unsafe` blocks, both in
-`crates/nanoflann-rs/src/search.rs`'s `FrameStack` (M2.5): a
+`crates/flannrust/src/search.rs`'s `FrameStack` (M2.5): a
 `MaybeUninit::assume_init_read` in `pop` and an `assume_init_mut` in
 `top_mut`, reading back frames of the explicit-stack query walk from a
 fixed 128-slot inline array that is deliberately left uninitialized
@@ -288,7 +290,7 @@ M1 was defined as done only when all four hold — current status:
    ~16794) pass in release; empty/`k > n`/duplicate edge cases covered.
    **Met**.
 4. **Hygiene** — `cargo test --workspace` green with zero warnings (forced
-   rebuild, including `cargo doc -p nanoflann-rs --no-deps`),
+   rebuild, including `cargo doc -p flannrust --no-deps`),
    `--no-default-features` builds, doctests pass. **Met**.
 
 M2 (dynamic adaptor) was held to the same bar — bit-exact structure and
@@ -383,7 +385,7 @@ a precondition**: it only applies when the `DataSource` impl overrides
 adaptor's `GrowableFlat` all do); a custom `DataSource` that only
 implements `point_component` falls back to the per-component loop and gets
 none of this fix — see `DataSource::point_row`'s doc comment
-(`crates/nanoflann-rs/src/data_source.rs`) for what to implement to opt in.
+(`crates/flannrust/src/data_source.rs`) for what to implement to opt in.
 Result, this task's (T4's) fresh two-run sweep:
 
 | dim | scalar | before M2.5 | after M2.5 |
@@ -418,7 +420,7 @@ every mutation. Every newly-added point walks a binary-counter pattern
 (`first0bit`) to pick which slot absorbs it, merging and rebuilding every
 lower slot into it; removal is lazy (a tombstone flag, `vind` untouched
 until an unrelated merge happens to touch that slot). Full mechanism,
-verified against the C++ source line-for-line: `crates/nanoflann-rs/src/dynamic.rs`'s
+verified against the C++ source line-for-line: `crates/flannrust/src/dynamic.rs`'s
 module and `add_points` doc comments; source facts:
 [`docs/nanoflann-notes.md`](docs/nanoflann-notes.md)'s "M2 outcome" section.
 
@@ -516,13 +518,117 @@ Cross-validated the same way M1's static tree is (bit-exact, in-process,
 against the vendored C++ oracle) — the dynamic-specific op-sequence suite
 is documented as part of "Parity & testing" below, not repeated here.
 
+## Python bindings (M-py)
+
+**Distances (and every radius argument — `query(..., r=...)`,
+`query_radius(..., r=...)`) are SQUARED for `l2`/`l2_simple`, exactly like
+the Rust core above — NOT euclidean like `scipy.spatial.cKDTree`.** `l1` is
+already unsquared (summed absolute value). This is the single most common
+mistake porting code from `cKDTree`: square your radius before calling, and
+expect squared values back.
+
+Install (once published to PyPI as **`flannrust`** — see "Roadmap" below for
+the M-pub packaging plan) or build from source today:
+
+```bash
+cd crates/flannrust-py
+python -m venv .venv && source .venv/bin/activate
+pip install maturin numpy
+RUSTFLAGS="-C target-cpu=native" maturin develop --release
+```
+
+```python
+import numpy as np
+import flannrust
+
+pts = np.random.default_rng(0).uniform(-10, 10, size=(100_000, 3)).astype(np.float32)
+tree = flannrust.KDTree(pts, leaf_size=10, metric="l2", threads=None)
+
+q = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+dists, idxs = tree.query(q, k=5)                        # dists are SQUARED l2
+r_idxs, r_dists = tree.query_radius(q, r=4.0)            # r is SQUARED too, strict `<`
+box = tree.query_box(np.full(3, -1.0, dtype=np.float32),
+                      np.full(3, 1.0, dtype=np.float32))  # inclusive [lo, hi]
+
+dyn = flannrust.DynamicKDTree(dim=3, dtype="float32")
+start, end = dyn.add_points(pts)                         # half-open [start, end)
+dyn.remove_point(0)                                       # lazy tombstone
+dists, idxs = dyn.query(q, k=5)
+```
+
+`crates/flannrust-py/python/tests/` (pytest, 348 passed at this milestone's
+close) is the full behavior suite; `crates/flannrust-py/python/bench/bench_py.py`
+is the benchmark script behind the numbers below.
+
+### API
+
+| | `KDTree` (static) | `DynamicKDTree` |
+|---|---|---|
+| construct | `KDTree(points, leaf_size=10, metric="l2", threads=None)` | `DynamicKDTree(dim, dtype="float32", leaf_size=10, metric="l2", capacity=None)` |
+| `.query(x, k=1, r=None, eps=0.0, workers=1)` | `-> (dists, idxs)` | same |
+| `.query_radius(x, r, sorted=True, eps=0.0, workers=1)` | `-> (idxs, dists)` — two lists of ragged 1-D arrays (note: opposite order from `.query`) | same |
+| `.query_box(lo, hi)` | `-> uint32` array, inclusive `[lo, hi]`, traversal order | not exposed — nanoflann's C++ dynamic forest has no box-search surface either, see "Dynamic adaptor (M2)" above |
+| `.add_points(points)` / `.remove_point(idx)` | n/a (static) | append (returns the new half-open index range) / lazily tombstone |
+| `.data` | read-only NumPy **copy** of the dataset (not a view — mutating it does not affect the tree) | n/a |
+| getters | `.n` `.dim` `.dtype` `.leaf_size` `.metric` | `.n_active` `.n_total` `.removed_len` `.dim` `.dtype` `.leaf_size` `.metric` `.capacity` |
+
+`workers` follows `scipy`'s convention: `1` = sequential, `-1` = all cores,
+`n > 1` = capped rayon pool; `threads`/`workers` release the GIL during the
+build/query. `metric` is one of `"l2"`, `"l1"`, `"l2_simple"`. Full
+docstrings live on each pyclass/pymethod
+(`crates/flannrust-py/src/static_tree.rs`, `dynamic_tree.rs`).
+
+### Parity — scoped, not blanket (binding controller ruling)
+
+Cross-validated against `pynanoflann` (a pybind11 wrapper around C++
+nanoflann) and `scipy.spatial.cKDTree`. `pynanoflann` 0.10.0 (the only PyPI
+release) vendors nanoflann **1.5.5**, while flannrust's own C++ xval oracle
+— the version the Rust kernel is deliberately bit-matched against — is
+**1.12.1**; between those two versions nanoflann's distance-summation order
+changed, producing exactly-1-ULP squared-distance differences for `dim >=
+3` (a version-gap environment artifact against this one `pynanoflann`
+build, not a flannrust defect — full root-cause writeup:
+`docs/EXPERIMENTS.md`'s "M-py" subsection). The parity claim is therefore
+**tie-free KNN index-sequence parity across the full spec'd matrix (96/96
+nodes, bit-exact) plus `dim=2` KNN distance-value bit-exactness (4/4,
+provably immune to the version gap)** — not a blanket "bit-exact
+everywhere" claim; the 16 nodes attributable to the documented 1-ULP
+boundary-flip mechanism (radius search at dim ∈ {8,32}/float32, and
+near-tie/duplicate data at dim ∈ {3,8,32}/float32) are pinned as strict
+`xfail`, not silently dropped. No tolerance was ever loosened to force a
+green result.
+
+### Benchmarks
+
+Two full bench runs (range honesty, not averaged); full per-run tables and
+every pasted command: `docs/benchmarks.md`'s "M-py" section and
+`docs/EXPERIMENTS.md`'s "M-py" subsection.
+
+| Criterion | Gate | Range (both runs) | Verdict |
+|---|---|---|---|
+| Batched knn dim3 f32 vs cKDTree (workers 1 and −1) | ≤ 1.00 | 0.712–0.830 | **MET** |
+| Build vs pynanoflann (100k / 1M) | ≤ 1.00 | 0.543–0.561 | **MET** |
+| dim-32 knn vs pynanoflann | ≤ 1.10 | 0.878–0.899 | **MET** |
+| Per-call overhead | measured | flannrust ≈2.0–2.3µs, cKDTree ≈7.2–7.5µs, pynanoflann ≈2.3µs | **MET** |
+
+All gated criteria pass, with margin, in both runs. **Honest misses**
+(published alongside, not gated): `knn_batched_dim3_f32_..._workers1` vs
+pynanoflann ranges 1.058–1.216 (flannrust 6–22% slower single-threaded;
+near parity at `workers=-1`, 0.896–1.000); `knn_dim8_float64_..._workers1`
+vs pynanoflann ranges 1.233–1.249 (flannrust 23–25% slower, the most
+consistent miss in the matrix). flannrust beats cKDTree on every single
+row, both runs, without exception. See `docs/ROADMAP.md`'s M-pub section
+for the open investigation the dim8 f64 gap motivates.
+
 ## Roadmap
 
 M1 (static kd-tree), M2 (dynamic Bentley–Saxe forest, this document's
-"Dynamic adaptor (M2)" section above), and **M2.5 (performance deep-dive)**
-are all **complete**. Remaining and future milestones (design notes already
-captured in `docs/nanoflann-notes.md` so they don't need re-deriving from
-the C++ source; full tracker: [`docs/ROADMAP.md`](docs/ROADMAP.md)):
+"Dynamic adaptor (M2)" section above), **M2.5 (performance deep-dive)**, and
+**M-py (Python bindings, this document's "Python bindings (M-py)" section
+above)** are all **complete**. Remaining and future milestones (design notes
+already captured in `docs/nanoflann-notes.md` so they don't need
+re-deriving from the C++ source; full tracker:
+[`docs/ROADMAP.md`](docs/ROADMAP.md)):
 
 - **M2.5 — performance deep-dive (complete)**: two headline outcomes — the
   dim-32 knn gap (~1.3-1.45x) is closed at f32 to parity-or-better via a
@@ -549,9 +655,16 @@ the C++ source; full tracker: [`docs/ROADMAP.md`](docs/ROADMAP.md)):
 - **Serialization** (static tree save/load; nanoflann's `NFLN`/`NFLI` binary
   formats don't map byte-for-byte onto this crate's index-based node arena,
   so this needs its own format).
-- **M-py — Python bindings** and **M-pub — announcement readiness**
-  (bare-metal re-run, claims audit, CI, crates.io dry run) — unchanged from
-  `docs/ROADMAP.md`, not started.
+- **M-py — Python bindings (complete)**: `KDTree`/`DynamicKDTree` PyO3
+  bindings, copy-in NumPy build input (one copy at construction; zero-copy
+  input deferred), GIL released during build/query,
+  benchmarked against `scipy.spatial.cKDTree` and `pynanoflann` — see
+  "Python bindings (M-py)" above for the API, the scoped parity claim, and
+  the honest bench accounting (all three spec'd speed gates met; two
+  non-gating misses vs pynanoflann published alongside).
+- **M-pub — announcement readiness** (bare-metal re-run, claims audit, CI
+  matrix + wheel/PyPI publish, crates.io dry run) — not started; see
+  `docs/ROADMAP.md`.
 
 See `docs/nanoflann-notes.md` for the verified C++ source facts (class
 inventory, constants, API surfaces, stale/dead code to avoid porting

@@ -51,7 +51,7 @@
 //! # Example
 //!
 //! ```
-//! use nanoflann_rs::{ConstDim, KdTreeBuilder};
+//! use flannrust::{ConstDim, KdTreeBuilder};
 //!
 //! let pts: &[[f64; 3]] = &[
 //!     [0.0, 0.0, 0.0],
@@ -87,7 +87,7 @@ mod build_parallel;
 pub use scalar::{Scalar, DistanceValue, IndexType};
 pub use dim::{Dim, ConstDim, DynDim};
 pub use bbox::Interval;
-pub use data_source::{DataSource, FlatSlice};
+pub use data_source::{DataSource, FlatSlice, OwnedRows};
 pub use metric::{Distance, L1, L2, L2Simple, SO2, SO3};
 pub use result_set::{ResultItem, ResultSet, TieBreak, KeepInsertionOrder, SmallestIndexWins, KnnResultSet, RknnResultSet, RadiusResultSet};
 pub use filter::{PointFilter, AcceptAll};
