@@ -312,4 +312,6 @@ sit within a residual now honestly ranging 1.030–1.067 rather than
 this fresh n=100 sweep (from 0.873–0.916), still a clear win over the
 pre-M2.5 0.956–0.976 band. `build_100k` (not covered above but see
 `docs/benchmarks.md`/`docs/ROADMAP.md`) is now understood to be
-dataset-seed-dependent rather than pure noise.
+reproducibly split by configuration rather than pure noise — dataset seed
+vs. harness/process context were never crossed to isolate which one is
+the cause.

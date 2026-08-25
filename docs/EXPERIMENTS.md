@@ -66,8 +66,9 @@ n=100-per-side, 4-session `knn_fixed3` characterization** in §3's "M2.6
 task 2" subsection ("The new noise floor" sub-subsection): session medians
 **1.030–1.067** (n=4 independent sessions), per-session per-repetition
 ratio σ≈0.03–0.05 (delta-method estimate from `xval::measure_pair`'s
-published `mean_ms`/`std_ms` at n=100/side), approximate mean±2σ band
-**0.94–1.16** — every "within the noise floor" statement in `README.md`,
+published `mean_ms`/`std_ms` at n=100/side), and a **conservative envelope
+of 0.94–1.16** (extreme session medians 1.030/1.067 ± 2×max per-session σ,
+0.046 — not a grand mean±2σ) — every "within the noise floor" statement in `README.md`,
 `docs/benchmarks.md`, and `docs/ROADMAP.md` now refers to that
 characterization. **Historical, superseded, kept for provenance, not
 deleted:** the previous canonical floor was the 8-run `knn_fixed3` sweep
@@ -1554,10 +1555,13 @@ old 8-run min–max, because "ratio of a median-of-100" is a much
 less noisy summary statistic than "ratio of a median-of-7" was (exactly
 the point of T1's rewrite). Within any one session, the per-repetition
 ratio itself has an estimated σ of roughly **0.03–0.05** (table above) —
-so a **mean ± 2σ band of approximately 0.94–1.16** comfortably contains
-every session median observed here, sits well inside the 1.25 gate margin,
-and nests inside (does not merely re-confirm) the old eyeballed
-0.956–1.192 range: the new number is narrower on both ends and now has an
+so a **conservative envelope of approximately 0.94–1.16** (the two most
+extreme session medians, 1.030 and 1.067, each padded by ±2× the largest
+per-session σ observed, 0.046 — NOT a grand mean±2σ over a pooled
+distribution) comfortably contains every session median observed here,
+sits well inside the 1.25 gate margin, and nests inside (does not merely
+re-confirm) the old eyeballed 0.956–1.192 range: the new number is
+narrower on both ends and now has an
 actual statistical basis (a computed σ from n=100 real samples) rather
 than being read off 8 point values by eye.
 
@@ -1609,7 +1613,7 @@ band).** **CORRECTED**, in both directions:
 (the noise-floor table above) range **1.030–1.067** — 3.0% to 6.7%. The
 upper end (6.7%) exceeds the old "~1–4%" characterization. Still not a
 regression and still comfortably inside the newly-characterized noise
-floor (mean≈1.05, ±2σ≈0.94–1.16, above) — the wider honest range comes
+floor (conservative envelope 0.94–1.16, above) — the wider honest range comes
 from sampling 2 independently-seeded datasets × n=100 reps instead of 1
 dataset's n=7-median point estimates, not from any code change.
 
@@ -1626,7 +1630,8 @@ variation, not a regression or a change in mechanism.
 **(e) The noise floor itself.** **CORRECTED** (replaced) — see the
 dedicated subsection immediately above. New canonical floor: session
 medians 1.030–1.067 (n=4 sessions), per-session per-rep ratio σ≈0.03–0.05
-(delta-method, n=100/side), approximate mean±2σ band 0.94–1.16. Old
+(delta-method, n=100/side), and a conservative envelope of 0.94–1.16
+(extreme session medians ± 2×max per-session σ — not a grand mean±2σ). Old
 0.956–1.192 (8 runs, median-of-7 each) kept as historical, superseded.
 
 **(f) `dyn_add` range "1.11–1.24."** **CONFIRMED, narrowed.** 4 fresh n=100
@@ -1640,33 +1645,41 @@ Every session here still passes the 1.25 gate margin with more room than
 the old high-water mark suggested.
 
 **(g) `build_100k` seq range "0.974–1.139," flagged as suspiciously wide.**
-**CORRECTED/SETTLED** — genuinely dataset-dependent, not pure noise or
-drift. This task's 4 fresh n=100 sessions cluster by WHICH dataset they
-ran against, not randomly: both gate sessions (dataset seeded
-`"perf_gate_build"`) land at **0.967/0.967** (Rust faster, std <0.01
-between sessions); both report-chain sessions (dataset seeded
+**CORRECTED** — reproducibly split by configuration, not pure noise or
+drift, though the two candidate causes (dataset seed vs. harness/process
+context) were never crossed against each other, so which one actually
+drives the split is not yet isolated. This task's 4 fresh n=100 sessions
+cluster by WHICH RUN CONFIGURATION they came from, not randomly: both gate
+sessions (`perf_gate.rs`, dataset seeded `"perf_gate_build"`) land at
+**0.967/0.967** (Rust faster, std <0.01 between sessions); both
+report-chain sessions (`report_data.rs`, dataset seeded
 `"report_build_100k"` — a different, independently-drawn uniform dataset of
-the identical shape) land at **1.037/1.037** (C++ faster, std <0.002
+the identical shape) land at **1.039/1.037** (C++ faster, std <0.002
 between sessions). Combined range: **0.967–1.039** — narrower than the old
-0.974–1.139, AND internally structured: each dataset is individually very
-stable session-to-session (well under 1% drift), but the two datasets
-differ from each other by ~7 percentage points. This directly answers the
-brief's question: the old wide spread was not primarily measurement noise
-(a single stable workload wouldn't reproduce two tight, ~7pp-apart
-clusters like this) and not temporal drift (both gate sessions and both
-report sessions were captured minutes apart, immediately before/after each
-other, yet each pair agrees with itself far more than across the
-gate/report split). The most likely structural explanation is the
-different independently-seeded dataset per harness (`cfg_seed`'s
-`"perf_gate_build"` vs. `"report_build_100k"` tags produce different
-uniform point clouds of the same size/shape) — plausible because kd-tree
-build cost is not perfectly invariant to the specific point distribution
-even under "the same" generator/shape, though this task did not fully
-isolate dataset-seed from harness/process context (gate = a standalone
-single-workload test binary; report_data = one process running 8 workloads
-sequentially) as the exact cause, and does not claim to. Not chased
-further here (out of scope), but no longer honestly describable as "just
-noise" — flagged for a future task if the distinction matters.
+0.974–1.139, AND internally structured: each configuration is individually
+very stable session-to-session (well under 1% drift), but the two
+configurations differ from each other by ~7 percentage points. This
+directly answers the brief's "noise or drift?" question in the negative —
+a single stable workload wouldn't reproduce two tight, ~7pp-apart clusters
+like this (not noise), and both gate sessions and both report sessions
+were captured minutes apart, immediately before/after each other, yet each
+pair agrees with itself far more than across the gate/report split (not
+drift). **What this task did NOT do: isolate WHICH configuration
+difference is the cause.** `perf_gate.rs` and `report_data.rs` differ in
+two ways simultaneously — a different `cfg_seed` dataset tag
+(`"perf_gate_build"` vs. `"report_build_100k"`, so a genuinely different
+independently-drawn point cloud) AND a different process/harness context
+(gate = a standalone single-workload test binary; report_data = one
+process running 8 workloads sequentially, this one first). Either could
+plausibly explain a ~7pp build-time gap; this task never ran the
+"report_data's dataset inside the gate binary" (or vice versa) crossing
+experiment that would separate them, so the specific mechanism remains
+unconfirmed. Not chased further here (out of scope) — no longer honestly
+describable as "just noise," but "dataset-dependent" should itself be read
+as "reproducibly configuration-dependent, mechanism not yet isolated," not
+as a fully diagnosed root cause. Flagged as a concrete Task-4-audit input:
+a crossing experiment (swap which dataset each binary builds) would settle
+this.
 
 
 
@@ -1831,10 +1844,10 @@ cite the M2.5 ranges, not these).
 | M-py bench success criteria (batched knn dim3 vs cKDTree 0.712–0.830; build vs pynanoflann 0.543–0.561/0.543–0.551; dim32 vs pynanoflann 0.878–0.899; per-call overhead ≈2.0–2.3µs) — README Python section, `docs/benchmarks.md` M-py section, `docs/ROADMAP.md` M-py entry | `bench_py.py`, §3 "M-py" subsection, both pasted runs | `report_py.json`'s `workloads[]`, `ratio_ckdtree`/`ratio_pynanoflann`/`*_ms` fields |
 | M-py honest misses (`knn_batched_..._workers1` vs pynanoflann 1.058–1.216; `knn_dim8_float64_..._workers1` vs pynanoflann 1.233–1.249) — README Python section, `docs/benchmarks.md` M-py section, `docs/ROADMAP.md` M-pub dim8 lead | `bench_py.py`, §3 "M-py" subsection, both pasted runs | same `report_py.json` fields as the row above |
 | **M2.6 statistical baseline, six-gate ranges** (`build_100k` 0.967–1.039, `knn_fixed3` 1.030–1.067, `dim8` 0.929–0.937, `radius` 0.807–0.867, `dyn_add` 1.112–1.149, `dyn_knn_after_churn` 0.940–0.947 — combined across 2 gate sessions + 2 report-chain runs, n=100/side each) — README "Perf gate" table, `docs/benchmarks.md` M2.6 section | Perf gate command + report chain, §3 "M2.6 task 2" subsection | `PERF_GATE perf_gate_*: ... ratio=...` and `report.json`'s `speed[].ratio`, all 4 pasted sessions |
-| **New canonical noise floor** (`knn_fixed3` session medians 1.030–1.067 across n=4 sessions, per-session per-rep ratio σ≈0.03–0.05 at n=100/side, approx. mean±2σ band 0.94–1.16 — supersedes the old 8-run 0.956–1.192 everywhere it was cited: `README.md`, `docs/benchmarks.md`, `docs/ROADMAP.md`) | Perf gate command + report chain, §3 "M2.6 task 2" subsection, "The new noise floor" sub-subsection | `PERF_GATE`/`report.json` `TimingStats` `mean_ms`/`std_ms`/`n` fields for `knn_dim3_f32_k10`/`knn_fixed3`, all 4 pasted sessions |
+| **New canonical noise floor** (`knn_fixed3` session medians 1.030–1.067 across n=4 sessions, per-session per-rep ratio σ≈0.03–0.05 at n=100/side, conservative envelope 0.94–1.16 = extreme session medians ± 2×max per-session σ — supersedes the old 8-run 0.956–1.192 everywhere it was cited: `README.md`, `docs/benchmarks.md`, `docs/ROADMAP.md`) | Perf gate command + report chain, §3 "M2.6 task 2" subsection, "The new noise floor" sub-subsection | `PERF_GATE`/`report.json` `TimingStats` `mean_ms`/`std_ms`/`n` fields for `knn_dim3_f32_k10`/`knn_fixed3`, all 4 pasted sessions |
 | **M2.6 dim-32 f32 re-verification** (0.986–1.062, straddles parity — corrects the previously-cited "parity-or-better" 0.966–1.008) — README "dim-32/64 knn" section, `docs/benchmarks.md` M2.6 section | `cargo run -p xval --release --example m25_diag -- knn`, §3 "M2.6 task 2" subsection | stdout CSV, `dim,scalar,rust_ms,cpp_ms,ratio` dim-32 f32 rows, both sessions |
 | **M2.6 T2 give-back re-verification** (`radius` 0.807–0.867, wider than the previously-cited "~0.83"; `knn_dyn_dim8_f64_k10` 0.929–0.937, better than the entire pre-M2.5 band, not merely inside it) — `docs/benchmarks.md`/`docs/ROADMAP.md` M2.5 trade-off text | Perf gate command + report chain, §3 "M2.6 task 2" subsection | same `ratio` fields as the six-gate-ranges row above |
-| **M2.6 `build_100k` dataset-dependence finding** (0.967/0.967 on the gate's own dataset vs. 1.037/1.037 on report_data's differently-seeded dataset — settles the old "0.974–1.139, suspiciously wide" question as dataset-structured, not pure noise or drift) | Perf gate command + report chain, §3 "M2.6 task 2" subsection, conclusion (g) | `PERF_GATE perf_gate_build_100k_dim3_f32_seq`/`report.json`'s `build_100k_dim3_f32_seq` `ratio`, all 4 pasted sessions |
+| **M2.6 `build_100k` configuration-split finding** (0.967/0.967 on the gate's own dataset vs. 1.039/1.037 on report_data's differently-seeded dataset — answers the old "0.974–1.139, suspiciously wide" question as reproducibly configuration-dependent, not pure noise or drift, though dataset-seed vs. harness/process-context were never crossed to isolate which one drives it — see conclusion (g)) | Perf gate command + report chain, §3 "M2.6 task 2" subsection, conclusion (g) | `PERF_GATE perf_gate_build_100k_dim3_f32_seq`/`report.json`'s `build_100k_dim3_f32_seq` `ratio`, all 4 pasted sessions |
 | `m25_diag` `RUNS` bump 7→15 (n>=10, M2.6 task 2's only code change) | `git diff crates/xval/examples/m25_diag.rs` (12 lines, doc comment + one constant) | the file itself; re-run commands unchanged |
 
 ## 6. See also

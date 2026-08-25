@@ -350,7 +350,7 @@ corrects several of these ranges (full account: `docs/EXPERIMENTS.md`
 
 | Workload | Ratio range (4 fresh n=100 sessions) |
 |---|---|
-| `build_100k_dim3_f32_seq` | 0.967–1.039 (dataset-dependent, not noise — see below) |
+| `build_100k_dim3_f32_seq` | 0.967–1.039 (reproducibly split by configuration, not noise — see below) |
 | `knn_fixed3_dim3_f32_k10`¹ | 1.030–1.067 |
 | `knn_dyn_dim8_f64_k10` | 0.929–0.937 (better than the entire pre-M2.5 range) |
 | `radius_dim3_f32` | 0.807–0.867 |
@@ -359,7 +359,8 @@ corrects several of these ranges (full account: `docs/EXPERIMENTS.md`
 
 ¹ within this host's documented noise floor, **now the n=100-per-side,
 4-session characterization** (session medians 1.030–1.067, approx.
-mean±2σ band 0.94–1.16 — `docs/EXPERIMENTS.md` "M2.6 task 2"), superseding
+conservative envelope of 0.94–1.16 (extreme session medians ± 2×max
+per-session σ) — `docs/EXPERIMENTS.md` "M2.6 task 2"), superseding
 the old 8-run 0.956–1.192 figure (`docs/EXPERIMENTS.md` "M2.5 task 1",
 kept as historical). Individual `knn_fixed3` old noise-sweep runs of
 1.104/1.192 remain historical context, not the current floor.
@@ -371,7 +372,9 @@ looked like the tightest-margin gate under the old n=7 methodology (up to
 noise, not the true steady-state ratio — see the "Dynamic adaptor (M2)" →
 "Performance" section below. Build's `build_100k_dim3_f32_seq` spread
 (previously read as "suspiciously wide," 0.974–1.139) turns out to be
-genuinely dataset-dependent: the perf-gate binary's own dataset builds
+reproducibly split by configuration — not primarily noise or drift, though
+dataset seed and process context were never crossed to isolate which one
+is the cause (`docs/EXPERIMENTS.md` conclusion (g)): the perf-gate binary's own dataset builds
 consistently ~0.967 across sessions, while `report_data`'s independently
 seeded dataset of the same shape builds consistently ~1.037 — each stable
 to <1% on its own, ~7 points apart from the other (`docs/EXPERIMENTS.md`

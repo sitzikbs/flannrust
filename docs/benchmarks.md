@@ -19,7 +19,8 @@ run-to-run scheduler/thermal jitter (~±5-10% on individual runs — M1's
 characterization; **Update (M2.6):** the repo's canonical noise floor is now
 the n=100-per-side, 4-session `knn_fixed3` characterization — session
 medians 1.030–1.067, per-session per-rep ratio σ≈0.03–0.05, approx.
-mean±2σ band 0.94–1.16, `docs/EXPERIMENTS.md` "M2.6 task 2" — superseding
+conservative envelope of 0.94–1.16 (extreme session medians ± 2×max
+per-session σ), `docs/EXPERIMENTS.md` "M2.6 task 2" — superseding
 the old 8-run `knn_fixed3` sweep, 0.956–1.192, `docs/EXPERIMENTS.md` "M2.5
 task 1" (kept there as historical). The perf
 gate table below mixes sample sizes across its columns (see the column
@@ -204,7 +205,8 @@ and what that conversion won and gave back is accounted for in this
 file's "M2.5 — performance deep-dive" section. Item 2's 7-run 0.937–1.079
 spread is an older, smaller sample than the repo's canonical noise floor —
 **Update (M2.6):** now the n=100-per-side, 4-session characterization
-(session medians 1.030–1.067, approx. mean±2σ band 0.94–1.16,
+(session medians 1.030–1.067, conservative envelope 0.94–1.16 (extreme
+session medians ± 2×max per-session σ),
 `docs/EXPERIMENTS.md` "M2.6 task 2"), superseding the 8-run 0.956–1.192
 figure (`docs/EXPERIMENTS.md` "M2.5 task 1", kept there as historical).
 Both retained below as the M1 record, not as the current state.
@@ -391,6 +393,17 @@ workload, not a regression):
 | `dyn_add_20k_dim3_f32` (20 batches × 1000 contiguous adds, from empty; workload unchanged by this fix) | 1.113 | 1.106–1.237 (range, see below) |
 | `dyn_knn_after_churn_dim3_f32` (95k built, 5k removed / 2.5k re-added leaving live tombstones, then a 5k fresh growth batch triggering real merges, then 10,000 k=10 knn queries) | 0.964 (old, no-op-churn workload — not comparable) | 0.971–0.976 |
 
+**Update (M2.6, commit `a30a819`, 2026-08-25):** re-measured under the
+adaptive-n harness (`xval::measure_pair`, n=100/side, 4 independent
+sessions — 2 gate + 2 report-chain) — `dyn_add_20k_dim3_f32` **1.112–1.149**,
+`dyn_knn_after_churn_dim3_f32` **0.940–0.947**. Both narrower than the
+ranges in the table above (the old high-water marks read as small-sample
+median-of-7 noise in hindsight, not the true steady-state ratio); both
+still comfortably clear the 1.25 gate. Full account, every pasted run:
+`docs/EXPERIMENTS.md` "M2.6 task 2"; `docs/benchmarks.md` "M2.6 —
+statistical re-verification" (below). Table above kept as-is (historical
+pasted evidence).
+
 Both pass the 1.25 gate threshold, but the margin is real, not
 "comfortable" — `dyn_add`'s high end (1.237) is only 1.0% below the
 threshold. Re-run four times during this fix wave — twice via the full
@@ -519,7 +532,7 @@ median-of-7 sweep (commit `2d23db4`) and is retained as-is (historical
 pasted evidence, never edited in place). A fresh n=100-per-side, 4-session
 re-verification (2 gate + 2 report-chain sessions, commit `a30a819`,
 `docs/EXPERIMENTS.md` "M2.6 task 2") widens/corrects several of these
-figures: `build_100k` **0.967–1.039** (settled as dataset-dependent, not
+figures: `build_100k` **0.967–1.039** (reproducibly split by configuration, not
 noise — see below), `knn_fixed3` **1.030–1.067**, `dim8` **0.929–0.937**
 (now BETTER than the entire pre-M2.5 range, not merely back inside it),
 `radius` **0.807–0.867** (wider than the single "~0.83" point estimate
@@ -634,7 +647,8 @@ was A/B-tested and did not help (NEW32 columns in `docs/EXPERIMENTS.md`'s
   `docs/EXPERIMENTS.md` "M2.6 task 2" conclusion (c)) — the whole residual
   still sits inside this host's documented noise floor, which is now
   itself an n=100-grounded characterization (session medians 1.030–1.067,
-  approx. mean±2σ band 0.94–1.16) superseding the old 8-run 0.956–1.192
+  conservative envelope 0.94–1.16 (extreme session medians ± 2×max
+  per-session σ)) superseding the old 8-run 0.956–1.192
   figure (`docs/EXPERIMENTS.md` "M2.5 task 1", kept as historical) — not
   chased further.
 - **dim-32 f64**: ~1.10–1.11x — closed substantially (from 1.315x) but not
@@ -672,7 +686,7 @@ sessions (2 gate + 2 report-chain):
 
 | Workload | M2.5 "Post-T2/final" (T4, 2 runs, median-of-7) | M2.6 (4 sessions, median-of-100) |
 |---|---|---|
-| `build_100k_dim3_f32_seq` | 0.974–1.079 | **0.967–1.039** (dataset-dependent — see below, not noise) |
+| `build_100k_dim3_f32_seq` | 0.974–1.079 | **0.967–1.039** (reproducibly split by configuration — see below; not noise, mechanism not isolated) |
 | `knn_fixed3_dim3_f32_k10` | 1.011–1.040 | **1.030–1.067** |
 | `knn_dyn_dim8_f64_k10` | 0.950–0.966 | **0.929–0.937** (better than the entire pre-M2.5 band) |
 | `radius_dim3_f32` | 0.827–0.828 | **0.807–0.867** |
@@ -711,11 +725,15 @@ controller's binding list):
   data suggests the true steady-state band is narrower than the old
   n=7-median range implied; the old 1.237 high-water mark reads as
   small-sample noise in hindsight, not a wider true distribution.
-- **(g) `build_100k` "0.974–1.139," suspiciously wide**: **CORRECTED/SETTLED**.
-  NOT primarily measurement noise or temporal drift: both gate sessions
+- **(g) `build_100k` "0.974–1.139," suspiciously wide**: **CORRECTED**.
+  Reproducibly split by configuration — not primarily measurement noise or
+  temporal drift, though dataset seed and process context were never
+  crossed against each other, so which one is the actual cause is not yet
+  isolated (see `docs/EXPERIMENTS.md` conclusion (g) for the full hedge).
+  Both gate sessions
   (dataset seeded `"perf_gate_build"`) land at 0.967/0.967; both
   report-chain sessions (independently-seeded dataset, `"report_build_100k"`)
-  land at 1.037/1.037 — each pair internally stable to <1%, ~7 points apart
+  land at 1.039/1.037 — each pair internally stable to <1%, ~7 points apart
   from the other pair. The old wide spread reflects which dataset was
   measured, not run-to-run jitter on one dataset.
 
@@ -724,8 +742,9 @@ controller's binding list):
 n=100-per-side, 4-session characterization: session medians **1.030–1.067**
 (mean 1.0475, session-to-session sd 0.019, n=4), with each session's own
 per-repetition ratio estimated (delta-method, from the published
-mean/std at n=100/side) at σ≈0.03–0.05 — an approximate **mean±2σ band of
-0.94–1.16**, comfortably inside the 1.25 gate margin and narrower on both
+mean/std at n=100/side) at σ≈0.03–0.05 — a **conservative envelope of
+0.94–1.16** (extreme session medians ± 2×max per-session σ, not a grand
+mean±2σ over a pooled distribution), comfortably inside the 1.25 gate margin and narrower on both
 ends than the old eyeballed range, now with an actual computed σ behind
 it rather than 8 point values read by eye. Full derivation, the
 delta-method formula, and the caveat about `measure_pair`'s fixed
@@ -824,7 +843,9 @@ against the M2.5 ranges: `docs/EXPERIMENTS.md`'s "M-py" subsection.
 
 **Update (M2.6):** the M-py-era `build_100k` 0.974–1.139 spread motivated a
 dedicated re-verification (`docs/EXPERIMENTS.md` "M2.6 task 2" conclusion
-(g)) — settled as genuinely dataset-dependent, not noise or drift: the
+(g)) — reproducibly split by configuration, not noise or drift, though
+  dataset seed and process context were never crossed to isolate which one
+  is the cause (`docs/EXPERIMENTS.md` conclusion (g)): the
 `perf_gate.rs` binary's own (differently-seeded) dataset builds
 consistently at ~0.967 across 2 fresh sessions, while `report_data.rs`'s
 independently-seeded dataset of the same shape builds consistently at

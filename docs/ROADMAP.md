@@ -54,8 +54,12 @@ improved: `knn_dyn_dim8_f64_k10` is now **0.929–0.937** — better than the
 entire pre-M2.5 range, not merely back inside it. Widened, still inside
 the (also newly-characterized) noise floor: the fixed-dim-3 residual is
 **1.030–1.067**. `build_100k_dim3_f32_seq` (not covered above) is now
-understood to be dataset-seed-dependent (0.967 vs. 1.037 depending on
-which of two differently-seeded datasets is measured), not noise. Full
+understood to be reproducibly split by configuration (0.967 vs. 1.037–1.039
+depending on which of two differently-seeded datasets is measured) — not
+primarily noise or drift, though dataset seed and process context were
+never crossed to isolate which one is the cause (`docs/EXPERIMENTS.md`
+conclusion (g); a crossing experiment — swap which dataset each binary
+builds — is a concrete Task-4-audit input). Full
 per-conclusion verdicts: `docs/EXPERIMENTS.md` "M2.6 task 2";
 `docs/benchmarks.md` "M2.6 — statistical re-verification".
 
@@ -78,7 +82,8 @@ Full sweep, provenance, and every pasted run: `docs/benchmarks.md` +
   (3.0–6.7%, `docs/EXPERIMENTS.md` "M2.6 task 2" conclusion (c)). Within
   this host's documented noise floor — **now the n=100-grounded
   characterization**, session medians 1.030–1.067 across 4 sessions,
-  approx. mean±2σ band 0.94–1.16 (`docs/EXPERIMENTS.md` "M2.6 task 2",
+  a conservative envelope of 0.94–1.16 (extreme session medians ± 2×max
+  per-session σ) (`docs/EXPERIMENTS.md` "M2.6 task 2",
   superseding the old 8-run 0.956–1.192 figure, `docs/EXPERIMENTS.md`
   "M2.5 task 1", kept as historical) — not chased further.
 - A fast-math / reordered-arithmetic kernel feature flag (non-default, own
@@ -142,7 +147,7 @@ Goal: make flannrust usable from Python so it can replace the common Python rout
 ## M-pub — Announcement readiness (blog post + repo launch)
 
 Cross-the-t's checklist before anything public:
-- **Re-run the full evaluation on bare-metal Linux** (current numbers are WSL2; the documented noise floor is now the M2.6 n=100-per-side, 4-session characterization — `knn_fixed3` session medians 1.030–1.067, approx. mean±2σ band 0.94–1.16 — `docs/EXPERIMENTS.md` "M2.6 task 2", superseding the old 8-run 0.956–1.192 figure, `docs/EXPERIMENTS.md` "M2.5 task 1", kept as historical). Publish only the bare-metal numbers; keep WSL2 as a secondary data point. This applies to the M-py Python bench numbers too, not just the Rust-vs-C++ gates.
+- **Re-run the full evaluation on bare-metal Linux** (current numbers are WSL2; the documented noise floor is now the M2.6 n=100-per-side, 4-session characterization — `knn_fixed3` session medians 1.030–1.067, conservative envelope 0.94–1.16 (extreme session medians ± 2×max per-session σ) — `docs/EXPERIMENTS.md` "M2.6 task 2", superseding the old 8-run 0.956–1.192 figure, `docs/EXPERIMENTS.md` "M2.5 task 1", kept as historical). Publish only the bare-metal numbers; keep WSL2 as a secondary data point. This applies to the M-py Python bench numbers too, not just the Rust-vs-C++ gates.
 - **Claims audit**: every performance/parity sentence in the post traces to the generated report + EXPERIMENTS.md; independent re-review of the draft post against the data.
 - **Licensing/attribution**: nanoflann is BSD-2-Clause — vendored header retains its license text; README + post credit Blanco-Claraco et al. and link upstream; our LICENSE chosen (BSD-2 to match, or MIT/Apache-2.0 dual — decide explicitly).
 - **CI**: GitHub Actions running the workspace tests + `--no-default-features` + (nightly job) heavy/ignored tests and perf gates on a dedicated runner. **The miri job is required, not optional**: `search.rs`'s `FrameStack` (M2.5 task 2) is this crate's first `unsafe` code, and both aliasing models (Stacked Borrows + Tree Borrows: `cargo +nightly miri test -p flannrust --lib -- search`, once plain and once with `MIRIFLAGS="-Zmiri-tree-borrows"`, see `docs/EXPERIMENTS.md`'s "Miri" subsection) must stay green on every change that touches `search.rs`, not just at milestone close-out — a nightly-only or manual-only miri run would let a regression sit undetected for however long the interval is.
