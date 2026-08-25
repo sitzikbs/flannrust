@@ -1790,6 +1790,228 @@ this.
   also validated through this same independent checker before use, not
   just the randomly-generated matrix sequences.
 
+### M2.6 task 3: Python bench statistical baseline (n>=10..100, mean±std) and M-py conclusion re-verification (2026-08-25)
+
+M2.6 task 1/2 (above) replaced the Rust-vs-C++ perf gate's and
+`report_data`'s fixed median-of-7 timing with `xval::measure`/
+`measure_pair`'s adaptive `n = clamp(10, 100, floor(budget_s*1000 /
+t_est_ms))` policy. This task ports the same statistical upgrade to
+`crates/flannrust-py/python/bench/bench_py.py` (the M-py Python-bindings
+bench, previously fixed at median-of-7 like the Rust side was): a new
+`timed_stats_interleaved` generalizes `measure_pair`'s 2-warmup-rep,
+slowest-side-sets-`n`, per-repetition-interleaved policy from 2 sides to
+however many engines a cell compares (3, here: flannrust/cKDTree/
+pynanoflann) — `BUDGET_S = 30.0`, `WARMUP_REPS = 2`, same formula, same
+sample-std (n-1) — and publishes a `{mean_ms, std_ms, median_ms, min_ms,
+max_ms, n}` object per engine per workload row (`bench_py.py`'s
+`stats_from_samples`, field-for-field identical to `xval::TimingStats`).
+Ratios (`ratio_ckdtree`/`ratio_pynanoflann`) are computed from MEDIANS,
+same decision statistic as every other ratio claim in this repo. The
+emitted JSON gained a top-level `"schema_version": 2` key; `xval::
+render_python` (moved from `examples/render_report.rs` into the `xval`
+library itself, `crates/xval/src/report.rs`, specifically so it has
+`tests/render_report_test.rs` coverage) now REFUSES a document whose
+`schema_version` isn't `2` with a specific, actionable error (`python
+bench JSON schema_version mismatch: expected 2, found N -- re-run the
+updated bench_py.py to regenerate`), checked via a tiny probe-struct parse
+BEFORE the full document parse — an old-format (pre-task-3, flat
+`flannrust_ms`/`ckdtree_ms`/`pynanoflann_ms`) JSON is rejected loudly, not
+silently mis-rendered. `crates/xval/tests/render_report_test.rs` proves
+this both ways: `render_python_rejects_old_format_json_without_schema_version`/
+`render_python_rejects_wrong_schema_version_number` (RED-confirmed by
+temporarily deleting the version check and observing both tests fail with
+a generic serde "missing field" error instead of the intended message,
+then restoring it) and `render_python_happy_path_renders_stats_and_median_ratio_pill`
+(GREEN: mean/std/n visible per engine, ratio pill keyed off the
+median-based `ratio_ckdtree`/`ratio_pynanoflann` fields). The rendered
+Python section's cells now show `median (mean±std, n=N)` per engine
+(precision chosen once from the row's own median magnitude, not
+independently per number, so a sub-1ms std next to a >1ms median doesn't
+render at a visually mismatched decimal count).
+
+Per the task brief, this is **one full run** (not two, unlike M-py's
+original range-honesty pair) — the adaptive `n>=10` policy itself is the
+statistical weight this task adds, not a second session; per-workload `n`
+is published in the JSON/table below so the actual sample size behind
+every ratio is visible.
+
+Rebuild + run (`crates/flannrust-py`):
+
+```
+export PATH="$HOME/.cargo/bin:$PATH"
+cd crates/flannrust-py
+RUSTFLAGS="-C target-cpu=native" .venv/bin/maturin develop --release
+RUSTFLAGS="-C target-cpu=native" .venv/bin/python python/bench/bench_py.py > /tmp/report_py_m26t3.json
+```
+
+`meta`: `python 3.12.11, numpy 2.5.2, scipy 1.18.1, pynanoflann 0.10.0`,
+`cpu=AMD Ryzen 7 9800X3D`, `git_sha=0726e9f`,
+`date=2026-08-25T04:42:18Z`, `rustflags=-C target-cpu=native`,
+`schema_version=2`. All 6 cross-checks (knn) + 2 radius cross-checks
+passed, same as every prior bench_py.py run:
+
+```
+[bench_py]   cross-check OK (build_100k_dim3_f32 dataset): 10/10 index match, max rel dist err 1.09e-07
+[bench_py]   cross-check OK (build_1M_dim3_f32 dataset): 10/10 index match, max rel dist err 1.18e-07
+[bench_py]   cross-check OK (knn_batched_dim3_f32 dataset): 10/10 index match, max rel dist err 1.07e-07
+[bench_py]   cross-check OK (knn_dim8_float64 dataset): 10/10 index match, max rel dist err 2.05e-16
+[bench_py]   cross-check OK (knn_dim32_float32 dataset): 10/10 index match, max rel dist err 1.40e-07
+[bench_py]   cross-check OK (radius_dim3_f32 dataset): 10/10 index match, max rel dist err 1.13e-07
+[bench_py]   radius cross-check OK (radius_dim3_f32_sel10): 10/10 rows index-set match (flannrust/cKDTree/pynanoflann)
+[bench_py]   radius cross-check OK (radius_dim3_f32_sel1000): 10/10 rows index-set match (flannrust/cKDTree/pynanoflann)
+```
+
+**Runtime and per-cell `n`** (`progress()`'s elapsed-time prefix, this
+run): **1458.5s (~24.3 minutes)** total, vs. the old fixed-n=7 run's ~7
+minutes — the adaptive policy trades wall time for sample size, exactly as
+expected; the brief's ~75-minute ceiling (which would have forced a
+reduced budget on the slowest cells) was never approached, so `BUDGET_S`
+stayed the default 30s/side on every cell:
+
+| Workload | n | t_est_ms (slowest engine, 2-warmup mean) | cell wall time |
+|---|---|---|---|
+| `build_100k_dim3_f32_threads1` | 100 | 18.8 | ~4.3s |
+| `build_100k_dim3_f32_threadsNone_parallel_build` | 100 | 3.9 | ~0.3s |
+| `build_1M_dim3_f32_threads1` | 100 | 249.3 | ~55.4s |
+| `build_1M_dim3_f32_threadsNone_parallel_build` | 100 | 36.9 | ~4.5s |
+| `knn_batched_dim3_f32_..._workers1` | 35 | 835.2 | ~49.5s |
+| `knn_batched_dim3_f32_..._workersNeg1` | 100 | 70.5 | ~18.2s |
+| `knn_dim8_float64_..._workers1` | 56 | 534.3 | ~74.3s |
+| `knn_dim32_float32_..._workers1` | **10 (clamp floor)** | 49696.8 | **~1194.5s (~19.9 min)** |
+| `radius_dim3_f32_sel10` | 100 | 5.1 | ~0.1s |
+| `radius_dim3_f32_sel1000` | 100 | 275.4 | ~46.1s |
+| `single_query_loop_..._percall_ms` | 100 | 8.1 | ~1.3s |
+
+`knn_dim32_float32_..._workers1` alone accounts for ~82% of the run — its
+pynanoflann/cKDTree sides cost tens of seconds PER REP even at `n=1`, so
+`rep_count`'s `raw < 10` branch floors it at the minimum `n=10` exactly as
+designed (not a manual override); every other cell hit the *upper* clamp
+(`n=100`) or landed in the unclamped mid-range (`workers1` batched knn,
+`n=35`; dim8, `n=56`).
+
+**Full result rows** (median (mean±std, n) per engine; ratios are
+median-based):
+
+| Workload | flannrust ms | cKDTree ms | pynanoflann ms | ratio_ckdtree | ratio_pynanoflann |
+|---|---|---|---|---|---|
+| `build_100k_dim3_f32_threads1` | 10.295 (10.338±0.251, n=100) | 12.154 (12.228±0.348, n=100) | 18.607 (18.685±0.405, n=100) | 0.847 | 0.553 |
+| `build_1M_dim3_f32_threads1` | 138.394 (143.181±30.913, n=100) | 143.085 (150.962±21.135, n=100) | 250.333 (259.096±44.384, n=100) | 0.967 | 0.553 |
+| `knn_batched_dim3_f32_k10_q200k_workers1` | 344.292 (344.881±13.160, n=35) | 698.875 (712.763±75.637, n=35) | 341.311 (346.571±16.859, n=35) | 0.493 | 1.009 |
+| `knn_batched_dim3_f32_k10_q200k_workersNeg1` | 49.236 (50.313±3.631, n=100) | 70.028 (72.838±8.476, n=100) | 60.894 (58.719±7.836, n=100) | 0.703 | 0.809 |
+| `knn_dim8_float64_k10_workers1` | 421.469 (432.263±35.072, n=56) | 533.628 (552.892±64.981, n=56) | 331.565 (342.506±38.732, n=56) | 0.790 | 1.271 |
+| `knn_dim32_float32_k10_workers1` | 24018.707 (24010.968±144.628, n=10) | 49443.517 (49472.543±984.183, n=10) | 26055.463 (26045.315±160.961, n=10) | 0.486 | 0.922 |
+| `radius_dim3_f32_sel10` | 2.838 (2.896±0.173, n=100) | 4.577 (4.617±0.229, n=100) | 4.809 (4.831±0.184, n=100) | 0.620 | 0.590 |
+| `radius_dim3_f32_sel1000` | 70.806 (71.892±5.548, n=100) | 133.671 (137.770±20.464, n=100) | 246.557 (251.527±27.516, n=100) | 0.530 | 0.287 |
+| `single_query_loop_dim3_f32_k10_percall_ms` | 0.002226 (0.002357±0.000342, n=100) | 0.008361 (0.008527±0.000809, n=100) | 0.002683 (0.002770±0.000392, n=100) | 0.266 | 0.830 |
+
+(`threadsNone_parallel_build` rows omitted from this table — same
+apples-to-oranges caveat as every prior bench_py.py section of this
+document; `build_100k_dim3_f32_threadsNone_parallel_build` flannrust:
+3.337 (3.355±0.150, n=100) ms; `build_1M_dim3_f32_threadsNone_parallel_build`
+flannrust: 35.553 (44.255±60.627, n=100) ms — that 1M-parallel row's `std`
+is dominated by a single severe outlier, `max=635.907` ms vs. a `median`
+of 35.553 ms, ~18x — the same WSL2 scheduler/thermal-stall phenomenon
+M2.6 task 2 documented for the Rust-vs-C++ side, now visible on the Python
+side too because `n=100` publishes `min`/`max`, not because anything about
+the parallel build path changed.)
+
+Two more rows show the same single-severe-outlier pattern:
+`build_1M_dim3_f32_threads1` flannrust `max=434.277` ms vs. `median=138.394`
+ms (~3.1x), and `knn_batched_dim3_f32_..._workers1` cKDTree `max=1004.586`
+ms vs. `median=698.876` ms (~1.4x, but on a much narrower distribution —
+`std=75.637` against that same `median`, the widest relative spread of any
+`n>=35` cell in this run). That last one matters: it is the cell behind
+conclusion (a) below.
+
+#### Per-conclusion re-verification vs. the recorded M-py ranges
+
+Every ratio below is this run's `ratio_ckdtree`/`ratio_pynanoflann`
+(median-based); "old range" is the two-run range already pasted in this
+document's "M-py" subsection above and cited in README/`docs/benchmarks.md`.
+**Since this task touched only the bench harness and renderer
+(`bench_py.py`, `crates/xval/src/report.rs`/`examples/render_report.rs`) —
+not `crates/flannrust`'s query/build/kernel code, nor `flannrust-py`'s
+Rust binding code — any ratio shift here is measurement noise/environment
+variance, not a code-driven change**, the same reasoning M2.6 task 2 used
+for the Rust-vs-C++ side.
+
+- **(a) Batched knn dim3 f32 vs cKDTree, `workers=1`** (gate ≤1.00, old
+  range **0.712–0.830**): **CORRECTED, single-session outlier — flag, don't
+  fold in silently.** This run: **0.493** — well below the old range, and
+  still comfortably `<1.00` (gate MET). Root cause is NOT a flannrust
+  speedup: flannrust's own median (344.292 ms) is in line with every prior
+  run (306–354 ms); cKDTree's median (698.876 ms) is ~63% slower than any
+  prior run's cKDTree number for this exact cell (426–430 ms), and this
+  session's own cKDTree distribution is unusually wide for its `n=35`
+  (`std=75.637`, `max=1004.586` vs. `median=698.876`) — a scheduler/thermal
+  stall landing disproportionately on cKDTree's share of the interleaved
+  reps this session, not a flannrust improvement. New honest range (old ∪
+  new, until a second session confirms or refutes): **0.493–0.830** —
+  published as-is per the "range honesty" convention, with this caveat
+  attached; do NOT cite 0.493 alone as the new steady state without a
+  confirming re-run.
+- **(b) Batched knn dim3 f32 vs cKDTree, `workers=-1`** (gate ≤1.00, old
+  range **0.712–0.827**): **CORRECTED, minor.** This run: **0.703** — just
+  below the old low end. New range **0.703–0.827**. Ordinary noise
+  magnitude (a single ~1-point widening), unlike (a)'s much larger swing.
+- **(c) Build vs pynanoflann, 100k** (gate ≤1.00, old range
+  **0.546–0.561**): **CONFIRMED.** This run: **0.553** — inside the old
+  range.
+- **(d) Build vs pynanoflann, 1M** (gate ≤1.00, old range
+  **0.543–0.551**): **CORRECTED, marginal.** This run: **0.553** — 0.002
+  above the old high end, a difference far smaller than this workload's
+  own session-to-session spread elsewhere in this run (`std_ms` on the
+  1M-build cells runs 21–61 ms on a ~140 ms median). New range
+  **0.543–0.553**.
+- **(e) dim-32 knn vs pynanoflann** (gate ≤1.10, old range
+  **0.878–0.899**): **CORRECTED, widened, still MET.** This run: **0.922**
+  — above the old high end, comfortably inside the 1.10 gate. New range
+  **0.878–0.922**.
+- **(f) Per-call overhead** (measured, not gated; old: flannrust
+  ≈2.0–2.3µs, cKDTree ≈7.2–7.5µs, pynanoflann ≈2.3µs): **CORRECTED for
+  cKDTree/pynanoflann, essentially CONFIRMED for flannrust.** This run
+  (median → µs, `n=100`): flannrust **2.226µs** (mean 2.357µs — median
+  inside the old range, mean 0.057µs above it), cKDTree **8.361µs** (old
+  max 7.5µs — now the widest gap of the three), pynanoflann **2.683µs**
+  (old ≈2.3µs). New ranges: flannrust ≈2.0–2.4µs, cKDTree ≈7.2–8.5µs,
+  pynanoflann ≈2.3–2.8µs. Same overhead-bound reading as before (this cell
+  measures Python/pybind11 per-call marshalling cost, not tree-traversal
+  work) — the relative ordering (flannrust < pynanoflann < cKDTree) is
+  unchanged, only the absolute µs figures widened.
+- **(g) Honest miss: batched knn dim3 `workers=1` vs pynanoflann** (old
+  range **1.058–1.216**, "flannrust 6–22% slower"): **CORRECTED —
+  near-parity this session, same volatility caveat as (a).** This run:
+  **1.009** — essentially at parity (0.9% slower), below the entire old
+  range. This is the SAME cell as (a): pynanoflann's median this session
+  (341.311 ms) is also somewhat above its historical range (289–291 ms),
+  though far less dramatically than cKDTree's swing in (a). Given no
+  library code changed and this is a single session, this reads as the
+  same host-noise episode touching this one cell's C++/pybind11-backed
+  engines more than flannrust, not a genuine resolution of the miss — new
+  honest range **1.009–1.216**, flagged for confirmation, NOT declared
+  closed.
+- **(h) Honest miss: knn_dim8_float64 `workers=1` vs pynanoflann** (old
+  range **1.233–1.249**): **CORRECTED, widened, still a genuine miss** (no
+  volatility red flag here — this cell's `n=56` distribution is ordinary,
+  `std=38.732` on a `median=421.469` ms flannrust side, nothing like (a)'s
+  outlier shape). This run: **1.271** — slightly worse than the old high
+  end. New range **1.233–1.271**.
+
+**Summary**: every gated criterion (batched knn workers=1/−1, build
+100k/1M, dim-32) still passes its threshold in this run, most with wide
+margin. Two ranges widened only marginally ((b), (d)); two widened more
+substantially but stayed well inside their gates ((e), (h) — (h) is a
+genuine, slightly-worsened honest miss, not noise-flagged). Two show a
+large, specifically-flagged single-session swing traceable to one
+interleaved cell's cKDTree/pynanoflann engines running unusually slow
+((a), (g) — the previously-recorded "honest miss" on (g) nearly vanishes
+in this run, but is NOT declared resolved without a confirming session,
+per this document's standing "don't over-claim from n=1 session" practice
+— see M2.6 task 2's own repeated caution about session-to-session spread).
+This run stays **WSL2**, same as every number in this document; bare-metal
+re-verification (including these Python numbers, not just the Rust-vs-C++
+gates) remains an open **M-pub** item (`docs/ROADMAP.md`).
+
 ## 5. Number provenance
 
 Every figure that appears in `README.md` or `docs/benchmarks.md` traces to
@@ -1849,6 +2071,8 @@ cite the M2.5 ranges, not these).
 | **M2.6 T2 give-back re-verification** (`radius` 0.807–0.867, wider than the previously-cited "~0.83"; `knn_dyn_dim8_f64_k10` 0.929–0.937, better than the entire pre-M2.5 band, not merely inside it) — `docs/benchmarks.md`/`docs/ROADMAP.md` M2.5 trade-off text | Perf gate command + report chain, §3 "M2.6 task 2" subsection | same `ratio` fields as the six-gate-ranges row above |
 | **M2.6 `build_100k` configuration-split finding** (0.967/0.967 on the gate's own dataset vs. 1.039/1.037 on report_data's differently-seeded dataset — answers the old "0.974–1.139, suspiciously wide" question as reproducibly configuration-dependent, not pure noise or drift, though dataset-seed vs. harness/process-context were never crossed to isolate which one drives it — see conclusion (g)) | Perf gate command + report chain, §3 "M2.6 task 2" subsection, conclusion (g) | `PERF_GATE perf_gate_build_100k_dim3_f32_seq`/`report.json`'s `build_100k_dim3_f32_seq` `ratio`, all 4 pasted sessions |
 | `m25_diag` `RUNS` bump 7→15 (n>=10, M2.6 task 2's only code change) | `git diff crates/xval/examples/m25_diag.rs` (12 lines, doc comment + one constant) | the file itself; re-run commands unchanged |
+| **M2.6 task 3 Python bench statistical baseline** (`bench_py.py`'s `timed_stats_interleaved` — `measure_pair`'s policy generalized to N engines, `n=10..100` per cell, `schema_version:2` JSON, `xval::render_python` gated rejection of old-format JSON) — README "Python bindings (M-py)" Benchmarks section, `docs/benchmarks.md` M-py section | `bench_py.py`, §3 "M2.6 task 3" subsection, single pasted run | `report_py_m26t3.json`'s `schema_version`/`workloads[].{lib}_stats`/`ratio_ckdtree`/`ratio_pynanoflann` fields; `crates/xval/tests/render_report_test.rs`'s `render_python_*` tests |
+| **M2.6 task 3 M-py conclusion re-verification** (batched knn workers=1 vs cKDTree **0.493** — single-session outlier, flagged not folded in, new honest range 0.493–0.830; workers=-1 **0.703–0.827**; build 100k **0.553** confirmed; build 1M **0.543–0.553**; dim-32 **0.878–0.922**; per-call overhead flannrust ≈2.0–2.4µs / cKDTree ≈7.2–8.5µs / pynanoflann ≈2.3–2.8µs; honest misses: batched-knn-workers1-vs-pynanoflann now **1.009–1.216** (near-parity this session, same volatility caveat, not declared resolved), dim8-f64-vs-pynanoflann now **1.233–1.271**) — README "Python bindings (M-py)" Benchmarks/honest-misses, `docs/benchmarks.md` M-py section, `docs/ROADMAP.md` M-pub dim8 lead | §3 "M2.6 task 3" subsection, "Per-conclusion re-verification" | same `report_py_m26t3.json` fields as the row above |
 
 ## 6. See also
 

@@ -1,9 +1,13 @@
 """flannrust vs scipy.spatial.cKDTree vs pynanoflann -- Python-binding
-speed benchmark. Emits ONE JSON document on stdout: `{meta: {...}, workloads:
-[{name, flannrust_ms, ckdtree_ms, pynanoflann_ms, ratio_ckdtree,
-ratio_pynanoflann}, ...]}`. `crates/xval/examples/render_report.rs` reads
+speed benchmark. Emits ONE JSON document on stdout: `{schema_version: 2,
+meta: {...}, workloads: [{name, flannrust_stats, ckdtree_stats,
+pynanoflann_stats, ratio_ckdtree, ratio_pynanoflann}, ...]}`.
+`crates/xval/examples/render_report.rs` (via `xval::render_python`) reads
 this JSON (as its optional 2nd argv) and renders a "Python bindings"
-section alongside the Rust-vs-C++ scorecard.
+section alongside the Rust-vs-C++ scorecard -- and REFUSES a document
+whose `schema_version` isn't `2` (a pre-M2.6-task-3 JSON, `flannrust_ms`
+flat fields instead of `flannrust_stats` objects, is rejected loudly
+rather than silently mis-rendered).
 
 Re-run with (from the repo root):
 
@@ -19,18 +23,32 @@ Section 1). `meta.rustflags` records what was actually set in THIS
 process's environment at run time (best-effort signal, not a guarantee --
 see `report_data.rs`'s `target_cpu_native()` for the same caveat).
 
-Methodology (mirrors `crates/xval/src/lib.rs`'s `timed_median_ms`/
-`median_of` and `report_data.rs`'s workload structure, adapted for Python):
-- `time.perf_counter()`, median of 7 repeats per cell.
-- Within each repeat, every engine being compared in that cell is timed
-  once, back-to-back (interleaved A/B/C/A/B/C/...), rather than all of A's
-  7 repeats then all of B's -- this spreads any thermal/scheduler drift
-  evenly across engines instead of biasing whichever one runs first or
-  last (WSL2 noise -- docs/EXPERIMENTS.md Section 1).
-- `gc.disable()` for the entire timed block (see `timed_median_interleaved`).
+Methodology (M2.6 task 3 -- mirrors `crates/xval/src/lib.rs`'s
+`TimingStats`/`rep_count`/`measure_pair` adaptive-repetition policy,
+generalized from 2 sides to N engines):
+- `time.perf_counter()`. `WARMUP_REPS` (2) untimed-but-clocked warmup
+  reps, then `rep_count(BUDGET_S, t_est_ms)` timed reps -- `n =
+  clamp(10, 100, floor(budget_s*1000 / t_est_ms))`, where `t_est_ms` is
+  the SLOWEST engine's own 2-warmup-rep mean (keeps every engine within
+  `BUDGET_S` at the shared `n`, same as `xval::measure_pair`). Warmup
+  reps are excluded from the published `TimingStats`-shaped sample
+  (`mean_ms`/`std_ms` [sample, n-1] `/median_ms`/`min_ms`/`max_ms`/`n`)
+  -- see `stats_from_samples`.
+- Within each repeat (warmup AND timed), every engine being compared in
+  that cell is timed once, back-to-back (interleaved A/B/C/A/B/C/...),
+  rather than all of A's reps then all of B's -- this spreads any
+  thermal/scheduler drift evenly across engines instead of biasing
+  whichever one runs first or last (WSL2 noise -- docs/EXPERIMENTS.md
+  Section 1).
+- `gc.disable()` for the entire timed block (warmup + timed reps -- see
+  `timed_stats_interleaved`).
 - Every dataset is seeded (numpy `default_rng`, CRC32-derived integer seeds
   via `_seed()` -- deterministic across runs/processes, unlike Python's
   salted `hash()`).
+- Ratios (`ratio_ckdtree`/`ratio_pynanoflann`) are computed from MEDIANS
+  (the gate/doc decision statistic, same as `xval`'s report chain) --
+  mean/std/n are published alongside for statistical honesty, not used
+  for the ratio.
 
 Cross-check before timing: for every distinct (n, dim, dtype) dataset used
 below, `cross_check()` runs a 10-query tie-free ("uniform") sample through
@@ -55,6 +73,14 @@ parallel-build option (both build single-threaded only). The
 pynanoflann build numbers already captured in the sibling "...threads1" row
 -- an intentionally-labelled apples-to-oranges comparison (see each such
 row's `note` field), not a parity claim.
+
+Runtime: the adaptive `n` (up to 100 reps on cheap cells, floored at 10 on
+expensive ones -- e.g. `knn_dim32_..._workers1`, whose ~40ms-per-call
+pynanoflann side alone blows past the 30s/side budget at `n=1`) makes a
+full run take on the order of 20-30 minutes, vs. the old fixed-n=7 run's
+~7 minutes -- `progress()` prefixes every line with elapsed wall time
+since process start, and `timed_stats_interleaved` prints each cell's
+chosen `n`/`t_est_ms` as it starts, so the run's shape is visible live.
 """
 
 import gc
@@ -83,12 +109,17 @@ import flannrust
 sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tests")))
 from conftest import make_points  # noqa: E402
 
-RUNS = 7
+SCHEMA_VERSION = 2
+BUDGET_S = 30.0
+WARMUP_REPS = 2
 LEAF = 10
+
+_START = time.perf_counter()
 
 
 def progress(msg):
-    print(f"[bench_py] {msg}", file=sys.stderr, flush=True)
+    elapsed = time.perf_counter() - _START
+    print(f"[bench_py +{elapsed:7.1f}s] {msg}", file=sys.stderr, flush=True)
 
 
 def _seed(*parts):
@@ -151,44 +182,124 @@ def build_meta():
             "with the repo's Rust-vs-C++ xval methodology -- see meta.rustflags "
             "for what THIS run's process environment actually had set"
         ),
+        "budget_s": BUDGET_S,
+        "warmup_reps": WARMUP_REPS,
+        "rep_policy": (
+            "n = clamp(10, 100, floor(budget_s*1000 / t_est_ms)); t_est_ms = mean of "
+            "WARMUP_REPS (2) untimed warmup reps, slowest engine in the interleaved "
+            "group -- mirrors xval::measure_pair (M2.6 Task 1), generalized to N "
+            "engines. Ratios are median-based; mean/std(sample, n-1)/min/max/n "
+            "published per engine alongside."
+        ),
     }
 
 
 # ============================================================================
-# timing
+# timing -- M2.6 task 3: adaptive-repetition, mean/std/median/min/max/n,
+# generalizing xval::measure_pair (2 sides) to N interleaved engines.
 # ============================================================================
 
 
-def timed_median_interleaved(fns, runs=RUNS):
-    """`fns`: dict[name -> zero-arg callable]. Each repeat runs every
-    callable once, interleaved in dict order (A, B, C, A, B, C, ...) rather
-    than clustered (AAAAAAA, BBBBBBB, ...) -- see module docstring.
-    `gc` is disabled for the whole timed block. Returns dict[name -> median
-    elapsed ms across `runs`]."""
-    times = {name: [] for name in fns}
+def rep_count(budget_s, t_est_ms):
+    """Mirrors `xval::rep_count`: `clamp(10, 100, floor(budget_s*1000 /
+    t_est_ms))`. `t_est_ms <= 0.0` (a per-rep cost too fast for
+    `perf_counter`'s resolution to distinguish from zero) maps to the
+    upper bound (100) rather than dividing by zero/a negative."""
+    if t_est_ms <= 0.0:
+        return 100
+    raw = math.floor(budget_s * 1000.0 / t_est_ms)
+    return max(10, min(100, raw))
+
+
+def stats_from_samples(samples_ms):
+    """Mirrors `xval::TimingStats::from_samples`: mean/median/min/max plus
+    SAMPLE standard deviation (divisor n-1, Bessel-corrected; 0.0 for a
+    single-element sample -- zero degrees of freedom, not a 0/0 error)."""
+    n = len(samples_ms)
+    return {
+        "mean_ms": statistics.mean(samples_ms),
+        "std_ms": statistics.stdev(samples_ms) if n > 1 else 0.0,
+        "median_ms": statistics.median(samples_ms),
+        "min_ms": min(samples_ms),
+        "max_ms": max(samples_ms),
+        "n": n,
+    }
+
+
+def scale_stats(stats, factor):
+    """Rescales a stats dict by a positive scalar (used by
+    `single_query_loop_workload` to turn a per-rep TOTAL-loop-time sample
+    into a per-call one) -- mean/std/median/min/max all scale linearly
+    with a positive factor; `n` (rep count) is unchanged."""
+    return {
+        "mean_ms": stats["mean_ms"] * factor,
+        "std_ms": stats["std_ms"] * factor,
+        "median_ms": stats["median_ms"] * factor,
+        "min_ms": stats["min_ms"] * factor,
+        "max_ms": stats["max_ms"] * factor,
+        "n": stats["n"],
+    }
+
+
+def timed_stats_interleaved(fns, budget_s=BUDGET_S, label=None):
+    """`fns`: dict[name -> zero-arg callable]. Generalizes the pre-M2.6
+    `timed_median_interleaved` (fixed n=7, median-only) to an adaptive `n`
+    and full `TimingStats`-shaped output, mirroring `xval::measure_pair`'s
+    policy extended from 2 sides to however many callables `fns` holds:
+
+    - `WARMUP_REPS` (2) untimed-but-clocked warmup reps, each repeat
+      running every callable once, interleaved in dict order (A, B, C, A,
+      B, C, ...) -- same interleave discipline as the timed reps below,
+      for the same thermal/scheduler-drift reason.
+    - `t_est_ms` = the SLOWEST engine's own mean of its 2 warmup reps --
+      using the slowest side keeps every engine's total measured time
+      within `budget_s` at the shared `n` (the faster engines, by
+      definition, use less than their own budget at that same `n`).
+    - `n = rep_count(budget_s, t_est_ms)` timed reps, same interleave
+      order, warmup excluded from the published sample.
+    - `gc` is disabled for the whole call (warmup + timed).
+
+    Returns dict[name -> stats dict] (see `stats_from_samples`), all
+    engines sharing the same `n`. Prints the chosen `n`/`t_est_ms` via
+    `progress()` before the timed reps start.
+    """
+    names = list(fns.keys())
     was_enabled = gc.isenabled()
     gc.disable()
     try:
-        for _ in range(runs):
-            for name, fn in fns.items():
+        warm_ms = {name: [] for name in names}
+        for _ in range(WARMUP_REPS):
+            for name in names:
                 t0 = time.perf_counter()
-                fn()
+                fns[name]()
                 t1 = time.perf_counter()
-                times[name].append((t1 - t0) * 1000.0)
+                warm_ms[name].append((t1 - t0) * 1000.0)
+        t_est_ms = max(statistics.mean(v) for v in warm_ms.values())
+        n = rep_count(budget_s, t_est_ms)
+        prefix = f"{label}: " if label else ""
+        progress(f"  {prefix}n={n} (t_est={t_est_ms:.3f}ms/rep, budget={budget_s:.0f}s/side)")
+
+        samples_ms = {name: [] for name in names}
+        for _ in range(n):
+            for name in names:
+                t0 = time.perf_counter()
+                fns[name]()
+                t1 = time.perf_counter()
+                samples_ms[name].append((t1 - t0) * 1000.0)
     finally:
         if was_enabled:
             gc.enable()
-    return {name: statistics.median(v) for name, v in times.items()}
+    return {name: stats_from_samples(v) for name, v in samples_ms.items()}
 
 
-def make_row(name, flannrust_ms, ckdtree_ms, pynanoflann_ms, note=None):
+def make_row(name, flannrust_stats, ckdtree_stats, pynanoflann_stats, note=None):
     row = {
         "name": name,
-        "flannrust_ms": flannrust_ms,
-        "ckdtree_ms": ckdtree_ms,
-        "pynanoflann_ms": pynanoflann_ms,
-        "ratio_ckdtree": flannrust_ms / ckdtree_ms,
-        "ratio_pynanoflann": flannrust_ms / pynanoflann_ms,
+        "flannrust_stats": flannrust_stats,
+        "ckdtree_stats": ckdtree_stats,
+        "pynanoflann_stats": pynanoflann_stats,
+        "ratio_ckdtree": flannrust_stats["median_ms"] / ckdtree_stats["median_ms"],
+        "ratio_pynanoflann": flannrust_stats["median_ms"] / pynanoflann_stats["median_ms"],
     }
     if note:
         row["note"] = note
@@ -278,15 +389,17 @@ def build_workload(n, name_prefix):
         pnf = pynanoflann.KDTree(n_neighbors=10, leaf_size=LEAF, metric="l2")
         pnf.fit(pts)
 
-    threads1 = timed_median_interleaved(
+    threads1 = timed_stats_interleaved(
         {
             "flannrust": lambda: flannrust.KDTree(pts, leaf_size=LEAF, metric="l2", threads=1),
             "ckdtree": build_ckdtree,
             "pynanoflann": build_pynanoflann,
-        }
+        },
+        label=f"{name_prefix}_threads1",
     )
-    threads_none = timed_median_interleaved(
-        {"flannrust": lambda: flannrust.KDTree(pts, leaf_size=LEAF, metric="l2", threads=None)}
+    threads_none = timed_stats_interleaved(
+        {"flannrust": lambda: flannrust.KDTree(pts, leaf_size=LEAF, metric="l2", threads=None)},
+        label=f"{name_prefix}_threadsNone_parallel_build",
     )
 
     return [
@@ -331,21 +444,16 @@ def batched_knn_dim3_workload():
     rows = []
     for workers, label in [(1, "workers1"), (-1, "workersNeg1")]:
         n_jobs = _pnf_jobs(workers)
-        timings = timed_median_interleaved(
+        name = f"knn_batched_dim3_f32_k{k}_q{n_queries // 1000}k_{label}"
+        stats = timed_stats_interleaved(
             {
                 "flannrust": lambda w=workers: ftree.query(q, k=k, workers=w),
                 "ckdtree": lambda w=workers: ctree.query(q, k=k, workers=w),
                 "pynanoflann": lambda j=n_jobs: pnf.kneighbors(q, k, n_jobs=j),
-            }
+            },
+            label=name,
         )
-        rows.append(
-            make_row(
-                f"knn_batched_dim3_f32_k{k}_q{n_queries // 1000}k_{label}",
-                timings["flannrust"],
-                timings["ckdtree"],
-                timings["pynanoflann"],
-            )
-        )
+        rows.append(make_row(name, stats["flannrust"], stats["ckdtree"], stats["pynanoflann"]))
     return rows
 
 
@@ -361,16 +469,16 @@ def knn_dim_workload(dim, dtype, k=10):
 
     cross_check(ftree, pnf, dim, dtype, "l2", _seed("knn_dim_cc", dim, dtype), f"knn_dim{dim}_{dtype} dataset")
 
-    timings = timed_median_interleaved(
+    name = f"knn_dim{dim}_{dtype}_k{k}_workers1"
+    stats = timed_stats_interleaved(
         {
             "flannrust": lambda: ftree.query(q, k=k, workers=1),
             "ckdtree": lambda: ctree.query(q, k=k, workers=1),
             "pynanoflann": lambda: pnf.kneighbors(q, k, n_jobs=1),
-        }
+        },
+        label=name,
     )
-    return make_row(
-        f"knn_dim{dim}_{dtype}_k{k}_workers1", timings["flannrust"], timings["ckdtree"], timings["pynanoflann"]
-    )
+    return make_row(name, stats["flannrust"], stats["ckdtree"], stats["pynanoflann"])
 
 
 def radius_workload():
@@ -398,16 +506,16 @@ def radius_workload():
             ftree, ctree, pnf, dim, dtype, r_sq, _seed("radius_cc2", n, target_k), f"radius_dim3_f32_{label}"
         )
 
-        timings = timed_median_interleaved(
+        name = f"radius_dim3_f32_{label}"
+        stats = timed_stats_interleaved(
             {
                 "flannrust": lambda rs=r_sq: ftree.query_radius(q, rs, workers=1),
                 "ckdtree": lambda re=r_euclid: ctree.query_ball_point(q, re, workers=1),
                 "pynanoflann": lambda re=r_euclid: pnf.radius_neighbors(q, radius=re, n_jobs=1),
-            }
+            },
+            label=name,
         )
-        rows.append(
-            make_row(f"radius_dim3_f32_{label}", timings["flannrust"], timings["ckdtree"], timings["pynanoflann"])
-        )
+        rows.append(make_row(name, stats["flannrust"], stats["ckdtree"], stats["pynanoflann"]))
     return rows
 
 
@@ -435,19 +543,22 @@ def single_query_loop_workload():
         for row in q:
             pnf.kneighbors(row.reshape(1, -1), k, n_jobs=1)
 
-    totals = timed_median_interleaved(
-        {"flannrust": loop_flannrust, "ckdtree": loop_ckdtree, "pynanoflann": loop_pynanoflann}
+    name = f"single_query_loop_dim3_f32_k{k}_percall_ms"
+    totals = timed_stats_interleaved(
+        {"flannrust": loop_flannrust, "ckdtree": loop_ckdtree, "pynanoflann": loop_pynanoflann},
+        label=name,
     )
-    per_call = {name: v / n_calls for name, v in totals.items()}
+    per_call = {name_: scale_stats(v, 1.0 / n_calls) for name_, v in totals.items()}
     return make_row(
-        f"single_query_loop_dim3_f32_k{k}_percall_ms",
+        name,
         per_call["flannrust"],
         per_call["ckdtree"],
         per_call["pynanoflann"],
         note=(
             "overhead-bound (see docs/EXPERIMENTS.md): per-call Python/pybind11 binding "
-            "overhead dominates at n_calls=1 scale, not tree-traversal cost. ms values here "
-            f"are PER-CALL (loop's own median-of-{RUNS} total time / {n_calls}), not total loop time."
+            "overhead dominates at n_calls=1 scale, not tree-traversal cost. Each stats "
+            f"object here is PER-CALL (the loop's own {WARMUP_REPS}-warmup/adaptive-n "
+            f"TOTAL loop time per rep, divided by n_calls={n_calls}), not total loop time."
         ),
     )
 
@@ -477,7 +588,7 @@ def main():
     progress("single_query_loop")
     workloads.append(single_query_loop_workload())
 
-    doc = {"meta": meta, "workloads": workloads}
+    doc = {"schema_version": SCHEMA_VERSION, "meta": meta, "workloads": workloads}
     print(json.dumps(doc, indent=2))
     progress("done")
 

@@ -807,6 +807,40 @@ tables for each run: `docs/EXPERIMENTS.md`'s "M-py" subsection.
 All five gated criteria pass, with margin, in both runs independently — not
 just on average.
 
+**Update (M2.6 task 3, single n=10..100-per-cell run, 2026-08-25):** `bench_py.py` gained the same adaptive-repetition
+`TimingStats` (mean/std/median/min/max/n) upgrade M2.6 task 1 gave the
+Rust-vs-C++ side, generalized from 2 sides to N interleaved engines — one
+fresh full run (not two; the `n>=10` adaptive sampling is itself the added
+statistical weight this task contributes). Full pasted run, per-cell `n`,
+and per-conclusion detail: `docs/EXPERIMENTS.md` "M2.6 task 3" subsection.
+
+| Criterion | Gate | M-py range (2 runs, median-of-7) | M2.6 task 3 (1 run, median-of-n\*) | Verdict |
+|---|---|---|---|---|
+| Batched knn dim3 f32 vs cKDTree, workers=1 | ≤ 1.00 | 0.712–0.830 | **0.493** (n=35) | **MET**, single-session outlier — see caveat below |
+| Batched knn dim3 f32 vs cKDTree, workers=−1 | ≤ 1.00 | 0.712–0.827 | **0.703** (n=100) | **MET** |
+| Build vs pynanoflann, 100k | ≤ 1.00 | 0.546–0.561 | **0.553** (n=100) | **MET** |
+| Build vs pynanoflann, 1M | ≤ 1.00 | 0.543–0.551 | **0.553** (n=100) | **MET** |
+| dim-32 knn vs pynanoflann | ≤ 1.10 | 0.878–0.899 | **0.922** (n=10, clamp floor) | **MET** |
+| Per-call overhead measured | — | flannrust ≈2.0–2.3µs, cKDTree ≈7.2–7.5µs, pynanoflann ≈2.3µs | flannrust **2.226µs**, cKDTree **8.361µs**, pynanoflann **2.683µs** (all n=100) | **MET** (measured, not gated) |
+
+\* `n` is per-cell, adaptive (`clamp(10, 100, floor(30000/t_est_ms))`,
+`t_est_ms` = slowest engine's own 2-warmup-rep mean) — see the table above
+and `docs/EXPERIMENTS.md`'s per-cell `n` breakdown.
+
+All five gated criteria still pass, most with wide margin. Two ranges
+(`workers=-1`, `dim-32`) widen only modestly and read as ordinary
+session-to-session noise. `workers=1`'s **0.493** is a genuine outlier
+worth flagging, not folding silently into the range: this run's cKDTree
+median for that one cell (698.9ms) is ~63% slower than any previously
+recorded run (426–430ms), while flannrust's own median (344.3ms) sits
+right where every prior run put it — a scheduler/thermal stall landing
+disproportionately on cKDTree's share of that cell's interleaved reps, not
+a flannrust speedup (this task changed only the bench harness and
+renderer, not `crates/flannrust`'s query/build/kernel code). New honest
+range **0.493–0.830**, published as-is per this repo's range-honesty
+convention, flagged for confirmation rather than treated as the new
+steady state.
+
 ### Honest misses (not gated, published alongside per this repo's standing "publish the losses too" convention)
 
 | Workload | vs pynanoflann range | Reading |
@@ -823,6 +857,19 @@ pynanoflann's simpler pybind11 marshalling path, or its 1.5.5 kernel), not
 evidence of a flannrust regression against C++ ground truth. Flagged as an
 M-pub investigation item, not chased further this milestone —
 `docs/ROADMAP.md`.
+
+**Update (M2.6 task 3):** the same n>=10 single run above re-measured both
+honest misses. `knn_batched_dim3_f32_..._workers1` vs pynanoflann is now
+**1.009** — near-parity, well below the old 1.058–1.216 range — but this is
+the SAME cell flagged above for its cKDTree outlier, and pynanoflann's
+median this session (341.3ms) is likewise somewhat above its own
+historical range (289–291ms); read as the same single-session host-noise
+episode, not a resolved miss. New range **1.009–1.216**, NOT declared
+closed pending a confirming re-run. `knn_dim8_float64_..._workers1` vs
+pynanoflann is now **1.271** — worse than the old high end, an ordinary
+(non-outlier-shaped) widening; new range **1.233–1.271**, still the most
+consistent miss in the matrix. Full detail: `docs/EXPERIMENTS.md` "M2.6
+task 3" subsection.
 
 ### Rust-side perf gates, re-run for M-py (confirms the rename/additions didn't move anything)
 

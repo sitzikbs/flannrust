@@ -672,6 +672,36 @@ consistent miss in the matrix). flannrust beats cKDTree on every single
 row, both runs, without exception. See `docs/ROADMAP.md`'s M-pub section
 for the open investigation the dim8 f64 gap motivates.
 
+**Update (M2.6 task 3, 2026-08-25):** `bench_py.py` gained the same
+adaptive-`n` (`clamp(10,100,...)`), mean/std/median/min/max/n statistical
+harness M2.6 task 1 gave the Rust-vs-C++ perf gate/report chain,
+generalized to the 3 interleaved engines this bench compares — one fresh
+full run (full pasted table, per-cell `n`, per-conclusion detail:
+`docs/EXPERIMENTS.md` "M2.6 task 3", `docs/benchmarks.md` M-py section):
+
+| Criterion | Gate | New range/value (1 run, adaptive n) | Verdict |
+|---|---|---|---|
+| Batched knn dim3 f32 vs cKDTree, workers=1 | ≤ 1.00 | **0.493–0.830** (this run's 0.493 is a flagged single-session outlier — see below) | **MET** |
+| Batched knn dim3 f32 vs cKDTree, workers=−1 | ≤ 1.00 | **0.703–0.827** | **MET** |
+| Build vs pynanoflann (100k / 1M) | ≤ 1.00 | 0.543–0.561 (100k **0.553** confirmed; 1M **0.553**, 0.002 above the old 0.551 high end) | **MET** |
+| dim-32 knn vs pynanoflann | ≤ 1.10 | **0.878–0.922** | **MET** |
+| Per-call overhead | measured | flannrust ≈2.0–2.4µs, cKDTree ≈7.2–8.5µs, pynanoflann ≈2.3–2.8µs | **MET** |
+
+All gated criteria still pass, most with wide margin. The `workers=1`
+**0.493** figure is a genuine single-session outlier, not a flannrust
+speedup: this run's cKDTree median for that cell (698.9ms) is ~63% slower
+than every prior recorded run (426–430ms) while flannrust's own median
+(344.3ms) sits right where prior runs put it — a scheduler/thermal stall
+landing on cKDTree's share of that cell (this task touched only the bench
+harness and renderer, not `crates/flannrust` or `flannrust-py`'s query
+code) — flagged for confirmation, not folded silently into "the new
+range." **Honest misses, re-measured**: `knn_batched_dim3_f32_..._workers1`
+vs pynanoflann is now **1.009** (near-parity — same single-session caveat
+as above, NOT declared resolved; new range 1.009–1.216);
+`knn_dim8_float64_..._workers1` vs pynanoflann is now **1.271**, an
+ordinary widening of the miss (new range 1.233–1.271, still the most
+consistent miss in the matrix, still an open M-pub investigation item).
+
 ## Roadmap
 
 M1 (static kd-tree), M2 (dynamic Bentley–Saxe forest, this document's
@@ -717,7 +747,10 @@ re-deriving from the C++ source; full tracker:
   benchmarked against `scipy.spatial.cKDTree` and `pynanoflann` — see
   "Python bindings (M-py)" above for the API, the scoped parity claim, and
   the honest bench accounting (all three spec'd speed gates met; two
-  non-gating misses vs pynanoflann published alongside).
+  non-gating misses vs pynanoflann published alongside; M2.6 task 3
+  re-measured every one of these ranges with an adaptive-`n` statistical
+  harness — one flagged single-session outlier aside, still all MET, see
+  the "Benchmarks" → "Update (M2.6 task 3)" table above).
 - **M-pub — announcement readiness** (bare-metal re-run, claims audit, CI
   matrix + wheel/PyPI publish, crates.io dry run) — not started; see
   `docs/ROADMAP.md`.

@@ -303,3 +303,115 @@ fn render_speed_row_without_stats_still_renders_legacy_display() {
     let html = xval::render(FIXTURE).expect("render should succeed on a pre-M2.6 (no stats objects) document");
     assert!(!html.contains("(n="), "pre-M2.6 fixture has no TimingStats -- must not fabricate an n= display");
 }
+
+// ============================================================================
+// M2.6 Task 3 -- `xval::render_python`, the "Python bindings" section
+// renderer (moved from `examples/render_report.rs` into the library so it
+// can be unit-tested here, same as `xval::render` above). Covers the new
+// `schema_version`-gated, `{lib}_stats`-shaped `bench_py.py` document: a
+// happy-path fragment check, and the "old-format JSON must fail loudly"
+// contract (RED-first: `PY_OLD_FORMAT_FIXTURE` is a real pre-task-3
+// document -- flat `flannrust_ms`/`ckdtree_ms`/`pynanoflann_ms`, no
+// `schema_version` key at all).
+// ============================================================================
+
+const PY_NEW_FORMAT_FIXTURE: &str = r#"{
+  "schema_version": 2,
+  "meta": {
+    "python": "3.12.11",
+    "numpy": "2.5.2",
+    "scipy": "1.18.1",
+    "pynanoflann": "0.10.0",
+    "cpu": "Test CPU Model Py9",
+    "threads": 8,
+    "date": "2026-08-24T00:00:00Z",
+    "git_sha": "abc1234",
+    "rustflags": "-C target-cpu=native",
+    "wheel_profile": "release (test fixture)",
+    "budget_s": 30.0,
+    "warmup_reps": 2
+  },
+  "workloads": [
+    {
+      "name": "build_100k_dim3_f32_threads1",
+      "flannrust_stats": { "mean_ms": 9.653, "std_ms": 0.086, "median_ms": 9.639, "min_ms": 9.400, "max_ms": 10.100, "n": 42 },
+      "ckdtree_stats": { "mean_ms": 12.098, "std_ms": 0.943, "median_ms": 11.971, "min_ms": 11.000, "max_ms": 15.000, "n": 42 },
+      "pynanoflann_stats": { "mean_ms": 17.739, "std_ms": 0.200, "median_ms": 17.552, "min_ms": 17.100, "max_ms": 18.300, "n": 42 },
+      "ratio_ckdtree": 0.805,
+      "ratio_pynanoflann": 0.549
+    },
+    {
+      "name": "single_query_loop_dim3_f32_k10_percall_ms",
+      "flannrust_stats": { "mean_ms": 0.001968, "std_ms": 0.000050, "median_ms": 0.001960, "min_ms": 0.001900, "max_ms": 0.002100, "n": 100 },
+      "ckdtree_stats": { "mean_ms": 0.007245, "std_ms": 0.000300, "median_ms": 0.007200, "min_ms": 0.007000, "max_ms": 0.007800, "n": 100 },
+      "pynanoflann_stats": { "mean_ms": 0.002273, "std_ms": 0.000060, "median_ms": 0.002260, "min_ms": 0.002100, "max_ms": 0.002500, "n": 100 },
+      "ratio_ckdtree": 0.272,
+      "ratio_pynanoflann": 0.866,
+      "note": "overhead-bound (see docs/EXPERIMENTS.md)"
+    }
+  ]
+}"#;
+
+/// A genuine pre-M2.6-task-3 `bench_py.py` document: flat `flannrust_ms`/
+/// `ckdtree_ms`/`pynanoflann_ms` scalars, NO `schema_version` key at all --
+/// exactly what a stale/un-rerun bench output looks like.
+const PY_OLD_FORMAT_FIXTURE: &str = r#"{
+  "meta": {
+    "python": "3.12.11",
+    "numpy": "2.5.2",
+    "scipy": "1.18.1",
+    "pynanoflann": "0.10.0",
+    "cpu": "Test CPU Model Py9",
+    "threads": 8,
+    "date": "2026-08-24T00:00:00Z",
+    "git_sha": "abc1234",
+    "rustflags": "-C target-cpu=native",
+    "wheel_profile": "release (test fixture)"
+  },
+  "workloads": [
+    { "name": "build_100k_dim3_f32_threads1", "flannrust_ms": 9.576, "ckdtree_ms": 11.669, "pynanoflann_ms": 17.552, "ratio_ckdtree": 0.821, "ratio_pynanoflann": 0.546 }
+  ]
+}"#;
+
+#[test]
+fn render_python_rejects_old_format_json_without_schema_version() {
+    let err = xval::render_python(PY_OLD_FORMAT_FIXTURE)
+        .expect_err("old-format (no schema_version, flat *_ms fields) JSON must be rejected, not silently mis-rendered");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("schema_version"),
+        "error message must name the actual problem (schema_version mismatch), got: {msg}"
+    );
+    assert!(msg.contains('2'), "error message should mention the expected schema_version (2), got: {msg}");
+}
+
+#[test]
+fn render_python_rejects_wrong_schema_version_number() {
+    let fixture = PY_NEW_FORMAT_FIXTURE.replacen(r#""schema_version": 2"#, r#""schema_version": 1"#, 1);
+    let err = xval::render_python(&fixture).expect_err("schema_version: 1 must be rejected (expected 2)");
+    assert!(err.to_string().contains("schema_version"), "{}", err);
+}
+
+#[test]
+fn render_python_happy_path_renders_stats_and_median_ratio_pill() {
+    let html = xval::render_python(PY_NEW_FORMAT_FIXTURE).expect("well-formed schema_version:2 JSON must render");
+
+    assert!(html.contains("python-bindings"), "missing the python-bindings section wrapper");
+    assert!(html.contains("build_100k_dim3_f32_threads1"), "missing workload name");
+
+    // Cells/tooltip show mean/std/n for every engine, not just the median.
+    assert!(html.contains("9.653") && html.contains("0.086"), "missing flannrust mean/std");
+    assert!(html.contains("12.098") && html.contains("0.943"), "missing cKDTree mean/std");
+    assert!(html.contains("17.739") && html.contains("0.200"), "missing pynanoflann mean/std");
+    assert!(html.matches("n=42").count() >= 3, "expected n=42 to appear for all three engines:\n\n{html}");
+
+    // Ratio pill uses the median-based ratio_ckdtree/ratio_pynanoflann
+    // fields (0.805 / 0.549), not a mean-derived recomputation.
+    assert!(html.contains("0.805"), "ratio pill must show the median-based ratio_ckdtree value");
+    assert!(html.contains("0.549"), "ratio pill must show the median-based ratio_pynanoflann value");
+
+    // Sub-millisecond row (single_query_loop) keeps its overhead-bound
+    // badge and 6-decimal precision.
+    assert!(html.contains("overhead-bound"), "missing the single-query overhead-bound badge");
+    assert!(html.contains("0.001960"), "sub-ms median should render at 6-decimal precision");
+}

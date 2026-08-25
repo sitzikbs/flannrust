@@ -32,7 +32,7 @@ use rand::SeedableRng;
 /// `examples/render_report.rs` for the CLI wrapper. `render` (this
 /// module's entry point) is re-exported at the crate root for convenience.
 pub mod report;
-pub use report::{render, RenderError};
+pub use report::{render, render_python, RenderError};
 use rand_chacha::ChaCha8Rng;
 
 // ============================================================================
