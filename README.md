@@ -825,7 +825,7 @@ re-deriving from the C++ source; full tracker:
   identical vectorizable summation on this AVX-512-capable host —
   **REJECTED as a further port-fidelity change**; a `RUSTFLAGS`-level
   512-bit-vector experiment remains a possible toolchain-level lever, still
-  unexplored (`task-4-report.md` §6). The fast-math flag and parallel slot
+  unexplored (`docs/reports/m2.6/task-4-report.md` §6). The fast-math flag and parallel slot
   rebuilds remain untaken ideas, unchanged. **Update (M2.6 task 7,
   user-directed idle-host re-measurement):** dim-64 f32 and dim-32 f64
   above are CORRECTED wider — dim-64 f32 **1.082–1.235** (was

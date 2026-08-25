@@ -6,7 +6,6 @@ Distances (and the `r=` radius argument) are SQUARED for l2/l2_simple, same
 convention as `query` -- see conftest.py / test_behavior.py.
 """
 import numpy as np
-import pytest
 
 import flannrust
 
