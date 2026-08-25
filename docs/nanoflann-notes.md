@@ -315,3 +315,16 @@ pre-M2.5 0.956–0.976 band. `build_100k` (not covered above but see
 reproducibly split by configuration rather than pure noise — dataset seed
 vs. harness/process context were never crossed to isolate which one is
 the cause.
+
+**Update (M2.6 task 6, 2026-08-25): the "reproducibly split by
+configuration" claim above did not hold up and is corrected.** T4's own
+crossing experiment (identical unpatched code/seeds) failed to reproduce
+it (0.9825/0.984, no trace of the old 0.967-vs-1.037/1.039 clustering);
+this task's own fresh 3-session idle-host sweep corroborates that a second
+way — 0.993–1.009 across both gate AND report-chain sessions, the
+opposite ordering from the original split. Current verdict: `build_100k`
+shows no reproducible configuration-dependent gap; the original split most
+likely reflected session/host-load state, consistent with a background
+game process the user identified as consuming host compute during some
+earlier M2.6 sessions. Full account: `docs/EXPERIMENTS.md` "M2.6 task 6"
+subsection; `docs/benchmarks.md` "M2.6 task 6" section.

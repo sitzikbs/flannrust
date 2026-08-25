@@ -22,6 +22,12 @@ not be apples-to-apples with that methodology (see docs/EXPERIMENTS.md
 Section 1). `meta.rustflags` records what was actually set in THIS
 process's environment at run time (best-effort signal, not a guarantee --
 see `report_data.rs`'s `target_cpu_native()` for the same caveat).
+`meta.loadavg_start`/`meta.loadavg_end` (M2.6 task 6) record `/proc/loadavg`'s
+raw line at process start and just before the JSON is printed -- the
+Python-side half of this repo's idle-host measurement-conditions protocol
+(docs/EXPERIMENTS.md Section 1); `None` off-Linux or on any read failure.
+The Rust-side perf gate/report-chain sessions have no equivalent automatic
+capture and record loadavg manually per that same protocol.
 
 Methodology (M2.6 task 3 -- mirrors `crates/xval/src/lib.rs`'s
 `TimingStats`/`rep_count`/`measure_pair` adaptive-repetition policy,
@@ -165,6 +171,19 @@ def _pkg_version(name):
         return "unknown"
 
 
+def _loadavg():
+    """Best-effort `/proc/loadavg` read (Linux-only, matches this repo's
+    idle-host measurement-conditions protocol -- docs/EXPERIMENTS.md
+    Section 1's "Measurement-conditions protocol"). `None` off-Linux or on
+    any read failure, never raises -- meta capture must not abort a bench
+    run over an unrelated OS quirk."""
+    try:
+        with open("/proc/loadavg") as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
 def build_meta():
     return {
         "python": platform.python_version(),
@@ -175,6 +194,7 @@ def build_meta():
         "threads": os.cpu_count() or 1,
         "date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "git_sha": _git_sha(),
+        "loadavg_start": _loadavg(),
         "rustflags": os.environ.get("RUSTFLAGS", ""),
         "wheel_profile": (
             "release (.venv/bin/maturin develop --release); "
@@ -588,6 +608,7 @@ def main():
     progress("single_query_loop")
     workloads.append(single_query_loop_workload())
 
+    meta["loadavg_end"] = _loadavg()
     doc = {"schema_version": SCHEMA_VERSION, "meta": meta, "workloads": workloads}
     print(json.dumps(doc, indent=2))
     progress("done")

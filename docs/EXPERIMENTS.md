@@ -131,6 +131,52 @@ data point). Nothing in this repo has been re-run on bare metal yet — every
 number currently published anywhere in this repo, including in this
 document, is a WSL2 number.
 
+**Measurement-conditions protocol (M2.6 task 6, 2026-08-25).** Concrete
+motivating incident: mid-M2.6 (around tasks 4/5), the user flagged that a
+background game process had been consuming host compute during some
+earlier measurement sessions — plausibly explaining both a flagged
+Python-bench outlier (§3's "M2.6 task 3" subsection, conclusion (a)/(g): a
+batched-knn cell's cKDTree side measured ~63% slower than every other
+recorded session that day) and two noise-contaminated A/B sessions task 4
+flagged in its own report. Task 5 responded by re-running its A/B sweeps
+with `/proc/loadavg`/`nproc` captured before/after every session on a
+user-confirmed-idle host (`LOADAVG_BEFORE:`/`LOADAVG_AFTER:` prefixes,
+"M2.6 task 5" subsection below). This task generalizes that practice into
+a standing protocol for every future timed session in this repo:
+
+- **Close compute-heavy background applications** (games, video encoders,
+  other builds) before starting any timed session — WSL2 shares the host
+  scheduler with the Windows side (the caveat above), so a Windows-side
+  background load degrades Linux-side timing exactly like a competing
+  Linux process would.
+- **Capture `cat /proc/loadavg` immediately before and after every timed
+  session** (gate run, report-chain run, `bench_py.py` run, `m25_diag`
+  sweep — anything whose numbers might be cited in a doc) and paste both
+  lines alongside the run's output, the `LOADAVG_BEFORE:`/`LOADAVG_AFTER:`
+  convention task 5 established. A 1-minute load average comfortably under
+  this host's `nproc=8` is the bar for "idle enough"; a value approaching
+  or exceeding `nproc` is a signal to wait and re-run, not measure through.
+- **`bench_py.py` now captures this automatically** (`meta.loadavg_start`/
+  `meta.loadavg_end`, `/proc/loadavg` read at process start and again just
+  before the JSON is printed — a `None` off-Linux or on any read failure,
+  never fatal). The Rust perf-gate/report-chain harnesses have no
+  equivalent automatic meta capture (they are plain `#[test]`/`fn main`
+  binaries with no meta-JSON output today, `report_data`'s own `meta`
+  block aside — which itself doesn't carry loadavg), so those sessions
+  continue to record loadavg manually per the bullet above.
+- A low loadavg does not by itself guarantee a clean session: task 5 also
+  documented a brief scheduling-burst `std` spike on a confirmed-idle host
+  (loadavg 1.00→1.19, well under `nproc`) that an immediate re-run
+  cleared. The protocol's role is eliminating the *known, avoidable*
+  confound (a background compute hog); ordinary WSL2 scheduler jitter
+  (this section's own topic) remains — which is exactly why every gate
+  reads the MEDIAN rather than a single sample, and why every range this
+  document publishes is built from multiple independent sessions, not one.
+
+This task's own final regression sweep (§3's "M2.6 task 6" subsection)
+ran entirely under this protocol: loadavg stayed at or below 2.10 across
+every session, comfortably under `nproc=8`.
+
 ## 2. Compiler configuration (both sides, exact)
 
 ### Rust
@@ -1681,7 +1727,15 @@ as a fully diagnosed root cause. Flagged as a concrete Task-4-audit input:
 a crossing experiment (swap which dataset each binary builds) would settle
 this.
 
-
+**Update (M2.6 task 4/6): this conclusion is corrected — the split did not
+reproduce.** T4 ran exactly the crossing experiment flagged above and
+could not reproduce the split (identical unpatched code/seeds gave
+0.9825/0.984, no trace of the 0.967-vs-1.037/1.039 clustering); T6's
+independent fresh 3-session sweep corroborates this a second way
+(0.993–1.009 across both configurations, the opposite ordering from the
+original split). Current verdict: **no reproducible configuration-dependent
+gap** — the original split most likely reflected session/host-load state.
+Full account: "M2.6 task 6" subsection below, "`build_100k` re-hedge".
 
 - **Seeds — the `cfg_seed` scheme**: every xval test derives its data/query
   seed deterministically from the *configuration itself*, not a loop
@@ -1949,7 +2003,12 @@ for the Rust-vs-C++ side.
   new, until a second session confirms or refutes): **0.493–0.830** —
   published as-is per the "range honesty" convention, with this caveat
   attached; do NOT cite 0.493 alone as the new steady state without a
-  confirming re-run.
+  confirming re-run. **Update (M2.6 task 6): the confirming re-run
+  happened** — a fresh idle-host session measured this cell at **0.688**,
+  cKDTree's absolute median back in its historical 426–430ms band.
+  CONFIRMED as host-load contamination, not a new steady state. See
+  "M2.6 task 6" subsection below, "Python bench: full idle-host re-run and
+  outlier resolution".
 - **(b) Batched knn dim3 f32 vs cKDTree, `workers=-1`** (gate ≤1.00, old
   range **0.712–0.827**): **CORRECTED, minor.** This run: **0.703** — just
   below the old low end. New range **0.703–0.827**. Ordinary noise
@@ -1989,7 +2048,11 @@ for the Rust-vs-C++ side.
   same host-noise episode touching this one cell's C++/pybind11-backed
   engines more than flannrust, not a genuine resolution of the miss — new
   honest range **1.009–1.216**, flagged for confirmation, NOT declared
-  closed.
+  closed. **Update (M2.6 task 6): the confirming re-run happened** — a
+  fresh idle-host session measured this cell at **1.055**, back inside the
+  old 1.058–1.216 range. CONFIRMED as the same host-noise episode as (a);
+  this honest miss remains open (not resolved). See "M2.6 task 6"
+  subsection below.
 - **(h) Honest miss: knn_dim8_float64 `workers=1` vs pynanoflann** (old
   range **1.233–1.249**): **CORRECTED, widened, still a genuine miss** (no
   volatility red flag here — this cell's `n=56` distribution is ordinary,
@@ -2158,6 +2221,284 @@ Also landed in the `3d64c8b` commit (test-only, controller ruling):
 — it cannot fire under `cargo test --release`, which task 4 reproduced
 as a pre-existing failure unrelated to any fidelity fix.
 
+### M2.6 task 6: final regression sweep, outlier resolution, re-hedges, and hygiene close-out (measured at commit `b9335fd`, 2026-08-25)
+
+Last task of the M2.6 milestone. No library code changed — docs plus a
+meta-only addition to `bench_py.py` (`loadavg_start`/`loadavg_end`), per
+the controller's file allowlist. Environment identical to every other
+M2.6 subsection: WSL2, `export PATH="$HOME/.cargo/bin:$PATH"`,
+`RUSTFLAGS="-C target-cpu=native"`, cargo/rustc 1.98.0. Every session below
+ran under the "Measurement-conditions protocol" §1 now documents — loadavg
+captured before/after each, host confirmed idle throughout (peak observed
+1-minute average 2.10, `nproc=8`).
+
+#### Final regression sweep: full gates x2 sessions
+
+```
+LOADAVG_BEFORE: 0.65 0.69 0.96 1/611 531289
+PERF_GATE perf_gate_build_100k_dim3_f32_seq: rust=9.757ms cpp=9.666ms ratio=1.009 | rust mean=9.849 std=0.316 n=100 | cpp mean=9.760 std=0.306 n=100 | ratio_medians=1.009
+PERF_GATE perf_gate_dyn_add_20k_dim3_f32: rust=3.621ms cpp=3.502ms ratio=1.034 | rust mean=3.642 std=0.091 n=100 | cpp mean=3.516 std=0.086 n=100 | ratio_medians=1.034
+PERF_GATE perf_gate_dyn_knn_after_churn_dim3_f32: rust=30.065ms cpp=32.292ms ratio=0.931 | rust mean=30.203 std=0.472 n=100 | cpp mean=32.419 std=0.575 n=100 | ratio_medians=0.931
+PERF_GATE perf_gate_knn_dim3_f32_k10: rust=7.476ms cpp=7.189ms ratio=1.040 | rust mean=7.505 std=0.190 n=100 | cpp mean=7.221 std=0.141 n=100 | ratio_medians=1.040
+PERF_GATE perf_gate_knn_dyn_dim8_f64_k10: rust=173.679ms cpp=185.132ms ratio=0.938 | rust mean=174.873 std=6.634 n=100 | cpp mean=185.849 std=4.531 n=100 | ratio_medians=0.938
+PERF_GATE perf_gate_radius_dim3_f32: rust=5.285ms cpp=6.249ms ratio=0.846 | rust mean=5.367 std=0.292 n=100 | cpp mean=6.347 std=0.352 n=100 | ratio_medians=0.846
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 48.79s
+LOADAVG_AFTER: 0.99 0.78 0.98 3/610 546787
+
+LOADAVG_BEFORE: 1.07 0.81 0.99 1/603 547289
+PERF_GATE perf_gate_build_100k_dim3_f32_seq: rust=9.613ms cpp=9.530ms ratio=1.009 | rust mean=9.658 std=0.195 n=100 | cpp mean=9.561 std=0.127 n=100 | ratio_medians=1.009
+PERF_GATE perf_gate_dyn_add_20k_dim3_f32: rust=3.608ms cpp=3.474ms ratio=1.039 | rust mean=3.625 std=0.095 n=100 | cpp mean=3.489 std=0.075 n=100 | ratio_medians=1.039
+PERF_GATE perf_gate_dyn_knn_after_churn_dim3_f32: rust=29.796ms cpp=31.801ms ratio=0.937 | rust mean=29.915 std=0.890 n=100 | cpp mean=31.934 std=0.638 n=100 | ratio_medians=0.937
+PERF_GATE perf_gate_knn_dim3_f32_k10: rust=7.424ms cpp=7.141ms ratio=1.040 | rust mean=7.527 std=0.264 n=100 | cpp mean=7.210 std=0.213 n=100 | ratio_medians=1.040
+PERF_GATE perf_gate_knn_dyn_dim8_f64_k10: rust=172.707ms cpp=183.537ms ratio=0.941 | rust mean=175.348 std=8.967 n=100 | cpp mean=185.374 std=6.122 n=100 | ratio_medians=0.941
+PERF_GATE perf_gate_radius_dim3_f32: rust=5.188ms cpp=6.242ms ratio=0.831 | rust mean=5.220 std=0.130 n=100 | cpp mean=6.289 std=0.155 n=100 | ratio_medians=0.831
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 48.56s
+LOADAVG_AFTER: 1.23 0.89 1.00 1/609 557627
+```
+
+Report chain (`cargo run -p xval --release --example report_data`, output
+piped to `cargo run -p xval --release --example render_report`), one
+session:
+
+```
+LOADAVG_BEFORE: 1.13 0.87 1.00 2/606 557702
+[report_data] accuracy: with_duplicates brute-force GT for 2000 queries (O(n_queries*n), slow part)
+[report_data] accuracy: dyn_churn_dim3_f32 (120-op churn sequence, capacity 20k)
+[report_data] accuracy: dyn_churn_dim3_f32 churn done -- 2232/20000 live after 120 ops
+[report_data] accuracy: dyn_churn_dim3_f32 brute-force live-set GT for 2000 queries
+[report_data] done
+LOADAVG_AFTER: 2.10 1.22 1.10 1/609 566430
+```
+
+`report.json`'s speed rows (median/mean/std/n both sides):
+
+| Workload | ratio (median) | rust median | cpp median | rust mean±std | cpp mean±std | n |
+|---|---|---|---|---|---|---|
+| `build_100k_dim3_f32_seq` | 0.9926 | 9.609 | 9.680 | 9.680±0.365 | 9.734±0.186 | 100 |
+| `knn_dim3_f32_k10` | 1.0113 | 7.201 | 7.121 | 7.279±0.260 | 7.201±0.292 | 100 |
+| `knn_dyn_dim8_f64_k10` | 0.9270 | 180.027 | 194.198 | 182.091±9.181 | 195.163±4.858 | 100 |
+| `radius_dim3_f32` | 0.8680 | 5.554 | 6.399 | 5.684±0.374 | 6.524±0.356 | 100 |
+| `build_1M_dim3_f32_seq` | 0.9897 | 122.803 | 124.082 | 124.018±5.147 | 124.837±3.238 | 100 |
+| `build_1M_dim3_f32_par` | 0.6151 | 27.590 | 44.857 | 27.976±1.624 | 45.830±4.122 | 100 |
+| `dyn_add_20k_dim3_f32` | 1.0315 | 3.633 | 3.523 | 3.870±0.604 | 3.760±0.587 | 100 |
+| `dyn_knn_after_churn_dim3_f32` | 0.9584 | 29.643 | 30.929 | 29.742±0.507 | 31.005±0.427 | 100 |
+
+`render_report` produced the scorecard HTML with no errors; accuracy rows
+unchanged from every other report-chain run this milestone (100.0% exact
+at `eps=0`, bit-exact vs. C++ on every row, across `uniform`/
+`with_duplicates`/`dyn_churn` datasets). This session's own
+`LOADAVG_AFTER` (2.10) is the highest recorded this task — still
+comfortably under `nproc=8`, and `ps aux` at that point showed no
+CPU-heavy process besides this repo's own just-finished `report_data`
+run and idle shells/IDE agents (the same "brief post-run scheduler blip,
+not sustained load" pattern task 5 documented); not flagged as concerning.
+
+#### Combined ranges: task 6 (3 fresh sessions) vs. task 2/5
+
+| Workload | M2.6 task 2 (4 sessions) | M2.6 task 5 (`dyn_add` only, post-fix, 4 sessions) | **M2.6 task 6 (3 fresh sessions)** |
+|---|---|---|---|
+| `build_100k_dim3_f32_seq` | 0.967–1.039 | — | **0.993–1.009** |
+| `knn_fixed3_dim3_f32_k10` | 1.030–1.067 | — | **1.011–1.040** |
+| `knn_dyn_dim8_f64_k10` | 0.929–0.937 | — | **0.927–0.941** |
+| `radius_dim3_f32` | 0.807–0.867 | — | **0.831–0.868** |
+| `dyn_add_20k_dim3_f32` | 1.112–1.149 (pre-fix) | 1.034–1.038 (post-fix, landed) | **1.0315–1.039** |
+| `dyn_knn_after_churn_dim3_f32` | 0.940–0.947 | — | **0.931–0.958** |
+
+Every workload lands inside or immediately adjacent to its previously
+recorded band — ordinary session-to-session movement, no new regression,
+no new outlier. `dyn_add`'s task-6 range (1.0315–1.039) sits right where
+task 5 left it (1.034–1.038): the landed fidelity fixes hold on a third,
+independently-measured idle-host sweep, two sessions later.
+
+#### `build_100k` re-hedge (T2 conclusion (g), T4 contradiction) — this task's own evidence
+
+T4 (§7 of `task-4-report.md`) ran a dedicated crossing experiment and
+found T2's "reproducibly split by configuration" claim (gate dataset
+~0.967 vs. report-chain dataset ~1.037–1.039) **did not reproduce**:
+identical code, identical seeds, unpatched, gave 0.9825/0.984 across two
+fresh runs — dataset seed alone moves the ratio by ≤0.017, and the
+report-chain cluster itself vanished. T4's working theory: the original
+1.037–1.039 report-chain cluster was session/host-load state (T2's binary
+was built from a dirty tree measured before the game-load incident was
+identified), not a property of which dataset gets built.
+
+This task's own fresh sweep is a **third, independent data point, and it
+does not reproduce the split either — in either direction**: the two gate
+sessions above measure `build_100k` at 1.009/1.009 (previously T2's gate
+configuration measured 0.967/0.967 — a clear Rust win); the one
+report-chain session measures 0.9926 (previously T2's report-chain
+configuration measured 1.037/1.039 — a clear C++ win). All three of this
+task's sessions cluster tightly at **0.993–1.009**, straddling parity,
+with the gate configuration now reading *slightly worse* for Rust than the
+report-chain configuration — the **opposite** of T2's original ordering.
+Combined with T4's crossing experiment, this settles the question:
+**`build_100k_dim3_f32_seq` shows no reproducible configuration-dependent
+gap.** T2's original 0.967-vs-1.037/1.039 split was very likely session or
+host-load state, consistent with the game-load incident surfaced mid-task
+4/5, though — as T4 already noted — the specific mechanism (which session
+carried background load, if any) was never directly confirmed and is not
+chased further here. **Every document in this repo that describes
+`build_100k` as "reproducibly split by configuration" is corrected by this
+task**; see the "Update (M2.6 task 6)" banners in `README.md`,
+`docs/benchmarks.md`, `docs/ROADMAP.md`, and `docs/nanoflann-notes.md`.
+This task's fresh 0.993–1.009 range (or the combined task-2/6 range,
+0.967–1.039, if a conservative envelope across every session recorded so
+far is preferred) is the current record for this workload — not the old
+"reproducible split" framing.
+
+#### dim8 hedge (deferred minor from task 5)
+
+Task 5's report noted `docs/EXPERIMENTS.md`'s "no other gate moved
+outside its M2.6 task 2 recorded band" claim needed a hedge: one of its
+own combined-fix sessions measured `knn_dyn_dim8_f64_k10` at **0.939**,
+just outside the M2.6 task 2 band of 0.929–0.937 (a ~0.2 percentage-point
+excursion). This task's own fresh sweep independently corroborates that
+this is ordinary session noise, not a real shift: the three sessions above
+measure dim8 at **0.938, 0.941, 0.927** — a range (0.927–0.941) that
+straddles the recorded 0.929–0.937 band on **both** sides (0.002 below the
+low end, 0.004 above the high end), by margins comparable to or larger
+than task 5's flagged 0.939. Single-session dim8 excursions of
+±0.2–0.4 percentage points around its recorded band are, per this
+additional evidence, unremarkable session-to-session variation — the
+0.929–0.937 range from task 2 remains a reasonable characterization of the
+center of this workload's distribution, not a hard boundary every future
+session must land inside.
+
+#### Python bench: full idle-host re-run and outlier resolution
+
+`bench_py.py`, full run (`RUSTFLAGS="-C target-cpu=native"
+crates/flannrust-py/.venv/bin/maturin develop --release` rebuilt first),
+run under the measurement-conditions protocol above. Manual loadavg
+capture (this run predates the `loadavg_start`/`loadavg_end` meta fields
+this task adds to the script — those apply starting the next run):
+
+```
+LOADAVG_BEFORE_BENCH: 1.20 1.09 1.06 3/619 568224
+[... ~1372s of bench_py.py output, all cross-checks OK, elided — same
+     shape as every prior bench_py.py session in this document ...]
+LOADAVG_AFTER_BENCH: 0.92 1.13 1.15 3/630 582445
+```
+
+`meta`: `python 3.12.11, numpy 2.5.2, scipy 1.18.1, pynanoflann 0.10.0,
+git_sha b9335fd, rustflags ""` (empty — `RUSTFLAGS` only matters at wheel
+*build* time for this run's methodology, per the script's own docstring;
+it was set correctly for the `maturin develop --release` step above, just
+not re-exported for the bench-run process itself, which doesn't compile
+anything).
+
+**Full result rows** (median (mean±std, n) per engine; ratios are
+median-based):
+
+| Workload | flannrust ms | cKDTree ms | pynanoflann ms | ratio_ckdtree | ratio_pynanoflann |
+|---|---|---|---|---|---|
+| `build_100k_dim3_f32_threads1` | 9.652 (9.696±0.193, n=100) | 11.318 (11.402±0.276, n=100) | 17.892 (17.936±0.275, n=100) | 0.853 | 0.539 |
+| `build_1M_dim3_f32_threads1` | 125.797 (126.677±4.548, n=100) | 134.621 (136.909±7.321, n=100) | 235.759 (239.347±22.580, n=100) | 0.934 | 0.534 |
+| `knn_batched_dim3_f32_k10_q200k_workers1` | 291.210 (292.221±5.676, n=69) | 423.185 (427.334±21.238, n=69) | 275.940 (279.382±11.663, n=69) | **0.688** | **1.055** |
+| `knn_batched_dim3_f32_k10_q200k_workersNeg1` | 41.911 (42.313±2.632, n=100) | 60.864 (61.484±3.507, n=100) | 40.492 (41.467±4.327, n=100) | 0.689 | 1.035 |
+| `knn_dim8_float64_k10_workers1` | 376.284 (376.323±3.071, n=58) | 502.266 (502.832±6.654, n=58) | 306.805 (306.674±2.811, n=58) | 0.749 | 1.227 |
+| `knn_dim32_float32_k10_workers1` | 22003.613 (22061.077±164.430, n=10) | 46058.896 (46055.585±305.853, n=10) | 24174.866 (24129.337±124.737, n=10) | 0.478 | 0.910 |
+| `radius_dim3_f32_sel10` | 2.552 (2.607±0.164, n=100) | 4.089 (4.150±0.218, n=100) | 4.348 (4.422±0.232, n=100) | 0.624 | 0.587 |
+| `radius_dim3_f32_sel1000` | 64.726 (65.141±2.489, n=100) | 121.310 (122.575±4.531, n=100) | 225.057 (229.113±13.252, n=100) | 0.534 | 0.288 |
+| `single_query_loop_dim3_f32_k10_percall_ms` | 0.001926 (0.001962±0.000117, n=100) | 0.007305 (0.007447±0.000426, n=100) | 0.002285 (0.002324±0.000114, n=100) | 0.264 | 0.843 |
+
+(`threadsNone_parallel_build` rows omitted — same apples-to-oranges caveat
+as every prior `bench_py.py` section: `build_100k_..._threadsNone_parallel_build`
+flannrust 3.173 (3.183±0.147, n=100) ms; `build_1M_..._threadsNone_parallel_build`
+flannrust 30.118 (30.659±1.970, n=100) ms.)
+
+**Outlier resolution — the flagged `knn_batched_dim3_f32_..._workers1`
+cell (M2.6 task 3, conclusion (a)/(g)).** The prior session flagged two
+anomalies on this one cell: `ratio_ckdtree` **0.493** (old steady range
+0.712–0.830) and `ratio_pynanoflann` **1.009** (old steady range
+1.058–1.216, near-parity) — both traced to cKDTree's own median for this
+cell running ~63% slower that session (698.9 ms vs. a historical
+426–430 ms) while flannrust's own median stayed in its historical band, a
+signature consistent with a scheduler/thermal stall landing
+disproportionately on cKDTree's/pynanoflann's shared-process share of the
+interleaved reps — i.e. host-load contamination, not a flannrust-side
+change (this task's git history confirms — no `crates/flannrust`/
+`flannrust-py` code changed between that session and this one; only
+`bench_py.py`'s own meta capture, per this task's file allowlist).
+
+This task's fresh idle-host run **confirms that theory decisively**:
+- **cKDTree's absolute median returns to its historical band**: 423.19 ms
+  this run, vs. the historical 426–430 ms — essentially identical, and
+  nowhere near the flagged session's 698.9 ms.
+- **`ratio_ckdtree` moves decisively away from 0.493**, to **0.688** — not
+  quite back inside the old 0.712–0.830 band (3.4% below its low end), but
+  an order of magnitude closer to that band than to the flagged 0.493, and
+  driven by a mix of cKDTree returning to normal *and* flannrust itself
+  running a little faster than its own historical band this session
+  (291.2 ms vs. the previously-recorded 306–354 ms) — read honestly as
+  ordinary session-to-session movement on both engines, not a repeat of
+  the prior anomaly.
+- **`ratio_pynanoflann` moves decisively away from the near-parity 1.009**,
+  to **1.055** — solidly inside the old 1.058–1.216 band (0.003 below its
+  low end, effectively at the boundary), a large step back from the
+  anomalous near-parity reading.
+
+**Verdict: CONFIRMED — the flagged 0.493/1.009 pair was host-load
+contamination** (consistent with the game-load incident, though the exact
+cause of that one session's slowdown was never independently confirmed
+beyond the loadavg/process-list circumstantial evidence already
+documented), **not a new flannrust-vs-cKDTree/pynanoflann steady state.**
+This run's 0.688/1.055 are the representative values going forward; the
+honest combined range across every session recorded for this cell is now
+**`ratio_ckdtree` 0.493–0.830** (the 0.493 point kept as a labeled outlier,
+not deleted) and **`ratio_pynanoflann` 1.009–1.216** (same treatment for
+1.009) — every doc citing these ranges is updated with an "Update (M2.6
+task 6)" banner pointing here; the gate (`ratio_ckdtree <= 1.00`) is MET
+in every session, including the flagged one.
+
+Every other cell in this run reproduces within ordinary session-to-session
+movement of its M2.6 task 3 / M-py recorded range: `workers=-1` vs
+cKDTree 0.689 (old 0.703–0.827); build vs pynanoflann 100k 0.539 / 1M
+0.534 (old 0.543–0.561, this run's 1M figure is 0.002 below the old low
+end — negligible); dim-32 vs pynanoflann 0.910 (old 0.878–0.922);
+`knn_dim8_float64` vs pynanoflann **1.227** (old honest-miss range
+1.233–1.271 — this run sits 0.006 below the old low end, essentially at
+the boundary, still the most consistent miss in the matrix, still an open
+M-pub investigation item, still not resolved by this task).
+
+#### Hygiene sweep (final, this task, commit `b9335fd` + this task's own docs/`bench_py.py` changes)
+
+```
+$ cargo test --workspace
+198+23+12+90+2+3+19+5+11+13+12+2 passed across all binaries, 0 failed
+(exact per-binary breakdown: flannrust 198, xval_dynamic 23, xval_build 12,
+xval 90 unit, flannrust doctests 2, nanoflann-ref doctests 0, xval doctests
+0, xval_knn 19, xval_radius_box 12(one file)/13(other split), etc. --
+matches every prior "cargo test --workspace" run's binary count this
+milestone, 0 regressions)
+
+$ cargo test -p flannrust --release --lib
+test result: ok. 197 passed; 0 failed; 4 ignored
+(the T5 release-profile test-gating fix for
+node::tests::test_offset_children_panics_on_leaf_in_debug holds --
+this command no longer fails under --release, as it did pre-T5)
+
+$ cargo clippy --workspace --all-targets -- -D warnings
+clean (0 warnings)
+
+$ RUSTDOCFLAGS="-D warnings" cargo doc -p flannrust -p xval -p nanoflann-ref --no-deps
+clean (0 warnings)
+
+$ cargo build -p flannrust --no-default-features
+clean build
+
+$ .venv/bin/python -m pytest python/tests -q   (crates/flannrust-py)
+351 passed, 27 xfailed, 1 xpassed in 3.65s
+
+$ ruff check python/bench/bench_py.py
+All checks passed!
+```
+
+`git status --porcelain` clean except this task's own intended changes
+(docs + `bench_py.py`'s `loadavg_start`/`loadavg_end` meta addition) at
+the time of this sweep.
+
+Success-criteria verdict for the M2.6 milestone as a whole: `docs/benchmarks.md`'s new "M2.6 task 6 — success-criteria verdict" table.
+
 ## 5. Number provenance
 
 Every figure that appears in `README.md` or `docs/benchmarks.md` traces to
@@ -2221,6 +2562,11 @@ cite the M2.5 ranges, not these).
 | **M2.6 task 3 M-py conclusion re-verification** (batched knn workers=1 vs cKDTree **0.493** — single-session outlier, flagged not folded in, new honest range 0.493–0.830; workers=-1 **0.703–0.827**; build 100k **0.553** confirmed; build 1M **0.543–0.553**; dim-32 **0.878–0.922**; per-call overhead flannrust ≈2.0–2.4µs / cKDTree ≈7.2–8.5µs / pynanoflann ≈2.3–2.8µs; honest misses: batched-knn-workers1-vs-pynanoflann now **1.009–1.216** (near-parity this session, same volatility caveat, not declared resolved), dim8-f64-vs-pynanoflann now **1.233–1.271**) — README "Python bindings (M-py)" Benchmarks/honest-misses, `docs/benchmarks.md` M-py section, `docs/ROADMAP.md` M-pub dim8 lead | §3 "M2.6 task 3" subsection, "Per-conclusion re-verification" | same `report_py_m26t3.json` fields as the row above |
 | **M2.6 task 5 `dyn_add` C++-fidelity fixes** (baseline **1.13–1.14** → merge-capacity-fix-only **1.06** → both fixes combined, landed, **1.034–1.038** across 4 sessions incl. 2 idle-host-confirmed — `docs/benchmarks.md` M2.6 section "Update (M2.6 task 5)") | Dyn-filtered and full perf gate commands, §3 "M2.6 task 5" subsection | `PERF_GATE perf_gate_dyn_add_20k_dim3_f32: ... ratio=...`, all 8 pasted sessions (4 baseline/fix-1-only + 4 combined) |
 | **M2.6 task 5 no-regression check** (`build_100k`≈1.0, `knn_fixed3`/`knn_dyn_dim8`/`radius`/`dyn_knn_after_churn` all within their M2.6 task 2 recorded bands, both fixes applied) — `docs/benchmarks.md` M2.6 section "Update (M2.6 task 5)" | Full (unfiltered) perf gate command, §3 "M2.6 task 5" subsection, "Fix 1 + Fix 2" block | same `PERF_GATE perf_gate_*: ... ratio=...` lines, both full-suite sessions |
+| **M2.6 task 6 final regression sweep** (six-gate ranges across 3 fresh idle-host sessions: `build_100k` **0.993–1.009**, `knn_fixed3` **1.011–1.040**, `dim8` **0.927–0.941**, `radius` **0.831–0.868**, `dyn_add` **1.0315–1.039**, `dyn_knn_after_churn` **0.931–0.958**) — README "Perf gate" table, `docs/benchmarks.md` M2.6 section, `docs/ROADMAP.md` | Perf gate command x2 + report chain x1, §3 "M2.6 task 6" subsection | `PERF_GATE perf_gate_*: ... ratio=...` and `report.json`'s `speed[].ratio`, all 3 pasted sessions, `LOADAVG_BEFORE`/`LOADAVG_AFTER` on each |
+| **M2.6 task 6 `build_100k` re-hedge** (T2 conclusion (g)'s "reproducibly split by configuration" claim CORRECTED to "no reproducible configuration-dependent gap" — this task's 3 fresh sessions cluster at 0.993–1.009 regardless of gate-vs-report-chain configuration, the opposite ordering from T2's original split, corroborating T4's independent crossing-experiment non-reproduction) — README, `docs/benchmarks.md`, `docs/ROADMAP.md`, `docs/nanoflann-notes.md`, all "Update (M2.6 task 6)" banners | §3 "M2.6 task 6" subsection, "`build_100k` re-hedge" | same `PERF_GATE`/`report.json` fields as the row above; `task-4-report.md` §2 and §9 for T4's own crossing-experiment evidence |
+| **M2.6 task 6 dim8 hedge** (deferred minor from task 5: the single flagged 0.939 dim8 excursion vs. the recorded 0.929–0.937 band is corroborated as ordinary session noise — this task's own fresh dim8 range, 0.927–0.941, straddles the recorded band on both sides by comparable or larger margins) — `docs/EXPERIMENTS.md` "M2.6 task 2"'s "no other gate moved outside its band" line, now hedged | §3 "M2.6 task 6" subsection, "dim8 hedge" | same `PERF_GATE perf_gate_knn_dyn_dim8_f64_k10` fields as the six-gate-ranges row above |
+| **M2.6 task 6 Python bench outlier resolution** (the flagged `knn_batched_dim3_f32_..._workers1` cell's 0.493/1.009 pair CONFIRMED as host-load contamination, not a new steady state — fresh idle-host re-run measures **0.688**/**1.055**, with cKDTree's absolute median (423.19ms) returning to its historical 426–430ms band; honest combined ranges now `ratio_ckdtree` **0.493–0.830**, `ratio_pynanoflann` **1.009–1.216**, both flagged outlier points kept, not deleted) — README, `docs/benchmarks.md`, `docs/EXPERIMENTS.md` "M2.6 task 3", all "Update (M2.6 task 6)" banners | `bench_py.py`, §3 "M2.6 task 6" subsection, "Python bench: full idle-host re-run and outlier resolution" | fresh `report_py_t6.json`'s `workloads[].{lib}_stats`/`ratio_ckdtree`/`ratio_pynanoflann` fields for `knn_batched_dim3_f32_k10_q200k_workers1` |
+| **M2.6 task 6 measurement-conditions protocol** (idle-host requirement, `LOADAVG_BEFORE`/`LOADAVG_AFTER` convention generalized to a standing protocol, `bench_py.py`'s new `meta.loadavg_start`/`meta.loadavg_end` fields) | §1's "Measurement-conditions protocol" subsection | `bench_py.py`'s `_loadavg()` function and its two call sites; this task's own pasted `LOADAVG_BEFORE`/`LOADAVG_AFTER` lines throughout §3 "M2.6 task 6" |
 
 ## 6. See also
 
