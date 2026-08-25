@@ -10,13 +10,18 @@
 //!
 //! Progress goes to STDERR; stdout is JSON only.
 //!
-//! - Speed: the perf-gate's four workloads (identical median-of-7
-//!   methodology, via `xval::timed_median_ms`/`xval::median_of` -- see
-//!   `tests/perf_gate.rs`) plus `build_1M_dim3_f32` seq/par. Every query
+//! - Speed: the perf-gate's four workloads (identical adaptive-repetition
+//!   methodology, via `xval::measure_pair` -- see `tests/perf_gate.rs` and
+//!   this task's `BUDGET_S`) plus `build_1M_dim3_f32` seq/par. Every query
 //!   loop (knn/radius) is ALLOCATION-SYMMETRIC: both sides use reused,
 //!   caller-owned out-buffers (`knn_into`/`radius_into`, not the
 //!   allocating `knn()`/`radius()` convenience wrappers) -- see this file's
-//!   emitted `meta.speed_methodology`.
+//!   emitted `meta.speed_methodology`. Each speed row emits full
+//!   `xval::TimingStats` (mean/std/median/min/max/n) for BOTH sides plus
+//!   `ratio_means`/`ratio_means_std`/`ratio_medians` -- see `speed_json`'s
+//!   emission in `main` for the exact field names. The pre-M2.6 keys
+//!   (`rust_ms`/`cpp_ms`/`ratio`) are KEPT, populated from the MEDIANS, so
+//!   any not-yet-updated downstream consumer keeps working unchanged.
 //! - Accuracy: three seeded datasets (uniform n=50k dim 3, uniform n=50k
 //!   dim 8, with_duplicates n=20k dim 3), 2000 queries each, k=10. Ground
 //!   truth is brute-force LINEAR SCAN (`xval::brute_force_knn_l2_f32`,
@@ -38,9 +43,9 @@ use flannrust::{ConstDim, DynDim, DynamicKdTreeBuilder, KdTreeBuilder, ResultIte
 use std::io::Write;
 use xval::{
     apply_dyn_op_f32, brute_force_knn_l2_f32, brute_force_knn_l2_live_f32, build_rust_f32, cfg_seed, cpu_model,
-    cxx_compiler_version, dyn_ops, dyn_ops_stats, git_sha, is_wsl, kernel_version, queries, sample_distinct_indices,
-    score_exact_tie_aware_f32, score_exact_tie_aware_live_f32, score_query_f32, timed_median_ms, to_array3, to_f32,
-    uniform, with_duplicates, BuildThreads, GrowableFlat, RoundRobin, XMetric,
+    cxx_compiler_version, dyn_ops, dyn_ops_stats, git_sha, is_wsl, kernel_version, measure_pair, queries,
+    sample_distinct_indices, score_exact_tie_aware_f32, score_exact_tie_aware_live_f32, score_query_f32, to_array3,
+    to_f32, uniform, with_duplicates, BuildThreads, GrowableFlat, RoundRobin, TimingStats, XMetric,
 };
 
 /// One-line description of the accuracy scoring methodology, embedded
@@ -58,9 +63,11 @@ const GT_METHODOLOGY_NOTE: &str = "ground-truth distances computed via the libra
 /// embedded verbatim in the emitted JSON's `meta.speed_methodology` field
 /// (stated as the METHODOLOGY, not a caveat -- both sides are
 /// allocation-symmetric, not just Rust).
-const SPEED_METHODOLOGY_NOTE: &str = "both sides zero-allocation per query: out-buffers (Vec<u32>/Vec<T>) are allocated once per timed workload and reused across every query, via knn_search/radius_search (rust) and knn_into/radius_into (nanoflann_ref's caller-buffer methods, backed directly by the raw FFI's out-pointer writes) -- not the allocating knn()/radius() convenience wrappers on either side.";
+const SPEED_METHODOLOGY_NOTE: &str = "both sides zero-allocation per query: out-buffers (Vec<u32>/Vec<T>) are allocated once per timed workload and reused across every query, via knn_search/radius_search (rust) and knn_into/radius_into (nanoflann_ref's caller-buffer methods, backed directly by the raw FFI's out-pointer writes) -- not the allocating knn()/radius() convenience wrappers on either side. Timing (M2.6): xval::measure_pair -- 2 discarded warmup reps, then an adaptive n = clamp(10, 100, floor(budget_s*1000/t_est_ms)) reps of BOTH sides, interleaved per repetition; budget_s=30 per side. mean/std(sample, n-1)/median/min/max/n published for both sides; gate PASS/FAIL and ratio_medians use the ratio of MEDIANS.";
 
-const RUNS: usize = 7;
+/// Per-side budget (seconds) for `measure_pair`'s adaptive `n` -- shared
+/// with `tests/perf_gate.rs`'s `BUDGET_S` (same M2.6 controller policy).
+const BUDGET_S: f64 = 30.0;
 
 fn progress(msg: &str) {
     eprintln!("[report_data] {msg}");
@@ -114,8 +121,8 @@ fn target_cpu_native() -> bool {
 
 struct SpeedRow {
     workload: &'static str,
-    rust_ms: f64,
-    cpp_ms: f64,
+    rust: TimingStats,
+    cpp: TimingStats,
 }
 
 fn speed_rows() -> Vec<SpeedRow> {
@@ -128,15 +135,18 @@ fn speed_rows() -> Vec<SpeedRow> {
         const DIM: usize = 3;
         const LEAF: usize = 10;
         let data = to_f32(&uniform(cfg_seed("report_build_100k", &[N, DIM]), N, DIM));
-        let rust_ms = timed_median_ms(RUNS, || {
-            let idx = build_rust_f32(&data, DIM, XMetric::L2, LEAF, BuildThreads::Sequential);
-            std::hint::black_box(idx.size());
-        });
-        let cpp_ms = timed_median_ms(RUNS, || {
-            let idx = RefIndexF32::build(&data, DIM, Metric::L2, LEAF, 1);
-            std::hint::black_box(idx.size());
-        });
-        rows.push(SpeedRow { workload: "build_100k_dim3_f32_seq", rust_ms, cpp_ms });
+        let (rust, cpp) = measure_pair(
+            || {
+                let idx = build_rust_f32(&data, DIM, XMetric::L2, LEAF, BuildThreads::Sequential);
+                std::hint::black_box(idx.size());
+            },
+            || {
+                let idx = RefIndexF32::build(&data, DIM, Metric::L2, LEAF, 1);
+                std::hint::black_box(idx.size());
+            },
+            BUDGET_S,
+        );
+        rows.push(SpeedRow { workload: "build_100k_dim3_f32_seq", rust, cpp });
     }
 
     // ---- perf_gate_knn_dim3_f32_k10 (ConstDim<3> vs cpp fixed-DIM-3 fast path) ----
@@ -159,27 +169,30 @@ fn speed_rows() -> Vec<SpeedRow> {
             KdTreeBuilder::new(ConstDim::<3>, arr3.as_slice()).with_metric(L2).leaf_max_size(LEAF).build_sequential();
         let cpp_tree = RefIndex3F32::build(&data32, LEAF, 1);
 
-        let rust_ms = timed_median_ms(RUNS, || {
-            let mut rr = RoundRobin::new(&q32, DIM);
-            let mut out_idx = vec![0u32; K];
-            let mut out_dist = vec![0.0f32; K];
-            for _ in 0..N_QUERIES {
-                let query = std::hint::black_box(rr.next());
-                let found = rust_tree.knn_search(query, &mut out_idx, &mut out_dist);
-                std::hint::black_box(found);
-            }
-        });
-        let cpp_ms = timed_median_ms(RUNS, || {
-            let mut rr = RoundRobin::new(&q32, DIM);
-            let mut out_idx = vec![0u32; K];
-            let mut out_dist = vec![0.0f32; K];
-            for _ in 0..N_QUERIES {
-                let query = std::hint::black_box(rr.next());
-                let found = cpp_tree.knn_into(query, K, &mut out_idx, &mut out_dist);
-                std::hint::black_box(found);
-            }
-        });
-        rows.push(SpeedRow { workload: "knn_dim3_f32_k10", rust_ms, cpp_ms });
+        let (rust, cpp) = measure_pair(
+            || {
+                let mut rr = RoundRobin::new(&q32, DIM);
+                let mut out_idx = vec![0u32; K];
+                let mut out_dist = vec![0.0f32; K];
+                for _ in 0..N_QUERIES {
+                    let query = std::hint::black_box(rr.next());
+                    let found = rust_tree.knn_search(query, &mut out_idx, &mut out_dist);
+                    std::hint::black_box(found);
+                }
+            },
+            || {
+                let mut rr = RoundRobin::new(&q32, DIM);
+                let mut out_idx = vec![0u32; K];
+                let mut out_dist = vec![0.0f32; K];
+                for _ in 0..N_QUERIES {
+                    let query = std::hint::black_box(rr.next());
+                    let found = cpp_tree.knn_into(query, K, &mut out_idx, &mut out_dist);
+                    std::hint::black_box(found);
+                }
+            },
+            BUDGET_S,
+        );
+        rows.push(SpeedRow { workload: "knn_dim3_f32_k10", rust, cpp });
     }
 
     // ---- perf_gate_knn_dyn_dim8_f64_k10 ----
@@ -201,27 +214,30 @@ fn speed_rows() -> Vec<SpeedRow> {
         let rust_tree = build_rust_f64(&data, DIM, XMetric::L2, LEAF, BuildThreads::Sequential);
         let cpp_tree = RefIndexF64::build(&data, DIM, Metric::L2, LEAF, 1);
 
-        let rust_ms = timed_median_ms(RUNS, || {
-            let mut rr = RoundRobin::new(&q, DIM);
-            let mut out_idx = vec![0u32; K];
-            let mut out_dist = vec![0.0f64; K];
-            for _ in 0..N_QUERIES {
-                let query = std::hint::black_box(rr.next());
-                let found = rust_tree.knn_into(query, K, 0.0, &mut out_idx, &mut out_dist);
-                std::hint::black_box(found);
-            }
-        });
-        let cpp_ms = timed_median_ms(RUNS, || {
-            let mut rr = RoundRobin::new(&q, DIM);
-            let mut out_idx = vec![0u32; K];
-            let mut out_dist = vec![0.0f64; K];
-            for _ in 0..N_QUERIES {
-                let query = std::hint::black_box(rr.next());
-                let found = cpp_tree.knn_into(query, K, 0.0, &mut out_idx, &mut out_dist);
-                std::hint::black_box(found);
-            }
-        });
-        rows.push(SpeedRow { workload: "knn_dyn_dim8_f64_k10", rust_ms, cpp_ms });
+        let (rust, cpp) = measure_pair(
+            || {
+                let mut rr = RoundRobin::new(&q, DIM);
+                let mut out_idx = vec![0u32; K];
+                let mut out_dist = vec![0.0f64; K];
+                for _ in 0..N_QUERIES {
+                    let query = std::hint::black_box(rr.next());
+                    let found = rust_tree.knn_into(query, K, 0.0, &mut out_idx, &mut out_dist);
+                    std::hint::black_box(found);
+                }
+            },
+            || {
+                let mut rr = RoundRobin::new(&q, DIM);
+                let mut out_idx = vec![0u32; K];
+                let mut out_dist = vec![0.0f64; K];
+                for _ in 0..N_QUERIES {
+                    let query = std::hint::black_box(rr.next());
+                    let found = cpp_tree.knn_into(query, K, 0.0, &mut out_idx, &mut out_dist);
+                    std::hint::black_box(found);
+                }
+            },
+            BUDGET_S,
+        );
+        rows.push(SpeedRow { workload: "knn_dyn_dim8_f64_k10", rust, cpp });
     }
 
     // ---- perf_gate_radius_dim3_f32 ----
@@ -246,26 +262,29 @@ fn speed_rows() -> Vec<SpeedRow> {
         let (_idx, dist) = cpp_tree.knn(probe, SELECTIVITY_K, 0.0);
         let radius = *dist.last().expect("calibration knn must return at least one neighbor");
 
-        let rust_ms = timed_median_ms(RUNS, || {
-            let mut rr = RoundRobin::new(&q, DIM);
-            let mut out: Vec<ResultItem<u32, f32>> = Vec::new();
-            for _ in 0..N_QUERIES {
-                let query = std::hint::black_box(rr.next());
-                let found = rust_tree.radius_into(query, radius, true, 0.0, &mut out);
-                std::hint::black_box(found);
-            }
-        });
-        let cpp_ms = timed_median_ms(RUNS, || {
-            let mut rr = RoundRobin::new(&q, DIM);
-            let mut out_idx: Vec<u32> = Vec::new();
-            let mut out_dist: Vec<f32> = Vec::new();
-            for _ in 0..N_QUERIES {
-                let query = std::hint::black_box(rr.next());
-                let found = cpp_tree.radius_into(query, radius, true, 0.0, &mut out_idx, &mut out_dist);
-                std::hint::black_box(found);
-            }
-        });
-        rows.push(SpeedRow { workload: "radius_dim3_f32", rust_ms, cpp_ms });
+        let (rust, cpp) = measure_pair(
+            || {
+                let mut rr = RoundRobin::new(&q, DIM);
+                let mut out: Vec<ResultItem<u32, f32>> = Vec::new();
+                for _ in 0..N_QUERIES {
+                    let query = std::hint::black_box(rr.next());
+                    let found = rust_tree.radius_into(query, radius, true, 0.0, &mut out);
+                    std::hint::black_box(found);
+                }
+            },
+            || {
+                let mut rr = RoundRobin::new(&q, DIM);
+                let mut out_idx: Vec<u32> = Vec::new();
+                let mut out_dist: Vec<f32> = Vec::new();
+                for _ in 0..N_QUERIES {
+                    let query = std::hint::black_box(rr.next());
+                    let found = cpp_tree.radius_into(query, radius, true, 0.0, &mut out_idx, &mut out_dist);
+                    std::hint::black_box(found);
+                }
+            },
+            BUDGET_S,
+        );
+        rows.push(SpeedRow { workload: "radius_dim3_f32", rust, cpp });
     }
 
     // ---- build_1M_dim3_f32 seq/par ----
@@ -276,25 +295,31 @@ fn speed_rows() -> Vec<SpeedRow> {
         const LEAF: usize = 10;
         let data = to_f32(&uniform(cfg_seed("report_build_1m", &[N, DIM]), N, DIM));
 
-        let rust_seq_ms = timed_median_ms(RUNS, || {
-            let idx = build_rust_f32(&data, DIM, XMetric::L2, LEAF, BuildThreads::Sequential);
-            std::hint::black_box(idx.size());
-        });
-        let cpp_seq_ms = timed_median_ms(RUNS, || {
-            let idx = RefIndexF32::build(&data, DIM, Metric::L2, LEAF, 1);
-            std::hint::black_box(idx.size());
-        });
-        rows.push(SpeedRow { workload: "build_1M_dim3_f32_seq", rust_ms: rust_seq_ms, cpp_ms: cpp_seq_ms });
+        let (rust_seq, cpp_seq) = measure_pair(
+            || {
+                let idx = build_rust_f32(&data, DIM, XMetric::L2, LEAF, BuildThreads::Sequential);
+                std::hint::black_box(idx.size());
+            },
+            || {
+                let idx = RefIndexF32::build(&data, DIM, Metric::L2, LEAF, 1);
+                std::hint::black_box(idx.size());
+            },
+            BUDGET_S,
+        );
+        rows.push(SpeedRow { workload: "build_1M_dim3_f32_seq", rust: rust_seq, cpp: cpp_seq });
 
-        let rust_par_ms = timed_median_ms(RUNS, || {
-            let idx = build_rust_f32(&data, DIM, XMetric::L2, LEAF, BuildThreads::Auto);
-            std::hint::black_box(idx.size());
-        });
-        let cpp_par_ms = timed_median_ms(RUNS, || {
-            let idx = RefIndexF32::build(&data, DIM, Metric::L2, LEAF, 0);
-            std::hint::black_box(idx.size());
-        });
-        rows.push(SpeedRow { workload: "build_1M_dim3_f32_par", rust_ms: rust_par_ms, cpp_ms: cpp_par_ms });
+        let (rust_par, cpp_par) = measure_pair(
+            || {
+                let idx = build_rust_f32(&data, DIM, XMetric::L2, LEAF, BuildThreads::Auto);
+                std::hint::black_box(idx.size());
+            },
+            || {
+                let idx = RefIndexF32::build(&data, DIM, Metric::L2, LEAF, 0);
+                std::hint::black_box(idx.size());
+            },
+            BUDGET_S,
+        );
+        rows.push(SpeedRow { workload: "build_1M_dim3_f32_par", rust: rust_par, cpp: cpp_par });
     }
 
     // ---- M2 Task 5: perf_gate_dyn_add_20k_dim3_f32 (same workload as the
@@ -309,33 +334,36 @@ fn speed_rows() -> Vec<SpeedRow> {
 
         let data = to_f32(&uniform(cfg_seed("report_dyn_add", &[CAP, DIM]), CAP, DIM));
 
-        let rust_ms = timed_median_ms(RUNS, || {
-            let growable = GrowableFlat::new(&data, DIM);
-            let mut tree = DynamicKdTreeBuilder::new(DynDim(DIM), &growable)
-                .leaf_max_size(LEAF)
-                .maximum_point_count(CAP)
-                .build();
-            let mut start = 0usize;
-            for _ in 0..BATCHES {
-                let end = start + BATCH;
-                growable.set_current_n(end);
-                tree.add_points(start, end - 1);
-                start = end;
-            }
-            std::hint::black_box(tree.tree_count());
-        });
-        let cpp_ms = timed_median_ms(RUNS, || {
-            let mut oracle = RefDynIndexF32::build(&data, DIM, LEAF, CAP);
-            let mut start = 0u32;
-            for _ in 0..BATCHES {
-                let end = start + BATCH as u32;
-                oracle.set_current_n(end as usize);
-                oracle.add_points(start, end - 1);
-                start = end;
-            }
-            std::hint::black_box(oracle.tree_count());
-        });
-        rows.push(SpeedRow { workload: "dyn_add_20k_dim3_f32", rust_ms, cpp_ms });
+        let (rust, cpp) = measure_pair(
+            || {
+                let growable = GrowableFlat::new(&data, DIM);
+                let mut tree = DynamicKdTreeBuilder::new(DynDim(DIM), &growable)
+                    .leaf_max_size(LEAF)
+                    .maximum_point_count(CAP)
+                    .build();
+                let mut start = 0usize;
+                for _ in 0..BATCHES {
+                    let end = start + BATCH;
+                    growable.set_current_n(end);
+                    tree.add_points(start, end - 1);
+                    start = end;
+                }
+                std::hint::black_box(tree.tree_count());
+            },
+            || {
+                let mut oracle = RefDynIndexF32::build(&data, DIM, LEAF, CAP);
+                let mut start = 0u32;
+                for _ in 0..BATCHES {
+                    let end = start + BATCH as u32;
+                    oracle.set_current_n(end as usize);
+                    oracle.add_points(start, end - 1);
+                    start = end;
+                }
+                std::hint::black_box(oracle.tree_count());
+            },
+            BUDGET_S,
+        );
+        rows.push(SpeedRow { workload: "dyn_add_20k_dim3_f32", rust, cpp });
     }
 
     // ---- M2 Task 5: perf_gate_dyn_knn_after_churn_dim3_f32 (same workload
@@ -380,27 +408,30 @@ fn speed_rows() -> Vec<SpeedRow> {
             cpp_tree.add_points(idx as u32, idx as u32);
         }
 
-        let rust_ms = timed_median_ms(RUNS, || {
-            let mut rr = RoundRobin::new(&q, DIM);
-            let mut out_idx = vec![0u32; K];
-            let mut out_dist = vec![0.0f32; K];
-            for _ in 0..N_QUERIES {
-                let query = std::hint::black_box(rr.next());
-                let found = rust_tree.knn_search(query, &mut out_idx, &mut out_dist);
-                std::hint::black_box(found);
-            }
-        });
-        let cpp_ms = timed_median_ms(RUNS, || {
-            let mut rr = RoundRobin::new(&q, DIM);
-            let mut out_idx = vec![0u32; K];
-            let mut out_dist = vec![0.0f32; K];
-            for _ in 0..N_QUERIES {
-                let query = std::hint::black_box(rr.next());
-                let found = cpp_tree.knn_into(query, K, 0.0, &mut out_idx, &mut out_dist);
-                std::hint::black_box(found);
-            }
-        });
-        rows.push(SpeedRow { workload: "dyn_knn_after_churn_dim3_f32", rust_ms, cpp_ms });
+        let (rust, cpp) = measure_pair(
+            || {
+                let mut rr = RoundRobin::new(&q, DIM);
+                let mut out_idx = vec![0u32; K];
+                let mut out_dist = vec![0.0f32; K];
+                for _ in 0..N_QUERIES {
+                    let query = std::hint::black_box(rr.next());
+                    let found = rust_tree.knn_search(query, &mut out_idx, &mut out_dist);
+                    std::hint::black_box(found);
+                }
+            },
+            || {
+                let mut rr = RoundRobin::new(&q, DIM);
+                let mut out_idx = vec![0u32; K];
+                let mut out_dist = vec![0.0f32; K];
+                for _ in 0..N_QUERIES {
+                    let query = std::hint::black_box(rr.next());
+                    let found = cpp_tree.knn_into(query, K, 0.0, &mut out_idx, &mut out_dist);
+                    std::hint::black_box(found);
+                }
+            },
+            BUDGET_S,
+        );
+        rows.push(SpeedRow { workload: "dyn_knn_after_churn_dim3_f32", rust, cpp });
     }
 
     rows
@@ -751,6 +782,36 @@ fn json_escape(s: &str) -> String {
     out
 }
 
+/// One side's `xval::TimingStats` as a nested JSON object -- field names
+/// mirror the struct 1:1 (`mean_ms`/`std_ms`/`median_ms`/`min_ms`/`max_ms`/
+/// `n`).
+fn timing_stats_json(s: &TimingStats) -> String {
+    format!(
+        "{{ \"mean_ms\": {}, \"std_ms\": {}, \"median_ms\": {}, \"min_ms\": {}, \"max_ms\": {}, \"n\": {} }}",
+        json_num(s.mean_ms),
+        json_num(s.std_ms),
+        json_num(s.median_ms),
+        json_num(s.min_ms),
+        json_num(s.max_ms),
+        s.n
+    )
+}
+
+/// Standard error of `ratio_means` (`rust.mean_ms / cpp.mean_ms`) via
+/// first-order (delta-method) error propagation over each side's OWN
+/// standard error OF THE MEAN (`std_ms / sqrt(n)` -- NOT the raw per-rep
+/// `std_ms`, which describes single-rep-to-rep variability, not the
+/// precision of the mean ESTIMATE itself). Assumes rust/cpp are
+/// independent (true here: separate `measure_pair` timed loops, no shared
+/// random draw between the two sides).
+fn ratio_means_std(rust: &TimingStats, cpp: &TimingStats) -> f64 {
+    let ratio = rust.mean_ms / cpp.mean_ms;
+    let sem_rust = rust.std_ms / (rust.n as f64).sqrt();
+    let sem_cpp = cpp.std_ms / (cpp.n as f64).sqrt();
+    let rel_var = (sem_rust / rust.mean_ms).powi(2) + (sem_cpp / cpp.mean_ms).powi(2);
+    ratio * rel_var.sqrt()
+}
+
 /// One accuracy row's JSON object, conditionally including the dynamic-row
 /// evidence fields (`live_count`/`removed_count`/the four `dyn_ops_stats`
 /// op-kind totals) only when `dyn_evidence` is `Some` -- i.e. only for the
@@ -801,12 +862,19 @@ fn main() {
     let speed_json = speed
         .iter()
         .map(|r| {
+            let ratio_medians = r.rust.median_ms / r.cpp.median_ms;
+            let ratio_means = r.rust.mean_ms / r.cpp.mean_ms;
             format!(
-                "    {{ \"workload\": \"{}\", \"rust_ms\": {}, \"cpp_ms\": {}, \"ratio\": {} }}",
+                "    {{ \"workload\": \"{}\", \"rust\": {}, \"cpp\": {}, \"rust_ms\": {}, \"cpp_ms\": {}, \"ratio\": {}, \"ratio_means\": {}, \"ratio_means_std\": {}, \"ratio_medians\": {} }}",
                 r.workload,
-                json_num(r.rust_ms),
-                json_num(r.cpp_ms),
-                json_num(r.rust_ms / r.cpp_ms)
+                timing_stats_json(&r.rust),
+                timing_stats_json(&r.cpp),
+                json_num(r.rust.median_ms),
+                json_num(r.cpp.median_ms),
+                json_num(ratio_medians),
+                json_num(ratio_means),
+                json_num(ratio_means_std(&r.rust, &r.cpp)),
+                json_num(ratio_medians),
             )
         })
         .collect::<Vec<_>>()

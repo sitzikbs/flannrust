@@ -1061,6 +1061,143 @@ pub fn timed_median_ms<F: FnMut()>(runs: usize, mut f: F) -> f64 {
     median_of(samples_ms)
 }
 
+// ============================================================================
+// M2.6 Task 1 -- adaptive-repetition statistical timing harness. Replaces
+// the fixed median-of-7 methodology above (`timed_median_ms`/`median_of`,
+// kept as-is for their existing callers -- `tests/bench_sanity.rs`'s
+// diagnostics and `examples/m25_diag.rs` -- which this task does not
+// touch) with a budgeted, adaptive-`n` design per the M2.6 controller
+// directive: `n = clamp(10, 100, floor(budget_s*1000 / t_est_ms))`, 2
+// (timed-but-discarded) warmup reps, mean/std(sample, n-1)/median/min/max
+// all published. Gate PASS/FAIL and doc ratio claims still use the ratio
+// of MEDIANS (unchanged decision rule -- see `tests/perf_gate.rs`), now
+// computed over >=10 reps instead of 7.
+// ============================================================================
+
+/// One side's adaptive-repetition timing summary, in milliseconds.
+/// `median_ms` (not `mean_ms`) is what `tests/perf_gate.rs`'s PASS/FAIL
+/// decision and doc ratio claims are computed from -- mean/std/min/max are
+/// published alongside for statistical honesty, not used for gating.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TimingStats {
+    pub mean_ms: f64,
+    pub std_ms: f64,
+    pub median_ms: f64,
+    pub min_ms: f64,
+    pub max_ms: f64,
+    pub n: usize,
+}
+
+impl TimingStats {
+    /// Computes every field from a non-empty sample of millisecond
+    /// timings. `std_ms` is the SAMPLE standard deviation (divisor `n-1`,
+    /// Bessel-corrected) -- `0.0` for a single-element sample (zero
+    /// degrees of freedom, not a `0/0` `NaN`). Exposed as its own function
+    /// (not inlined into `measure`/`measure_pair`) so the stats math has
+    /// direct, timing-independent unit tests -- see this file's
+    /// `#[cfg(test)]` mod. Panics on an empty sample (same policy as
+    /// `median_of`).
+    pub fn from_samples(samples: &[f64]) -> Self {
+        assert!(!samples.is_empty(), "TimingStats::from_samples: empty sample");
+        let n = samples.len();
+        let mean_ms = samples.iter().sum::<f64>() / n as f64;
+        let std_ms = if n > 1 {
+            (samples.iter().map(|x| (x - mean_ms).powi(2)).sum::<f64>() / (n as f64 - 1.0)).sqrt()
+        } else {
+            0.0
+        };
+        let median_ms = median_of(samples.to_vec());
+        let min_ms = samples.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max_ms = samples.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        TimingStats { mean_ms, std_ms, median_ms, min_ms, max_ms, n }
+    }
+}
+
+/// The M2.6 adaptive repetition-count policy: `clamp(10, 100,
+/// floor(budget_s*1000 / t_est_ms))`. `t_est_ms <= 0.0` (a per-rep cost too
+/// fast for `Instant`'s clock resolution to distinguish from zero) maps to
+/// the upper bound (100) rather than dividing by zero/a negative.
+fn rep_count(budget_s: f64, t_est_ms: f64) -> usize {
+    if t_est_ms <= 0.0 {
+        return 100;
+    }
+    let raw = (budget_s * 1000.0 / t_est_ms).floor();
+    if raw < 10.0 {
+        10
+    } else if raw > 100.0 {
+        100
+    } else {
+        raw as usize
+    }
+}
+
+/// Times `f`: 2 untimed-but-clocked warmup reps (their timings seed the
+/// `t_est_ms` estimate for `rep_count`, then are discarded -- excluded
+/// from the returned `TimingStats`), then `rep_count(budget_s, t_est_ms)`
+/// timed reps via `std::time::Instant`. Times ONE side only; call
+/// `measure_pair` instead when comparing rust vs cpp so both sides are
+/// interleaved per repetition (a machine noise/thermal-drift trend would
+/// otherwise bias a "time all of A, then all of B" comparison toward
+/// whichever side happens to run first or second).
+pub fn measure<F: FnMut()>(mut f: F, budget_s: f64) -> TimingStats {
+    let start = std::time::Instant::now();
+    f();
+    let w0_ms = start.elapsed().as_secs_f64() * 1000.0;
+    let start = std::time::Instant::now();
+    f();
+    let w1_ms = start.elapsed().as_secs_f64() * 1000.0;
+
+    let n = rep_count(budget_s, (w0_ms + w1_ms) / 2.0);
+    let mut samples_ms = Vec::with_capacity(n);
+    for _ in 0..n {
+        let start = std::time::Instant::now();
+        f();
+        samples_ms.push(start.elapsed().as_secs_f64() * 1000.0);
+    }
+    TimingStats::from_samples(&samples_ms)
+}
+
+/// Interleaved pair driver: alternates `rust_fn`/`cpp_fn` PER REPETITION
+/// (warmup reps included) rather than running one side's full budget then
+/// the other's, so both sides see the same slice of any machine-noise/
+/// thermal-drift trend across the run. `budget_s` applies to EACH side
+/// (the brief's "30s per side"); the shared repetition count `n` is
+/// `rep_count(budget_s, t_est_ms)` where `t_est_ms` is the SLOWER of the
+/// two sides' own 2-warmup-rep estimates -- using the slower side keeps
+/// BOTH sides' total measured time within `budget_s` (the faster side, by
+/// definition, uses less than its own budget at that same `n`). Returns
+/// `(rust_stats, cpp_stats)`, both with the SAME `n` (warmup reps excluded
+/// from both, same as `measure`).
+pub fn measure_pair<A: FnMut(), B: FnMut()>(mut rust_fn: A, mut cpp_fn: B, budget_s: f64) -> (TimingStats, TimingStats) {
+    let mut rust_warm_ms = [0.0f64; 2];
+    let mut cpp_warm_ms = [0.0f64; 2];
+    for i in 0..2 {
+        let start = std::time::Instant::now();
+        rust_fn();
+        rust_warm_ms[i] = start.elapsed().as_secs_f64() * 1000.0;
+
+        let start = std::time::Instant::now();
+        cpp_fn();
+        cpp_warm_ms[i] = start.elapsed().as_secs_f64() * 1000.0;
+    }
+    let t_est_rust_ms = (rust_warm_ms[0] + rust_warm_ms[1]) / 2.0;
+    let t_est_cpp_ms = (cpp_warm_ms[0] + cpp_warm_ms[1]) / 2.0;
+    let n = rep_count(budget_s, t_est_rust_ms.max(t_est_cpp_ms));
+
+    let mut rust_samples_ms = Vec::with_capacity(n);
+    let mut cpp_samples_ms = Vec::with_capacity(n);
+    for _ in 0..n {
+        let start = std::time::Instant::now();
+        rust_fn();
+        rust_samples_ms.push(start.elapsed().as_secs_f64() * 1000.0);
+
+        let start = std::time::Instant::now();
+        cpp_fn();
+        cpp_samples_ms.push(start.elapsed().as_secs_f64() * 1000.0);
+    }
+    (TimingStats::from_samples(&rust_samples_ms), TimingStats::from_samples(&cpp_samples_ms))
+}
+
 /// Deterministic, order-sensitive mixing hash over `tag` and `parts` (an
 /// FNV-1a variant) -- used by `tests/xval_*.rs` to derive a `u64` seed from
 /// loop indices for each config, so every config gets its own reproducible
@@ -2376,6 +2513,134 @@ mod tests {
         });
         assert_eq!(calls.get(), 6, "expected 1 warmup + 5 timed calls");
         assert!(ms >= 0.0);
+    }
+
+    // ------------------------------------------------------------------
+    // M2.6 Task 1 -- TimingStats / rep_count / measure / measure_pair
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn timing_stats_from_samples_known_array() {
+        // Same 7-sample array as `median_of_is_robust_to_one_outlier`,
+        // minus the outlier trimmed to a clean round-numbers set so
+        // mean/std are hand-checkable: [2, 4, 4, 4, 5, 5, 7, 9] -- textbook
+        // "population std 2.0" example, sample std (n-1) is sqrt(32/7).
+        let v = vec![2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0];
+        let s = TimingStats::from_samples(&v);
+        assert_eq!(s.n, 8);
+        assert!((s.mean_ms - 5.0).abs() < 1e-9, "mean: {}", s.mean_ms);
+        // sum((x-mean)^2) = 9+1+1+1+0+0+4+16 = 32; sample std = sqrt(32/7)
+        let expected_std = (32.0f64 / 7.0).sqrt();
+        assert!((s.std_ms - expected_std).abs() < 1e-9, "std: {} expected {}", s.std_ms, expected_std);
+        // sorted: [2,4,4,4,5,5,7,9] -- even length, median = avg(4,5) = 4.5
+        assert!((s.median_ms - 4.5).abs() < 1e-9, "median: {}", s.median_ms);
+        assert_eq!(s.min_ms, 2.0);
+        assert_eq!(s.max_ms, 9.0);
+    }
+
+    #[test]
+    fn timing_stats_from_samples_single_element_has_zero_std() {
+        // n=1 has zero degrees of freedom for a SAMPLE (n-1) std -- must be
+        // 0.0, not NaN from a 0/0 division.
+        let s = TimingStats::from_samples(&[42.0]);
+        assert_eq!(s.n, 1);
+        assert_eq!(s.mean_ms, 42.0);
+        assert_eq!(s.std_ms, 0.0);
+        assert_eq!(s.median_ms, 42.0);
+        assert_eq!(s.min_ms, 42.0);
+        assert_eq!(s.max_ms, 42.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "empty sample")]
+    fn timing_stats_from_samples_empty_panics() {
+        let _ = TimingStats::from_samples(&[]);
+    }
+
+    #[test]
+    fn rep_count_clamps_at_lower_bound_10() {
+        // budget 1000ms, 500ms/rep -> raw floor = 2, clamped up to 10.
+        assert_eq!(rep_count(1.0, 500.0), 10);
+    }
+
+    #[test]
+    fn rep_count_clamps_at_upper_bound_100() {
+        // budget 30s, 1us/rep -> raw floor is enormous, clamped down to 100.
+        assert_eq!(rep_count(30.0, 0.001), 100);
+    }
+
+    #[test]
+    fn rep_count_zero_or_negative_t_est_maps_to_upper_bound() {
+        assert_eq!(rep_count(30.0, 0.0), 100);
+        assert_eq!(rep_count(30.0, -1.0), 100);
+    }
+
+    #[test]
+    fn rep_count_mid_range_is_exact_floor() {
+        // budget 1000ms, 40ms/rep -> raw floor = 25, within [10,100] so
+        // returned as-is (not clamped to either bound).
+        assert_eq!(rep_count(1.0, 40.0), 25);
+    }
+
+    #[test]
+    fn measure_runs_exactly_two_warmup_plus_n_timed_calls() {
+        use std::cell::Cell;
+        let calls = Cell::new(0u32);
+        let stats = measure(
+            || {
+                calls.set(calls.get() + 1);
+            },
+            30.0,
+        );
+        // Warmup reps are excluded from the returned stats' `n` and from
+        // its sample set -- total calls must be exactly 2 (warmup) + n
+        // (timed), never conflated.
+        assert_eq!(calls.get() as usize, 2 + stats.n, "expected 2 warmup + n timed calls, got {}", calls.get());
+        assert!((10..=100).contains(&stats.n), "n out of policy bounds: {}", stats.n);
+    }
+
+    #[test]
+    fn measure_pair_interleaves_and_excludes_warmup_from_both_sides() {
+        use std::cell::Cell;
+        let rust_calls = Cell::new(0u32);
+        let cpp_calls = Cell::new(0u32);
+        let (rust_stats, cpp_stats) = measure_pair(
+            || {
+                rust_calls.set(rust_calls.get() + 1);
+            },
+            || {
+                cpp_calls.set(cpp_calls.get() + 1);
+            },
+            30.0,
+        );
+        assert_eq!(rust_stats.n, cpp_stats.n, "measure_pair must use the SAME n for both interleaved sides");
+        assert_eq!(rust_calls.get() as usize, 2 + rust_stats.n);
+        assert_eq!(cpp_calls.get() as usize, 2 + cpp_stats.n);
+        assert!((10..=100).contains(&rust_stats.n));
+    }
+
+    #[test]
+    fn measure_pair_orders_calls_interleaved_not_batched() {
+        // Records which side fired on every call (warmup AND timed); an
+        // interleaved driver alternates R,C,R,C,... throughout -- a
+        // "warmup both, then time both sequentially" implementation would
+        // instead produce a run of R's followed by a run of C's.
+        use std::cell::RefCell;
+        let order: RefCell<Vec<char>> = RefCell::new(Vec::new());
+        let (rust_stats, _cpp_stats) = measure_pair(
+            || order.borrow_mut().push('R'),
+            || order.borrow_mut().push('C'),
+            // Tiny budget + a real (if trivial) closure body keeps n at the
+            // policy floor (10) so this test stays fast and the alternation
+            // check below stays cheap.
+            1e-6,
+        );
+        let seq = order.borrow();
+        assert_eq!(seq.len(), 2 * (2 + rust_stats.n), "expected interleaved R,C pairs for warmup+timed reps");
+        for (i, &c) in seq.iter().enumerate() {
+            let expected = if i % 2 == 0 { 'R' } else { 'C' };
+            assert_eq!(c, expected, "call order not interleaved at position {i}: {:?}", *seq);
+        }
     }
 
     // ------------------------------------------------------------------

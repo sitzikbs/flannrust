@@ -53,12 +53,37 @@ struct Meta {
     wsl: Option<bool>,
 }
 
+/// A deliberately loose subset of `xval::TimingStats` -- only the three
+/// fields `render_speed_rows` actually displays (`mean_ms`/`std_ms`/`n`;
+/// `median_ms`/`min_ms`/`max_ms` are present in the real JSON, emitted by
+/// `report_data.rs`'s `timing_stats_json`, but simply ignored here since
+/// `SpeedRow.rust_ms`/`cpp_ms` already carry the median -- see serde's
+/// default "ignore unknown JSON fields" behavior). `Option`al on `SpeedRow`
+/// (below) so a pre-M2.6 report.json (only `rust_ms`/`cpp_ms`/`ratio`, no
+/// nested stats objects) still parses; `render_speed_rows` falls back to
+/// the plain median-only display when absent.
+#[derive(Debug, Deserialize)]
+struct SpeedStats {
+    mean_ms: f64,
+    std_ms: f64,
+    n: u64,
+}
+
 #[derive(Debug, Deserialize)]
 struct SpeedRow {
     workload: String,
+    /// Kept as the MEDIAN (per M2.6 -- see `report_data.rs`'s module doc):
+    /// gate PASS/FAIL and the bar geometry below both key off medians, not
+    /// means.
     rust_ms: f64,
     cpp_ms: f64,
     ratio: f64,
+    #[serde(default)]
+    rust: Option<SpeedStats>,
+    #[serde(default)]
+    cpp: Option<SpeedStats>,
+    #[serde(default)]
+    ratio_medians: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -549,45 +574,79 @@ fn render_tiles(accuracy: &[AccuracyRow], speed: &[SpeedRow]) -> String {
 }
 
 /// Horizontal diverging bars around a parity midline: bar side/color by
-/// who's faster (`ratio = rust_ms / cpp_ms`; `< 1.0` is rust-faster, `>
-/// 1.0` is cpp-faster), width proportional to `|1 - ratio|` scaled so a
-/// 70% difference (`ratio` 0.3 or 1.7) fills the full half-track (50%),
-/// capped beyond that with a visible annotation (the numeric value column
-/// always shows the true, uncapped ratio regardless).
+/// who's faster (`ratio` -- `< 1.0` is rust-faster, `> 1.0` is cpp-faster;
+/// M2.6: this is `ratio_medians` when the row carries it, else the legacy
+/// `ratio` field -- see `render_speed_rows`'s bar-geometry comment), width
+/// proportional to `|1 - ratio|` scaled so a 70% difference (`ratio` 0.3 or
+/// 1.7) fills the full half-track (50%), capped beyond that with a visible
+/// annotation (the numeric value column always shows the true, uncapped
+/// ratio regardless).
+///
+/// M2.6: when a row carries the new `rust`/`cpp` `TimingStats` objects, the
+/// tooltip and bar-value cell additionally show `mean &plusmn; std (n=N)`
+/// for BOTH sides -- the bar's geometry itself still keys off the ratio of
+/// MEDIANS (gate decisions and doc ratio claims are median-based, not
+/// mean-based -- see `report_data.rs`'s module doc). A pre-M2.6 row
+/// (`rust`/`cpp` both `None`) falls back to the original plain
+/// `ratio (rust ms / cpp ms)` display unchanged.
 fn render_speed_rows(speed: &[SpeedRow]) -> String {
     speed
         .iter()
         .map(|r| {
-            let diff = (1.0 - r.ratio).abs();
+            let ratio = r.ratio_medians.unwrap_or(r.ratio);
+            let diff = (1.0 - ratio).abs();
             let capped = diff > 0.7;
             let pct = (diff / 0.7).min(1.0) * 50.0;
-            let (side_class, style) = if r.ratio < 1.0 {
+            let (side_class, style) = if ratio < 1.0 {
                 ("rust", format!("width:{pct:.2}%; right:50%;"))
-            } else if r.ratio > 1.0 {
+            } else if ratio > 1.0 {
                 ("cpp", format!("width:{pct:.2}%; left:50%;"))
             } else {
                 ("rust", "width:0%; right:50%;".to_string())
             };
             let cap_note =
                 if capped { r#"<span class="capped-note">capped at &plusmn;70%</span>"# } else { "" };
+            // Raw HTML (goes directly into the bar-value `<div>`, not
+            // through `html_escape`) -- entities, matching the rest of
+            // this function's markup.
+            let stats_suffix = match (&r.rust, &r.cpp) {
+                (Some(rs), Some(cs)) => format!(
+                    " | rust {:.3}&plusmn;{:.3}&nbsp;ms&nbsp;(n={}) &middot; cpp {:.3}&plusmn;{:.3}&nbsp;ms&nbsp;(n={})",
+                    rs.mean_ms, rs.std_ms, rs.n, cs.mean_ms, cs.std_ms, cs.n
+                ),
+                _ => String::new(),
+            };
+            // Plain Unicode (this text is built THEN passed through
+            // `html_escape` below, which escapes `&` -- an HTML entity
+            // string here would come out as literal "&plusmn;" text, not
+            // the "\u{b1}" glyph, so this variant uses the raw characters
+            // directly instead of reusing `stats_suffix`).
+            let tooltip_stats_suffix = match (&r.rust, &r.cpp) {
+                (Some(rs), Some(cs)) => format!(
+                    " | rust {:.3}\u{b1}{:.3} ms (n={}) \u{b7} cpp {:.3}\u{b1}{:.3} ms (n={})",
+                    rs.mean_ms, rs.std_ms, rs.n, cs.mean_ms, cs.std_ms, cs.n
+                ),
+                _ => String::new(),
+            };
             let tooltip = html_escape(&format!(
-                "{}: ratio {:.3} (rust {:.3} ms / cpp {:.3} ms)",
-                r.workload, r.ratio, r.rust_ms, r.cpp_ms
+                "{}: ratio_medians {:.3} (rust median {:.3} ms / cpp median {:.3} ms){}",
+                r.workload, ratio, r.rust_ms, r.cpp_ms, tooltip_stats_suffix
             ));
             format!(
                 r#"<div class="bar-row" title="{tooltip}">
 <div class="bar-label">{workload}</div>
 <div class="track"><div class="parity-line"></div><div class="bar {side_class}" style="{style}"></div></div>
-<div class="bar-value">{ratio:.3}&middot;{rust_ms:.3}&nbsp;ms&nbsp;/&nbsp;{cpp_ms:.3}&nbsp;ms{cap_note}</div>
+<div class="bar-value">{ratio:.3}&middot;{rust_ms:.3}&nbsp;ms&nbsp;/&nbsp;{cpp_ms:.3}&nbsp;ms{cap_note}{stats_suffix}</div>
 </div>"#,
                 tooltip = tooltip,
                 workload = html_escape(&r.workload),
                 side_class = side_class,
                 style = style,
-                ratio = r.ratio,
+                ratio = ratio,
                 rust_ms = r.rust_ms,
                 cpp_ms = r.cpp_ms,
                 cap_note = cap_note,
+                stats_suffix = stats_suffix,
             )
         })
         .collect::<Vec<_>>()

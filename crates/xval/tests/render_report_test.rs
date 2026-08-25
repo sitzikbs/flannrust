@@ -236,3 +236,70 @@ fn render_rejects_malformed_json() {
     let msg = err.to_string();
     assert!(!msg.is_empty(), "render error should carry a message");
 }
+
+// ============================================================================
+// M2.6 Task 1 -- new `rust`/`cpp` `TimingStats` objects + `ratio_means`/
+// `ratio_means_std`/`ratio_medians` on a speed row. Deliberately makes the
+// legacy `ratio` field (2.0, cpp-faster) DISAGREE with `ratio_medians`
+// (0.5, rust-faster) -- a real report_data.rs emission never does this
+// (both are median-derived and equal -- see that file's module doc), but
+// it is exactly the right adversarial fixture to prove the renderer's bar
+// geometry actually keys off `ratio_medians`, not the legacy `ratio` key,
+// per the brief ("keep the bar on the median ratio").
+// ============================================================================
+
+const STATS_FIXTURE: &str = r#"{
+  "meta": {
+    "date": "2026-08-24T00:00:00Z",
+    "nanoflann_version": "1.12.1",
+    "rustc": "rustc 1.98.0",
+    "cpu_threads": 8,
+    "target_cpu_native": true,
+    "m2_dynamic": true,
+    "cpu_model": "Test CPU",
+    "kernel": "Linux test",
+    "cxx_compiler": "g++ 12",
+    "git_sha": "abc1234",
+    "wsl": false,
+    "scoring": "SCORING",
+    "gt_methodology": "GT",
+    "speed_methodology": "SPEED"
+  },
+  "speed": [
+    { "workload": "stats_row_dim3", "rust_ms": 20.000000, "cpp_ms": 10.000000, "ratio": 2.000000,
+      "rust": { "mean_ms": 21.000000, "std_ms": 1.500000, "median_ms": 20.000000, "min_ms": 18.000000, "max_ms": 24.000000, "n": 100 },
+      "cpp": { "mean_ms": 42.000000, "std_ms": 2.500000, "median_ms": 10.000000, "min_ms": 9.000000, "max_ms": 45.000000, "n": 100 },
+      "ratio_means": 0.500000, "ratio_means_std": 0.050000, "ratio_medians": 0.500000 }
+  ],
+  "accuracy": [
+    { "workload": "uniform_dim3_f32_k10_eps0", "n_queries": 2000, "rust_exact_tie_aware_vs_bruteforce": 1.000000, "cpp_exact_tie_aware_vs_bruteforce": 1.000000, "rust_eq_cpp_bitexact": true, "mean_dist_rel_error_rust": 0.000000, "max_dist_rel_error_rust": 0.000000, "mean_dist_rel_error_cpp": 0.000000, "max_dist_rel_error_cpp": 0.000000 }
+  ]
+}"#;
+
+#[test]
+fn render_speed_row_shows_mean_std_n_for_both_sides() {
+    let html = xval::render(STATS_FIXTURE).expect("render should succeed");
+    assert!(html.contains("21.000") && html.contains("1.500"), "missing rust mean/std");
+    assert!(html.contains("42.000") && html.contains("2.500"), "missing cpp mean/std");
+    assert!(html.matches("n=100").count() >= 2, "expected n=100 to appear for BOTH sides:\n\n{html}");
+}
+
+#[test]
+fn render_speed_bar_geometry_uses_ratio_medians_not_legacy_ratio() {
+    // Fixture's legacy `ratio` is 2.0 (would render `class="bar cpp"` if
+    // used); `ratio_medians` is 0.5 (rust-faster) -- the bar MUST reflect
+    // the median ratio, not the legacy field.
+    let html = xval::render(STATS_FIXTURE).expect("render should succeed");
+    assert!(html.contains(r#"class="bar rust""#), "bar geometry did not use ratio_medians (0.5, rust-faster)");
+    assert!(!html.contains(r#"class="bar cpp""#), "bar geometry wrongly used the legacy ratio (2.0, cpp-faster)");
+}
+
+#[test]
+fn render_speed_row_without_stats_still_renders_legacy_display() {
+    // Backward compatibility: a pre-M2.6 report.json (no `rust`/`cpp`
+    // nested stats objects) must still render successfully via the
+    // original plain-ratio display -- this is `FIXTURE` (declared above),
+    // untouched by this task.
+    let html = xval::render(FIXTURE).expect("render should succeed on a pre-M2.6 (no stats objects) document");
+    assert!(!html.contains("(n="), "pre-M2.6 fixture has no TimingStats -- must not fabricate an n= display");
+}
