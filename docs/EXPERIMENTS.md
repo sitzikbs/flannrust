@@ -79,6 +79,17 @@ itself the gate's internal median-of-7; M1's ±5-10% and its 7-run
 older, smaller samples of the same phenomenon, also kept as historical
 text.
 
+**Update (M2.6 task 7, 2026-08-25): re-confirmed on the idle host.** The
+task 2 sessions behind this floor fell inside the window a background
+game process may have contaminated (§3's "Measurement-conditions
+protocol" incident, below); 4 fresh, loadavg-bracketed `knn_fixed3`
+sessions were re-run on a confirmed-idle host to check. Their own
+conservative envelope computes to **0.884–1.176** — slightly *wider*
+than 0.94–1.16, not narrower — so there is no evidence the recorded
+figure was inflated by the contamination. **0.94–1.16 is kept as the
+canonical floor, unchanged.** Full derivation: §3's "M2.6 task 7"
+subsection.
+
 **`dyn_add_20k_dim3_f32`** (workload unchanged by the M2 final-review fix
 wave): eight re-runs total across two documentation rounds — four from an
 earlier round (§3 has the pasted outputs) plus four fresh runs from this
@@ -1535,6 +1546,15 @@ across the ~67-70s single-process sweep (dim-64 runs last in each session,
 after dim-8/16/32 already ran), not investigated further here (out of this
 task's scope — flagged, not chased). Item (a) below addresses dim-32 f32
 specifically, the one M2.6 controller-listed conclusion this affects.
+**Update (M2.6 task 7):** these two sessions fell inside the window a
+background game process may have contaminated; a fresh idle-host
+re-measurement (§3's "M2.6 task 7" subsection) CONFIRMED dim-32 f32 and
+dim-8/16, and CORRECTED dim-32 f64/dim-64 f32/dim-64 f64 wider relative
+to the still-published pre-M2.6 headline for those three rows — the
+"thermal drift" flag above is corroborated, not resolved: the fresh
+idle-host dim-64 pair still shows a ~9-point session-to-session spread
+under confirmed-idle conditions, so dim-64's variance is not solely a
+contamination artifact.
 
 **`count` subcommand** (`RUSTFLAGS="-C target-cpu=native" cargo run -p xval --release --example m25_diag -- count`; deterministic — a call-counting metric wrapper, not a wall-clock timing, so a second session reproduced this byte-for-byte, confirmed via `diff`):
 
@@ -1636,7 +1656,11 @@ parity-or-better" framing is superseded — the honest current range is
 0.986–1.062, "near parity, occasionally a few percent either way," not a
 guaranteed Rust win at every measurement. Not a regression (no kernel code
 changed since M2.5-T3); a wider, more honestly-sampled range from more
-repetitions per session (15 vs. 7).
+repetitions per session (15 vs. 7). **Update (M2.6 task 7): CONFIRMED** —
+a fresh idle-host 2-session re-run nests inside 0.986–1.062 (1.007–1.021);
+this row was flagged for re-measurement because task 2's own sessions fell
+inside the game-load-contaminated window, and the fresh idle-host data
+holds — see "M2.6 task 7" subsection below.
 
 **(b) M2.5 T2 give-back A/B (radius ~0.83, dim8 f64 back to the pre-M2.5
 band).** **CORRECTED**, in both directions:
@@ -1679,6 +1703,8 @@ medians 1.030–1.067 (n=4 sessions), per-session per-rep ratio σ≈0.03–0.05
 (delta-method, n=100/side), and a conservative envelope of 0.94–1.16
 (extreme session medians ± 2×max per-session σ — not a grand mean±2σ). Old
 0.956–1.192 (8 runs, median-of-7 each) kept as historical, superseded.
+**Update (M2.6 task 7): re-confirmed on the idle host**, 0.94–1.16
+unchanged — see "M2.6 task 7" subsection below.
 
 **(f) `dyn_add` range "1.11–1.24."** **CONFIRMED, narrowed.** 4 fresh n=100
 sessions range **1.112–1.149** (gate 1.141/1.149; report-chain 1.112/1.124)
@@ -2499,6 +2525,285 @@ the time of this sweep.
 
 Success-criteria verdict for the M2.6 milestone as a whole: `docs/benchmarks.md`'s new "M2.6 task 6 — success-criteria verdict" table.
 
+### M2.6 task 7: user-directed idle-host re-measurement of the dim sweep and the noise envelope (measured at commit `2a95b82`, 2026-08-25)
+
+User-directed follow-up, run after task 6's own idle-host sweep. Two data
+sets recorded during the game-load-contaminated window (§1's
+"Measurement-conditions protocol" motivating incident) were never
+independently re-measured by task 6: the `m25_diag knn` dim-8/16/32/64
+sweep (task 2's own 2 sessions, "M2.6 task 2" subsection above) and the
+`knn_fixed3` noise envelope (also task 2's own 4 sessions, the "new
+canonical floor" 0.94–1.16). This task re-measures both fresh on the idle
+host, brackets every session with `/proc/loadavg`, and states each
+affected figure **CONFIRMED** (fresh data reproduces the recorded range)
+or **CORRECTED** (fresh data moves it materially). No library code
+changed. Environment identical to every other M2.6 subsection: WSL2,
+`export PATH="$HOME/.cargo/bin:$PATH"`, `RUSTFLAGS="-C target-cpu=native"`,
+cargo/rustc 1.98.0, `nproc=8`.
+
+#### `m25_diag knn`, 2 fresh idle-host sessions
+
+Same command/methodology as "M2.6 task 2" above (`RUSTFLAGS="-C
+target-cpu=native" cargo run -p xval --release --example m25_diag -- knn`,
+n=100k, 200 queries, k=10, leaf=10, median of 15 — `RUNS` unchanged since
+task 2's bump):
+
+```
+LOADAVG_BEFORE: 0.33 0.34 0.51 2/643 611708
+dim,scalar,rust_ms,cpp_ms,ratio
+8,f32,3.272,3.478,0.941
+8,f64,3.430,3.699,0.927
+16,f32,77.735,115.239,0.675
+16,f64,91.149,97.875,0.931
+32,f32,208.988,204.722,1.021
+32,f64,347.695,315.004,1.104
+64,f32,408.679,344.589,1.186
+64,f64,674.980,764.261,0.883
+LOADAVG_AFTER: 1.20 0.59 0.58 2/641 612547
+```
+
+```
+LOADAVG_BEFORE: 0.66 0.52 0.56 2/646 612633
+dim,scalar,rust_ms,cpp_ms,ratio
+8,f32,3.593,3.834,0.937
+8,f64,3.385,3.636,0.931
+16,f32,76.919,114.298,0.673
+16,f64,90.335,97.243,0.929
+32,f32,205.979,204.475,1.007
+32,f64,351.356,319.460,1.100
+64,f32,320.759,292.786,1.096
+64,f64,625.639,674.282,0.928
+LOADAVG_AFTER: 0.87 0.60 0.58 1/646 613249
+```
+
+Both sessions' `LOADAVG_BEFORE`/`LOADAVG_AFTER` 1-minute averages stay
+under 1.2 (`nproc=8`) — host confirmed idle throughout (the 1.20 reading
+after session 1 is this run's own compile+sweep, the same "brief
+post-run scheduler blip" pattern task 5/6 documented, not a foreign load).
+
+#### Comparison: task 2 (possibly-contaminated) vs. task 7 (fresh idle-host) vs. currently-published headline
+
+| dim | scalar | task 2 (2 sessions) | task 7 (2 fresh sessions) | combined (4 sessions) | currently-published headline | verdict |
+|---|---|---|---|---|---|---|
+| 8 | f32 | 0.937–0.950 | 0.937–0.941 | 0.937–0.950 | (diagnostic row only, no separate headline) | CONFIRMED |
+| 8 | f64 | 0.909–0.932 | 0.927–0.931 | 0.909–0.932 | (diagnostic row only) | CONFIRMED |
+| 16 | f32 | 0.682/0.682 | 0.673/0.675 | 0.673–0.682 | mechanism-only, no ratio headline (conclusion (d)) | CONFIRMED |
+| 16 | f64 | 0.940/0.942 | 0.929/0.931 | 0.929–0.942 | mechanism-only, no ratio headline (conclusion (d)) | CONFIRMED |
+| 32 | f32 | 0.986–1.062 | 1.007–1.021 | 0.986–1.062 | "0.986–1.062, straddles parity" (M2.6 task 2 conclusion (a)) | CONFIRMED |
+| 32 | f64 | 1.080–1.094 | 1.100–1.104 | **1.080–1.104** | "1.103–1.111" / "~1.10–1.11x" (T4, pre-M2.6) | CORRECTED |
+| 64 | f32 | 1.082–1.235 | 1.096–1.186 | **1.082–1.235** | "1.162–1.171" / "1.16–1.23x across T3+T4 runs" (T3/T4, pre-M2.6) | CORRECTED |
+| 64 | f64 | 0.862–0.956 | 0.883–0.928 | **0.862–0.956** | "0.879–0.887" (T4, pre-M2.6) | CORRECTED |
+
+**dim-8, dim-16, dim-32 f32: CONFIRMED, no doc changes needed.** Both
+fresh sessions nest inside (dim-8, dim-32 f32) or land within
+0.007–0.011 of (dim-16, both scalars — a smaller gap than the recorded
+sessions' own 0/0.002 session-to-session spread at dim-16 f64) their task
+2 counterparts. dim-32 f32's "straddles parity" framing (conclusion (a))
+is reaffirmed by the combined 4-session record even though this task's
+own fresh pair alone stayed just above parity (1.007–1.021) — consistent
+with, not contradicting, the wider straddle the 4-session record shows.
+dim-16's curse-of-dimensionality mechanism (`frac_points_scanned`
+0.0176→0.4875, conclusion (d)) is unaffected — per the brief, that
+mechanism is load-independent; only the ratios were re-checked here, and
+they hold.
+
+**dim-32 f64, dim-64 f32, dim-64 f64: CORRECTED.** These three rows were
+never covered by an M2.6-task-2 conclusion (item (a) explicitly scoped
+itself to dim-32 f32 only, "the one M2.6 controller-listed conclusion this
+[dim sweep] affects" — "M2.6 task 2" subsection above) — the
+currently-published headline for all three still traces to T3/T4's
+pre-M2.6, median-of-7, 2-session sweep. This task's fresh median-of-15
+data, combined with task 2's own (also median-of-15, also 2-session) raw
+CSV, gives a materially wider picture than the T3/T4 headline for all
+three:
+
+- **dim-32 f64**: combined range **1.080–1.104** vs. the published
+  "1.103–1.111" / "~1.10–1.11x" — the low end drops by ~2 percentage
+  points below the published floor. Order of magnitude (~1.08–1.10x, a
+  modest, not-closed-to-parity residual) is unaffected; only the specific
+  bounds are corrected wider.
+- **dim-64 f32**: combined range **1.082–1.235** vs. the published
+  "1.162–1.171" / "1.16–1.23x across T3+T4 runs" — the low end drops well
+  below the published floor (1.082 vs. 1.162, a ~7-point gap), though the
+  high end (1.235) sits inside the T3/T4 narrative's own upper bound
+  (1.23x). This row was already flagged, in the "M2.6 task 2" subsection
+  above, as swinging considerably more session-to-session than dim-3/8/16
+  ever do, "plausibly cumulative thermal drift... not investigated
+  further" — this task's own fresh pair (1.096–1.186, a ~9-point spread
+  on its own, under confirmed-idle-host conditions) corroborates that
+  dim-64 is inherently higher-variance on this host, not solely a
+  contamination artifact: even with the game-load explanation ruled out
+  for this task's sessions, the spread persists. Not chased further here
+  (out of this task's scope — a fifth/sixth confirmatory session, or an
+  investigation of why dim-64 (which runs last in the sweep, longest
+  per-rep) is noisier than the other rows, would be needed to narrow this
+  further).
+- **dim-64 f64**: combined range **0.862–0.956** vs. the published
+  "0.879–0.887" — widens on both ends (0.862 below, 0.956 above), the
+  same high-variance pattern as dim-64 f32 above (same workload,
+  different scalar).
+
+None of these three corrections change the qualitative reading published
+elsewhere ("improved substantially, not closed to parity" for dim-32 f64/
+dim-64 f32; "under parity" for dim-64 f64) — only the specific numeric
+bounds widen. Every doc citing the old bounds is updated with an "Update
+(M2.6 task 7)" banner below; historical pasted blocks (the T3/T4 sweep
+rows themselves) are left untouched, per house style.
+
+#### Noise-envelope re-characterization: 4 fresh `knn_fixed3` gate sessions
+
+`PERF_GATE=1 RUSTFLAGS="-C target-cpu=native" cargo test -p xval --release
+--test perf_gate -- --ignored perf_gate_knn_dim3 --test-threads=1
+--nocapture` (the `perf_gate_knn_dim3` filter matches exactly one test,
+`perf_gate_knn_dim3_f32_k10` — the gate this repo calls `knn_fixed3`;
+confirmed via `grep -n "fn perf_gate" crates/xval/tests/perf_gate.rs`
+before running). Spread across this task's duration rather than
+back-to-back, per the brief — sessions interleaved with the `m25_diag`
+work and doc-editing above/below:
+
+```
+LOADAVG_BEFORE: 0.72 0.53 0.56 1/645 612607
+PERF_GATE perf_gate_knn_dim3_f32_k10: rust=7.222ms cpp=6.989ms ratio=1.033 | rust mean=7.345 std=0.315 n=100 | cpp mean=7.084 std=0.266 n=100 | ratio_medians=1.033
+LOADAVG_AFTER: 0.72 0.53 0.56 1/645 612623
+```
+
+```
+LOADAVG_BEFORE: 0.75 0.59 0.57 1/615 614505
+PERF_GATE perf_gate_knn_dim3_f32_k10: rust=7.167ms cpp=6.924ms ratio=1.035 | rust mean=7.260 std=0.276 n=100 | cpp mean=7.023 std=0.286 n=100 | ratio_medians=1.035
+LOADAVG_AFTER: 0.75 0.59 0.57 3/621 614591
+```
+
+```
+LOADAVG_BEFORE: 0.29 0.49 0.54 1/614 615942
+PERF_GATE perf_gate_knn_dim3_f32_k10: rust=7.189ms cpp=7.010ms ratio=1.025 | rust mean=7.310 std=0.371 n=100 | cpp mean=7.075 std=0.325 n=100 | ratio_medians=1.025
+LOADAVG_AFTER: 0.29 0.49 0.54 1/623 616034
+```
+
+```
+LOADAVG_BEFORE: 0.20 0.41 0.51 2/621 618182
+PERF_GATE perf_gate_knn_dim3_f32_k10: rust=7.196ms cpp=6.996ms ratio=1.029 | rust mean=7.255 std=0.200 n=100 | cpp mean=7.011 std=0.127 n=100 | ratio_medians=1.029
+LOADAVG_AFTER: 0.20 0.41 0.51 1/632 618247
+```
+
+All four 1-minute loadavg readings stay at or below 0.75 — comfortably
+idle throughout, well under `nproc=8`, no reading anywhere near the 2.10
+peak task 6 saw after its own report-chain run.
+
+| session | ratio (medians) | rust mean±std ms (n=100) | cpp mean±std ms (n=100) | approx. per-rep ratio σ¹ |
+|---|---|---|---|---|
+| fresh 1 | 1.033 | 7.345±0.315 | 7.084±0.266 | 0.0591 |
+| fresh 2 | 1.035 | 7.260±0.276 | 7.023±0.286 | 0.0576 |
+| fresh 3 | 1.025 | 7.310±0.371 | 7.075±0.325 | **0.0707** |
+| fresh 4 | 1.029 | 7.255±0.200 | 7.011±0.127 | 0.0341 |
+
+¹ same delta-method formula as the "M2.6 task 2" noise-floor
+sub-subsection above: `ratio_of_means * sqrt((std_rust/mean_rust)^2 +
+(std_cpp/mean_cpp)^2)`.
+
+**Reading.** The four fresh session medians span **1.025–1.035** (mean
+1.0305, session-to-session sample std 0.0044, n=4) — markedly tighter
+than task 2's own 1.030–1.067 (session-to-session sample std 0.019, n=4):
+this fresh batch's session-to-session spread is roughly 4.3x smaller.
+Within any one fresh session, the per-repetition ratio's estimated σ
+(table above) runs **0.0341–0.0707** — its *maximum* (0.0707, fresh
+session 3) is notably **larger**, not smaller, than task 2's own maximum
+(0.046), so the extreme-session-medians-±-2×max-σ formula (same formula,
+same labeling as task 2's relabel: "extreme session medians ± 2×max
+per-session σ", not a grand mean±2σ over a pooled distribution) does not
+shrink the envelope — it widens it:
+
+- Extreme fresh session medians: **1.025** (session 3) and **1.035**
+  (session 2).
+- Max per-session σ this batch: **0.0707** (session 3, the same session
+  that also happens to hold the lowest median).
+- Fresh conservative envelope: **1.025 − 2×0.0707 = 0.884** to **1.035 +
+  2×0.0707 = 1.176** → **0.884–1.176**.
+
+Compared to the recorded canonical floor, **0.94–1.16** (task 2's
+1.030−2×0.046=0.938≈0.94 low end, 1.067+2×0.046=1.159≈1.16 high end): the
+fresh envelope (0.884–1.176) is **wider, not narrower** — width 0.292 vs.
+the recorded 0.221 (≈32% wider), with both ends moving outward (0.884 <
+0.94 on the low side, 1.176 > 1.16 on the high side, though only by
+0.016). The driver is entirely session 3's higher measured per-rep σ
+(0.0707, vs. every other fresh session's 0.0341–0.0591 and every task 2
+session's 0.032–0.046) — **not** its median (1.025 is unremarkable, well
+inside every prior recorded range) and **not** host contention: session
+3's own `LOADAVG_BEFORE`/`LOADAVG_AFTER` (0.29/0.29, the lowest 1-minute
+average of any of the four fresh sessions) rules out a sustained-load
+explanation for its wider per-rep spread. Read honestly, this is ordinary
+WSL2 single-repetition timer jitter varying session-to-session for
+reasons other than sustained background load (scheduler quantum
+placement, page-fault/TLB noise, etc.) — the same category of effect this
+whole noise-floor characterization exists to bound, not a new anomaly.
+The tighter session-median spread (0.0044 vs. 0.019 sample std) shows the
+underlying **point estimate** (median of 100 reps) is, if anything, more
+consistent session-to-session on this idle-host batch than on task 2's;
+it is specifically the worst-case single-session padding term (2×max σ)
+that pushes the envelope wider here, precisely the conservative,
+worst-case-weighted behavior the formula is designed to have.
+
+**Verdict: the canonical floor is NOT inflated by the game-load window —
+if anything, this idle-host batch's own envelope computes slightly
+wider.** There is therefore no basis to replace 0.94–1.16 with a
+narrower figure; per the brief's contingency, it is **kept as the
+canonical floor, re-confirmed on the idle host, not replaced.** All four
+fresh session medians (1.025–1.035) sit comfortably inside 0.94–1.16, as
+does every prior gate/report-chain session this milestone (task 2 through
+task 6, all of which also passed the ≤1.25 gate margin). The recorded
+0.94–1.16 remains a valid, appropriately conservative floor — in fact
+slightly *more* conservative on the low end than this fresh batch's own
+number alone would require (0.94 vs. 0.884 — the recorded figure already
+sits below this fresh batch's low end). `docs/EXPERIMENTS.md`,
+`README.md`, `docs/benchmarks.md`, and `docs/ROADMAP.md` all keep citing
+**0.94–1.16** as the canonical floor; a "re-confirmed on idle host, M2.6
+task 7" note is added at each citation below rather than a value change.
+
+#### Hygiene sweep (this task; no library code changed, so no regression expected — run to confirm)
+
+```
+$ cargo test -p xval --lib
+test result: ok. 90 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+$ cargo clippy --workspace --all-targets -- -D warnings
+Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.07s
+clean (0 warnings)
+```
+
+#### Doc updates from this task
+
+- **dim-32 f64 / dim-64 f32 / dim-64 f64 corrections**: "Update (M2.6
+  task 7)" banners added at every site citing the old T3/T4-era bounds —
+  `README.md`'s "dim-32/64 knn" section and its "M2.5 — performance
+  deep-dive" future-leads bullet, `docs/benchmarks.md`'s "dim-32/64
+  headline" section and "Honest residuals" list, `docs/ROADMAP.md`'s
+  "Future perf leads" bullet — grepped for the exact old endpoints
+  (`1.103–1.111`, `1.162–1.171`, `0.879–0.887`, `1.16–1.23`,
+  `~1.10-1.11`/`~1.10–1.11`) to find every site.
+- **Noise envelope**: "re-confirmed on idle host (M2.6 task 7)" notes
+  added at every `0.94–1.16` citation (`README.md`, `docs/benchmarks.md`
+  x4, `docs/ROADMAP.md` x2, this file's §1, conclusion (e), and the "M2.6
+  task 2" subsection above) — no value change, per the verdict above.
+- **dim-32 f32 conclusion (a)**: CONFIRMED note added at the
+  "M2.6 task 2" conclusion (a) text and its pasted-CSV callout, and at
+  README's dim-32/64 table paragraph, pointing to this task's
+  corroborating fresh session.
+- **README.md:373-380 cosmetic (deferred from task 6)**: the
+  `build_100k_dim3_f32_seq` "reproducibly split by configuration"
+  paragraph lacked an adjacent hedge even though the full correction sits
+  ~55 lines below ("`build_100k`'s ... claim is corrected here"). Added a
+  one-clause parenthetical, `(**Update (M2.6 task 6): re-hedged, did not
+  reproduce a third time — see below**)`, matching the style already used
+  in the table row two paragraphs above it.
+- `crates/xval/tests/perf_gate.rs`'s `perf_gate_knn_dim3` filter name was
+  confirmed via `grep -n "fn perf_gate"` before running, per the brief —
+  it matches exactly one test, `perf_gate_knn_dim3_f32_k10` (the
+  `knn_fixed3` gate); the brief's example command was missing `--ignored`
+  (every gate is `#[ignore]`-gated) — the working command used here
+  matches the one already pasted elsewhere in this file (line ~510).
+- Historical pasted blocks (T3/T4's own dim-32/64 sweep rows, task 2's
+  own noise-floor derivation) are **not** edited in place, per house
+  style — only new banners/notes appended.
+
 ## 5. Number provenance
 
 Every figure that appears in `README.md` or `docs/benchmarks.md` traces to
@@ -2567,6 +2872,8 @@ cite the M2.5 ranges, not these).
 | **M2.6 task 6 dim8 hedge** (deferred minor from task 5: the single flagged 0.939 dim8 excursion vs. the recorded 0.929–0.937 band is corroborated as ordinary session noise — this task's own fresh dim8 range, 0.927–0.941, straddles the recorded band on both sides by comparable or larger margins) — `docs/EXPERIMENTS.md` "M2.6 task 2"'s "no other gate moved outside its band" line, now hedged | §3 "M2.6 task 6" subsection, "dim8 hedge" | same `PERF_GATE perf_gate_knn_dyn_dim8_f64_k10` fields as the six-gate-ranges row above |
 | **M2.6 task 6 Python bench outlier resolution** (the flagged `knn_batched_dim3_f32_..._workers1` cell's 0.493/1.009 pair CONFIRMED as host-load contamination, not a new steady state — fresh idle-host re-run measures **0.688**/**1.055**, with cKDTree's absolute median (423.19ms) returning to its historical 426–430ms band; honest combined ranges now `ratio_ckdtree` **0.493–0.830**, `ratio_pynanoflann` **1.009–1.216**, both flagged outlier points kept, not deleted) — README, `docs/benchmarks.md`, `docs/EXPERIMENTS.md` "M2.6 task 3", all "Update (M2.6 task 6)" banners | `bench_py.py`, §3 "M2.6 task 6" subsection, "Python bench: full idle-host re-run and outlier resolution" | fresh `report_py_t6.json`'s `workloads[].{lib}_stats`/`ratio_ckdtree`/`ratio_pynanoflann` fields for `knn_batched_dim3_f32_k10_q200k_workers1` |
 | **M2.6 task 6 measurement-conditions protocol** (idle-host requirement, `LOADAVG_BEFORE`/`LOADAVG_AFTER` convention generalized to a standing protocol, `bench_py.py`'s new `meta.loadavg_start`/`meta.loadavg_end` fields) | §1's "Measurement-conditions protocol" subsection | `bench_py.py`'s `_loadavg()` function and its two call sites; this task's own pasted `LOADAVG_BEFORE`/`LOADAVG_AFTER` lines throughout §3 "M2.6 task 6" |
+| **M2.6 task 7 dim sweep re-measurement** (dim-32 f32 CONFIRMED 0.986–1.062; dim-32 f64/dim-64 f32/dim-64 f64 CORRECTED wider — **1.080–1.104** / **1.082–1.235** / **0.862–0.956**, superseding "1.103–1.111" / "1.16–1.23x" / "0.879–0.887" everywhere cited; dim-8/dim-16 CONFIRMED) — README "dim-32/64 knn" section, `docs/benchmarks.md` dim-32/64 headline + "Honest residuals", `docs/ROADMAP.md` future-perf-leads bullet | `cargo run -p xval --release --example m25_diag -- knn`, §3 "M2.6 task 7" subsection | stdout CSV, `dim,scalar,rust_ms,cpp_ms,ratio` rows, both fresh sessions, cross-referenced against "M2.6 task 2"'s own pasted CSV |
+| **M2.6 task 7 noise-envelope re-characterization** (4 fresh, loadavg-bracketed `knn_fixed3` gate sessions compute a conservative envelope of **0.884–1.176**, slightly wider than — not narrower than — the recorded 0.94–1.16; canonical floor kept at 0.94–1.16, re-confirmed on the idle host, not replaced) — every `0.94–1.16` citation (`README.md`, `docs/benchmarks.md` x3, `docs/ROADMAP.md` x2, this file's §1 and "M2.6 task 2") gets a "re-confirmed on idle host, M2.6 task 7" note, no value change | `PERF_GATE=1 RUSTFLAGS="-C target-cpu=native" cargo test -p xval --release --test perf_gate -- --ignored perf_gate_knn_dim3 --test-threads=1 --nocapture`, §3 "M2.6 task 7" subsection | `PERF_GATE perf_gate_knn_dim3_f32_k10: ... ratio=... | rust mean=... std=... | cpp mean=... std=...` lines, all 4 pasted sessions, `LOADAVG_BEFORE`/`LOADAVG_AFTER` on each |
 
 ## 6. See also
 

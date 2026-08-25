@@ -82,7 +82,7 @@ unrolled min/max scan matching `middleSplit_`'s actual C++ shape —
 `dyn_add` **1.112–1.149 → 1.034–1.038**, confirmed durable by T6's
 follow-up sweep (**1.0315–1.039**), bit-exact parity preserved throughout.
 
-**M2.6 milestone status: complete** (tasks 1–6, plan
+**M2.6 milestone status: complete** (tasks 1–7, plan
 `docs/superpowers/plans/2026-08-25-flannrust-m2.6-rigor.md`). Delivered:
 adaptive n=10..100 statistical methodology for both the Rust-vs-C++ gates
 and the Python bench (mean/std/median/min/max/n replacing fixed
@@ -94,12 +94,19 @@ unported behavior, dim-32/64 f64 = compiler codegen not a Rust defect,
 arena pre-reserve measured worse); a resolved Python-bench outlier
 (`docs/benchmarks.md` M-py section, "Update (M2.6 task 6)"); and a
 standing idle-host measurement-conditions protocol. Full verdict table:
-`docs/benchmarks.md`'s "M2.6 task 6" section.
+`docs/benchmarks.md`'s "M2.6 task 6" section. **Task 7 (user-directed,
+2026-08-25):** the two data sets recorded during the game-load window
+that task 6 hadn't independently re-checked — the `m25_diag` dim-32/64
+sweep and the `knn_fixed3` noise envelope — were re-measured fresh on the
+idle host; dim-32 f64/dim-64 f32/dim-64 f64 CORRECTED wider (see above),
+the 0.94–1.16 noise envelope re-confirmed unchanged (its own fresh
+4-session envelope computes slightly wider, not narrower — no evidence
+of inflation). Full evidence: `docs/EXPERIMENTS.md` "M2.6 task 7".
 
 Full sweep, provenance, and every pasted run: `docs/benchmarks.md` +
 `docs/EXPERIMENTS.md`; task reports:
 `docs/reports/m2.5/task-{1,2,3,4}-report.md`,
-`docs/superpowers/sdd/2026-08-25-flannrust-m2.6-rigor/task-{1..6}-report.md`.
+`docs/superpowers/sdd/2026-08-25-flannrust-m2.6-rigor/task-{1..7}-report.md`.
 
 **Future perf leads (explicitly NOT taken this milestone):**
 
@@ -116,7 +123,14 @@ Full sweep, provenance, and every pasted run: `docs/benchmarks.md` +
   port-fidelity change** — nothing to fix in the Rust source. A
   `RUSTFLAGS`-level 512-bit-vector experiment (a toolchain knob, not a
   code change) remains a possible future lever, still unexplored
-  (`task-4-report.md` §6).
+  (`task-4-report.md` §6). **Update (M2.6 task 7, user-directed
+  idle-host re-measurement):** both ranges CORRECTED wider — dim-64 f32
+  **1.082–1.235** (was 1.16–1.23x; this workload is inherently
+  higher-variance on this host, independent of load), dim-32 f64
+  **1.080–1.104** (was ~1.10–1.11x); dim-64 f64 (not called out in this
+  bullet before) is also CORRECTED wider, **0.862–0.956** (was
+  0.879–0.887). Qualitative read ("improved, not closed") unaffected —
+  only bounds widen (`docs/EXPERIMENTS.md` "M2.6 task 7").
 - The fixed-dim-3 residual's last ~1–4% (1.011–1.040x in T4's sweep).
   What is asm-evidenced: the walk is fully inlined, zero `search_level`
   call targets. What is not: the residual's mechanism — the T2 reviewer's
@@ -130,7 +144,12 @@ Full sweep, provenance, and every pasted run: `docs/benchmarks.md` +
   a conservative envelope of 0.94–1.16 (extreme session medians ± 2×max
   per-session σ) (`docs/EXPERIMENTS.md` "M2.6 task 2",
   superseding the old 8-run 0.956–1.192 figure, `docs/EXPERIMENTS.md`
-  "M2.5 task 1", kept as historical) — not chased further.
+  "M2.5 task 1", kept as historical) — not chased further. **Update
+  (M2.6 task 7): re-confirmed on the idle host**, 0.94–1.16 unchanged —
+  4 fresh loadavg-bracketed sessions computed a slightly *wider*, not
+  narrower, envelope (0.884–1.176), so there is no evidence this figure
+  was inflated by the game-load window (`docs/EXPERIMENTS.md` "M2.6 task
+  7").
 - A fast-math / reordered-arithmetic kernel feature flag (non-default, own
   accuracy docs, never in parity suites) — remains an unexplored idea, no
   code written.
@@ -194,7 +213,7 @@ Goal: make flannrust usable from Python so it can replace the common Python rout
 ## M-pub — Announcement readiness (blog post + repo launch)
 
 Cross-the-t's checklist before anything public:
-- **Re-run the full evaluation on bare-metal Linux, under the M2.6 task 6 measurement-conditions protocol** (current numbers are WSL2; the documented noise floor is now the M2.6 n=100-per-side, 4-session characterization — `knn_fixed3` session medians 1.030–1.067, conservative envelope 0.94–1.16 (extreme session medians ± 2×max per-session σ) — `docs/EXPERIMENTS.md` "M2.6 task 2", superseding the old 8-run 0.956–1.192 figure, `docs/EXPERIMENTS.md` "M2.5 task 1", kept as historical). Publish only the bare-metal numbers; keep WSL2 as a secondary data point. This applies to the M-py Python bench numbers too, not just the Rust-vs-C++ gates. **Confirm the host is idle first**: close compute-heavy background applications and capture `/proc/loadavg` before/after every session — `docs/EXPERIMENTS.md` §1's "Measurement-conditions protocol" (M2.6 task 6), added after a background game process was found to have contaminated some earlier M2.6 sessions' numbers (a flagged Python-bench outlier and a mis-recorded `build_100k` "configuration split," both since resolved).
+- **Re-run the full evaluation on bare-metal Linux, under the M2.6 task 6 measurement-conditions protocol** (current numbers are WSL2; the documented noise floor is now the M2.6 n=100-per-side, 4-session characterization — `knn_fixed3` session medians 1.030–1.067, conservative envelope 0.94–1.16 (extreme session medians ± 2×max per-session σ) — `docs/EXPERIMENTS.md` "M2.6 task 2", superseding the old 8-run 0.956–1.192 figure, `docs/EXPERIMENTS.md` "M2.5 task 1", kept as historical; **Update (M2.6 task 7): re-confirmed on the idle host, 0.94–1.16 unchanged** — `docs/EXPERIMENTS.md` "M2.6 task 7"). Publish only the bare-metal numbers; keep WSL2 as a secondary data point. This applies to the M-py Python bench numbers too, not just the Rust-vs-C++ gates. **Confirm the host is idle first**: close compute-heavy background applications and capture `/proc/loadavg` before/after every session — `docs/EXPERIMENTS.md` §1's "Measurement-conditions protocol" (M2.6 task 6), added after a background game process was found to have contaminated some earlier M2.6 sessions' numbers (a flagged Python-bench outlier and a mis-recorded `build_100k` "configuration split," both since resolved). M2.6 task 7 additionally re-measured the `m25_diag` dim sweep and the noise envelope itself on the idle host (`docs/EXPERIMENTS.md` "M2.6 task 7") — the dim-32-f64/dim-64 corrections above are its output.
 - **Claims audit**: every performance/parity sentence in the post traces to the generated report + EXPERIMENTS.md; independent re-review of the draft post against the data.
 - **Licensing/attribution**: nanoflann is BSD-2-Clause — vendored header retains its license text; README + post credit Blanco-Claraco et al. and link upstream; our LICENSE chosen (BSD-2 to match, or MIT/Apache-2.0 dual — decide explicitly).
 - **CI**: GitHub Actions running the workspace tests + `--no-default-features` + (nightly job) heavy/ignored tests and perf gates on a dedicated runner. **The miri job is required, not optional**: `search.rs`'s `FrameStack` (M2.5 task 2) is this crate's first `unsafe` code, and both aliasing models (Stacked Borrows + Tree Borrows: `cargo +nightly miri test -p flannrust --lib -- search`, once plain and once with `MIRIFLAGS="-Zmiri-tree-borrows"`, see `docs/EXPERIMENTS.md`'s "Miri" subsection) must stay green on every change that touches `search.rs`, not just at milestone close-out — a nightly-only or manual-only miri run would let a regression sit undetected for however long the interval is.

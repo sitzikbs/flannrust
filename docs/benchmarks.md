@@ -22,7 +22,9 @@ medians 1.030–1.067, per-session per-rep ratio σ≈0.03–0.05, approx.
 conservative envelope of 0.94–1.16 (extreme session medians ± 2×max
 per-session σ), `docs/EXPERIMENTS.md` "M2.6 task 2" — superseding
 the old 8-run `knn_fixed3` sweep, 0.956–1.192, `docs/EXPERIMENTS.md` "M2.5
-task 1" (kept there as historical). The perf
+task 1" (kept there as historical). **Update (M2.6 task 7): re-confirmed
+on the idle host**, 0.94–1.16 unchanged (`docs/EXPERIMENTS.md` "M2.6 task
+7"). The perf
 gate table below mixes sample sizes across its columns (see the column
 headers): the "Before Task 14" column is Step 0's baseline, a **median of
 3** timed runs; every "After Task 14" column is a **median of 7** timed runs
@@ -209,6 +211,8 @@ spread is an older, smaller sample than the repo's canonical noise floor —
 session medians ± 2×max per-session σ),
 `docs/EXPERIMENTS.md` "M2.6 task 2"), superseding the 8-run 0.956–1.192
 figure (`docs/EXPERIMENTS.md` "M2.5 task 1", kept there as historical).
+**Update (M2.6 task 7): re-confirmed on the idle host**, 0.94–1.16
+unchanged (`docs/EXPERIMENTS.md` "M2.6 task 7").
 Both retained below as the M1 record, not as the current state.
 
 What's left in the ~4-5% gap is architectural, not a missed optimization in
@@ -608,6 +612,21 @@ substantially (1.918x → 1.16–1.23x across T3+T4 runs: T3's A/B median
 (see "Honest residuals" below); dim-32/64 f64 both land close to or under
 parity (1.10–1.11x / 0.88x).
 
+**Update (M2.6 task 7, user-directed idle-host re-measurement):**
+dim-32 f64, dim-64 f32, and dim-64 f64 above are all **CORRECTED wider** —
+a fresh 2-session idle-host re-run of `m25_diag knn`, combined with the
+M2.6-task-2 raw sweep data these three rows never previously
+incorporated (only dim-32 f32 was formally re-verified in task 2), gives:
+dim-32 f64 **1.080–1.104** (was 1.103–1.111 / "~1.10–1.11x"), dim-64 f32
+**1.082–1.235** (was 1.162–1.171 / "1.16–1.23x across T3+T4 runs"),
+dim-64 f64 **0.862–0.956** (was 0.879–0.887). The qualitative read is
+unaffected ("improved substantially, not closed to parity" for the first
+two, "under parity" for dim-64 f64); dim-64 in particular turns out to be
+an inherently higher-variance workload on this host — the spread persists
+even under confirmed-idle-host conditions, so it isn't solely a
+contamination artifact. Full evidence: `docs/EXPERIMENTS.md` "M2.6
+task 7".
+
 ### Robustness upgrade: query stack-overflow immunity on degenerate trees
 
 T2 converted `search_level` from native self-recursion to an explicit-stack
@@ -652,13 +671,25 @@ was A/B-tested and did not help (NEW32 columns in `docs/EXPERIMENTS.md`'s
   conservative envelope 0.94–1.16 (extreme session medians ± 2×max
   per-session σ)) superseding the old 8-run 0.956–1.192
   figure (`docs/EXPERIMENTS.md` "M2.5 task 1", kept as historical) — not
-  chased further.
+  chased further. **Update (M2.6 task 7): re-confirmed on the idle
+  host** — 4 fresh, loadavg-bracketed `knn_fixed3` sessions compute their
+  own conservative envelope at 0.884–1.176, slightly *wider* than
+  0.94–1.16, not narrower, so 0.94–1.16 stands unchanged as the canonical
+  floor (`docs/EXPERIMENTS.md` "M2.6 task 7").
 - **dim-32 f64**: ~1.10–1.11x — closed substantially (from 1.315x) but not
   to parity; not specifically targeted by T3 (which prioritized f32).
+  **Update (M2.6 task 7):** CORRECTED wider, **1.080–1.104**
+  (`docs/EXPERIMENTS.md` "M2.6 task 7").
 - **dim-64 f32**: 1.16–1.23x across T3+T4 runs — improved substantially (from 1.918x) but
   not closed; T1/T3 both flagged dim-64 as "improved, not eliminated," a
   deliberately smaller-priority residual than dim-32, left open by design
-  (T3's target was dim-32).
+  (T3's target was dim-32). **Update (M2.6 task 7):** CORRECTED wider,
+  **1.082–1.235** — this workload turns out to be inherently
+  higher-variance on this host, independent of host load
+  (`docs/EXPERIMENTS.md` "M2.6 task 7").
+- **dim-64 f64**: 0.879–0.887x (T4) — lands under parity. **Update (M2.6
+  task 7):** CORRECTED wider, **0.862–0.956**, same higher-variance
+  pattern as dim-64 f32 (`docs/EXPERIMENTS.md` "M2.6 task 7").
 - **Fast-math / reordered-arithmetic kernels**: remains a roadmap idea only
   — **NOT taken** in M2.5. No arithmetic reordering landed anywhere in the
   default build; T3's chunked row walk (the only kernel change) is proven
@@ -754,7 +785,14 @@ rust-then-cpp interleave order (a residual, accepted, non-zero risk of
 one-sided bias): `docs/EXPERIMENTS.md` "M2.6 task 2", "The new noise
 floor" sub-subsection. Every "noise floor" citation elsewhere in this
 file, `README.md`, and `docs/ROADMAP.md` now points here; the old figure
-is kept as historical text, not deleted.
+is kept as historical text, not deleted. **Update (M2.6 task 7):
+re-confirmed on the idle host** — 4 fresh, loadavg-bracketed
+`knn_fixed3` sessions (run to check whether the game-load window that
+motivated task 6's measurement-conditions protocol had inflated this
+figure) compute their own conservative envelope at 0.884–1.176, slightly
+*wider* than 0.94–1.16, not narrower — no evidence of inflation.
+0.94–1.16 stands unchanged as the canonical floor
+(`docs/EXPERIMENTS.md` "M2.6 task 7").
 
 **Update (M2.6 task 5, commits `3d64c8b`/`a68df86`, 2026-08-24):** task 4's
 line-by-line C++ fidelity audit (diagnosis only, no code changed) found

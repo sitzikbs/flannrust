@@ -364,6 +364,12 @@ per-session σ) — `docs/EXPERIMENTS.md` "M2.6 task 2"), superseding
 the old 8-run 0.956–1.192 figure (`docs/EXPERIMENTS.md` "M2.5 task 1",
 kept as historical). Individual `knn_fixed3` old noise-sweep runs of
 1.104/1.192 remain historical context, not the current floor.
+**Update (M2.6 task 7): re-confirmed on the idle host** — 4 fresh
+`knn_fixed3` gate sessions (loadavg-bracketed, host confirmed idle
+throughout) compute their own conservative envelope at 0.884–1.176,
+slightly *wider* than 0.94–1.16, not narrower, so there is no evidence
+this figure was inflated by the game-load incident; 0.94–1.16 is kept as
+the canonical floor unchanged (`docs/EXPERIMENTS.md` "M2.6 task 7").
 
 All six pass the ≤1.25 gate in every session, both sweeps. `dyn_add_20k_dim3_f32`
 looked like the tightest-margin gate under the old n=7 methodology (up to
@@ -372,7 +378,8 @@ looked like the tightest-margin gate under the old n=7 methodology (up to
 noise, not the true steady-state ratio — see the "Dynamic adaptor (M2)" →
 "Performance" section below. Build's `build_100k_dim3_f32_seq` spread
 (previously read as "suspiciously wide," 0.974–1.139) turns out to be
-reproducibly split by configuration — not primarily noise or drift, though
+reproducibly split by configuration (**Update (M2.6 task 6): re-hedged,
+did not reproduce a third time — see below**) — not primarily noise or drift, though
 dataset seed and process context were never crossed to isolate which one
 is the cause (`docs/EXPERIMENTS.md` conclusion (g)): the perf-gate binary's own dataset builds
 consistently ~0.967 across sessions, while `report_data`'s independently
@@ -482,6 +489,21 @@ measurably faster (+6.2%). The headline gap closure (1.423x → ~1.0x) is
 unaffected and re-confirmed; only the "parity-or-better" framing is
 corrected — read this row as "near parity, occasionally a few percent
 either way," not a guaranteed Rust win at every measurement.
+
+**Update (M2.6 task 7, user-directed idle-host re-measurement):**
+dim-32 f32 above is CONFIRMED (a fresh 2-session idle-host re-run nests
+inside 0.986–1.062, `docs/EXPERIMENTS.md` "M2.6 task 7"). The other three
+rows in the table above are CORRECTED — a fresh idle-host re-run,
+combined with the M2.6-task-2 raw sweep data those rows never previously
+incorporated, widens all three: dim-32 f64 **1.080–1.104** (was
+1.103–1.111), dim-64 f32 **1.082–1.235** (was 1.162–1.171), dim-64 f64
+**0.862–0.956** (was 0.879–0.887). None of this changes the qualitative
+read (all three remain "improved substantially, not closed to parity" or
+"under parity") — only the numeric bounds widen, and dim-64 in particular
+turns out to be an inherently higher-variance workload on this host
+(session-to-session spread persists even under confirmed-idle
+conditions) rather than a contamination artifact. Full evidence and
+per-row reasoning: `docs/EXPERIMENTS.md` "M2.6 task 7".
 
 ### `leaf_max_size` sweep
 
@@ -804,7 +826,14 @@ re-deriving from the C++ source; full tracker:
   **REJECTED as a further port-fidelity change**; a `RUSTFLAGS`-level
   512-bit-vector experiment remains a possible toolchain-level lever, still
   unexplored (`task-4-report.md` §6). The fast-math flag and parallel slot
-  rebuilds remain untaken ideas, unchanged.
+  rebuilds remain untaken ideas, unchanged. **Update (M2.6 task 7,
+  user-directed idle-host re-measurement):** dim-64 f32 and dim-32 f64
+  above are CORRECTED wider — dim-64 f32 **1.082–1.235** (was
+  1.16–1.23x), dim-32 f64 **1.080–1.104** (was ~1.10-1.11x); dim-64 f64
+  (not previously called out in this bullet) is also CORRECTED wider,
+  **0.862–0.956** (was 0.879–0.887). "Improved substantially, not closed"
+  still holds for all three; only the bounds move (`docs/EXPERIMENTS.md`
+  "M2.6 task 7").
 - **M3 — incremental adaptor** (`KDTreeSingleIndexIncrementalAdaptor`, a
   single scapegoat-style self-balancing tree).
 - **M4 — multithreaded wrapper** (`KDTreeSingleIndexIncrementalAdaptorMT`,
