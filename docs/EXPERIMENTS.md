@@ -2012,6 +2012,152 @@ This run stays **WSL2**, same as every number in this document; bare-metal
 re-verification (including these Python numbers, not just the Rust-vs-C++
 gates) remains an open **M-pub** item (`docs/ROADMAP.md`).
 
+### M2.6 task 5: dyn_add C++-fidelity fixes — merge capacity preservation + 4-wide unrolled min/max (commits `3d64c8b`, `a68df86`, 2026-08-24)
+
+M2.6 task 4 (diagnosis only, no code changed) line-by-line audited
+`DynamicKdTree::add_points` (`dynamic.rs`) and `compute_min_max`
+(`build.rs`) against `nanoflann.hpp` 1.12.1 and found two places where the
+Rust port diverged from the vendored C++ behavior, both isolated to the
+`dyn_add_20k_dim3_f32` gate (the only gate with a real, non-noise gap —
+task 4's crossing experiment cleared `build_100k`/`knn_fixed3` of any
+unported-behavior explanation). Task 5 (this task) implemented both,
+exactly as task 4 specified, and A/B-verified each independently before
+landing:
+
+1. **Merge capacity preservation** (`3d64c8b`): `nanoflann.hpp:2653-2664`'s
+   `addPoints` merge loop iterates a lower slot's `vAcc_` by index (not
+   consuming it), pushes each entry into the target slot, THEN calls
+   `vAcc_.clear()` — clearing retains the `std::vector`'s allocation. The
+   port's `add_points` used `std::mem::take` on the merged-from slot's
+   `vind`, dropping the allocation every merge and regrowing from capacity
+   0 through the doubling ladder on the next merge. Fixed to iterate by
+   index, push, then `clear()` (not take) the source `Vec` back into
+   place — identical element values and push order, bit-identical rebuilt
+   trees, only the allocation is now reused instead of dropped.
+2. **4-wide unrolled `compute_min_max`** (`a68df86`): `middleSplit_`'s
+   inline min/max scan (`nanoflann.hpp:1507-1530`) is 4-way unrolled
+   (`UNROLL=4`, four batched `dataset_get` loads per iteration) for
+   load-ILP — a distinct code path from the separate plain-loop
+   `computeMinMax` (`nanoflann.hpp:1193-1205`), which `middleSplit_` never
+   calls. The port had flattened this to a 1-wide loop. Ported the exact
+   unrolled shape (main loop `while k+4<=count`, remainder loop
+   `while k<count`); min/max is associative/commutative with no NaNs in
+   play here, so results stay bit-identical — `cpp_min`/`cpp_max`
+   (`build.rs`, pre-existing) already have the same first-wins-tie
+   semantics as `std::min({...})`/`std::max({...})`'s initializer-list
+   fold (`std::min_element`/`std::max_element` under the hood), so the
+   4-way fold matches the C++ exactly.
+
+**Methodology note**: every session below ran on a host confirmed idle
+by the user (only terminal + Chrome open) partway through this task, after
+the first few sessions had already run under ordinary (also low)
+background load; `cat /proc/loadavg`/`nproc` was captured immediately
+before and after every session from that point on and is pasted alongside
+each block. `xval::measure_pair`, n=100/side, interleaved,
+`RUSTFLAGS="-C target-cpu=native"`, `cargo test -p xval --release --test
+perf_gate -- perf_gate_dyn --test-threads=1 --nocapture` (dyn-only) or the
+same command without the `perf_gate_dyn` filter (full six-gate suite),
+`PERF_GATE=1` in both cases.
+
+**Baseline (this task's session, neither fix applied — `dynamic.rs`/
+`build.rs` at `20a9a0a`), idle host confirmed (loadavg 1.0-1.2, nproc=8)**:
+
+```
+LOADAVG_BEFORE: 1.04 1.80 1.42 1/550 470485  nproc=8
+PERF_GATE perf_gate_dyn_add_20k_dim3_f32: rust=4.024ms cpp=3.544ms ratio=1.136 | rust mean=4.036 std=0.104 n=100 | cpp mean=3.560 std=0.118 n=100
+PERF_GATE perf_gate_dyn_knn_after_churn_dim3_f32: rust=29.889ms cpp=31.859ms ratio=0.938 | rust mean=30.356 std=1.618 n=100 | cpp mean=32.321 std=1.670 n=100
+LOADAVG_AFTER: 1.17 1.70 1.40 2/555 474071
+
+LOADAVG_BEFORE: 0.99 1.64 1.39 1/551 475240
+PERF_GATE perf_gate_dyn_add_20k_dim3_f32: rust=4.049ms cpp=3.561ms ratio=1.137 | rust mean=4.114 std=0.167 n=100 | cpp mean=3.650 std=0.200 n=100
+PERF_GATE perf_gate_dyn_knn_after_churn_dim3_f32: rust=30.065ms cpp=31.654ms ratio=0.950 | rust mean=30.301 std=1.221 n=100 | cpp mean=31.877 std=0.951 n=100
+LOADAVG_AFTER: 1.07 1.65 1.39 2/552 476136
+```
+
+(Two additional non-loadavg-annotated baseline sessions, run earlier in
+the task before the idle-host directive, agree: ratio=1.144, 1.130 —
+consistent with the M2.6 task 2/4 recorded 1.112-1.149 band.)
+
+**Fix 1 only (merge capacity preservation, `3d64c8b` applied,
+`build.rs` still at `20a9a0a`), idle host confirmed**:
+
+```
+LOADAVG_BEFORE: 1.00 1.60 1.38 1/553 477653
+PERF_GATE perf_gate_build_100k_dim3_f32_seq: rust=10.119ms cpp=9.972ms ratio=1.015 | rust mean=11.946 std=8.112 n=100 | cpp mean=12.021 std=7.535 n=100
+PERF_GATE perf_gate_dyn_add_20k_dim3_f32: rust=3.749ms cpp=3.542ms ratio=1.058 | rust mean=3.850 std=0.267 n=100 | cpp mean=3.645 std=0.334 n=100
+PERF_GATE perf_gate_dyn_knn_after_churn_dim3_f32: rust=30.293ms cpp=31.949ms ratio=0.948 | rust mean=32.376 std=12.778 n=100 | cpp mean=33.923 std=9.862 n=100
+PERF_GATE perf_gate_knn_dim3_f32_k10: rust=7.453ms cpp=7.174ms ratio=1.039 | rust mean=7.500 std=0.177 n=100 | cpp mean=7.212 std=0.172 n=100
+PERF_GATE perf_gate_knn_dyn_dim8_f64_k10: rust=177.211ms cpp=189.348ms ratio=0.936 | rust mean=178.182 std=4.052 n=100 | cpp mean=190.966 std=6.017 n=100
+PERF_GATE perf_gate_radius_dim3_f32: rust=5.248ms cpp=6.502ms ratio=0.807 | rust mean=5.357 std=0.325 n=100 | cpp mean=6.567 std=0.204 n=100
+LOADAVG_AFTER: 1.19 1.56 1.37 2/545 480211
+```
+
+`build_100k` and `dyn_knn_after_churn`'s std spiked in this one session
+(a brief scheduling burst mid-run — loadavg stayed low, 1.00→1.19, well
+under `nproc=8`, so it was not a sustained competing process) despite the
+confirmed-idle host; the MEDIANS (the gate's actual decision quantity,
+robust to this kind of transient) were unaffected. Re-run immediately
+after to confirm:
+
+```
+LOADAVG_BEFORE: 1.01 1.50 1.36 1/543 484352
+PERF_GATE perf_gate_build_100k_dim3_f32_seq: rust=9.596ms cpp=9.681ms ratio=0.991 | rust mean=9.724 std=0.311 n=100 | cpp mean=9.811 std=0.294 n=100
+PERF_GATE perf_gate_dyn_add_20k_dim3_f32: rust=3.696ms cpp=3.481ms ratio=1.062 | rust mean=3.750 std=0.165 n=100 | cpp mean=3.496 std=0.093 n=100
+PERF_GATE perf_gate_dyn_knn_after_churn_dim3_f32: rust=30.132ms cpp=31.658ms ratio=0.952 | rust mean=30.308 std=1.056 n=100 | cpp mean=31.832 std=0.634 n=100
+PERF_GATE perf_gate_knn_dim3_f32_k10: rust=7.529ms cpp=7.238ms ratio=1.040 | rust mean=7.560 std=0.201 n=100 | cpp mean=7.299 std=0.245 n=100
+PERF_GATE perf_gate_knn_dyn_dim8_f64_k10: rust=176.602ms cpp=189.450ms ratio=0.932 | rust mean=178.541 std=6.212 n=100 | cpp mean=190.371 std=3.836 n=100
+PERF_GATE perf_gate_radius_dim3_f32: rust=5.190ms cpp=6.436ms ratio=0.806 | rust mean=5.348 std=0.437 n=100 | cpp mean=6.551 std=0.300 n=100
+LOADAVG_AFTER: 1.28 1.51 1.37 1/547 485855
+```
+
+Clean this time, all std back in the ordinary 1-6% band; `dyn_add`
+ratio=1.058/1.062 in both sessions — consistent with two earlier
+non-loadavg-annotated sessions run before the idle-host directive
+(1.061, 1.085). `dyn_add` 1.13-1.14 → 1.06 confirmed, no other gate
+regressed.
+
+**Fix 1 + Fix 2 (both `3d64c8b` and `a68df86` applied — final landed
+state), idle host confirmed**:
+
+```
+LOADAVG_BEFORE: 1.16 1.47 1.36 2/544 486312
+PERF_GATE perf_gate_build_100k_dim3_f32_seq: rust=9.783ms cpp=9.697ms ratio=1.009 | rust mean=9.790 std=0.119 n=100 | cpp mean=9.733 std=0.194 n=100
+PERF_GATE perf_gate_dyn_add_20k_dim3_f32: rust=3.631ms cpp=3.507ms ratio=1.035 | rust mean=3.654 std=0.097 n=100 | cpp mean=3.537 std=0.126 n=100
+PERF_GATE perf_gate_dyn_knn_after_churn_dim3_f32: rust=29.867ms cpp=31.772ms ratio=0.940 | rust mean=29.927 std=0.477 n=100 | cpp mean=31.892 std=0.483 n=100
+PERF_GATE perf_gate_knn_dim3_f32_k10: rust=7.448ms cpp=7.180ms ratio=1.037 | rust mean=7.493 std=0.205 n=100 | cpp mean=7.259 std=0.232 n=100
+PERF_GATE perf_gate_knn_dyn_dim8_f64_k10: rust=174.892ms cpp=186.243ms ratio=0.939 | rust mean=174.186 std=4.185 n=100 | cpp mean=185.548 std=4.513 n=100
+PERF_GATE perf_gate_radius_dim3_f32: rust=5.340ms cpp=6.393ms ratio=0.835 | rust mean=5.345 std=0.364 n=100 | cpp mean=6.348 std=0.324 n=100
+LOADAVG_AFTER: 1.13 1.42 1.35 1/546 487125
+
+LOADAVG_BEFORE: 0.96 1.37 1.33 2/543 487170
+PERF_GATE perf_gate_dyn_add_20k_dim3_f32: rust=3.635ms cpp=3.505ms ratio=1.037 | rust mean=3.711 std=0.167 n=100 | cpp mean=3.580 std=0.172 n=100
+PERF_GATE perf_gate_dyn_knn_after_churn_dim3_f32: rust=30.458ms cpp=32.368ms ratio=0.941 | rust mean=30.568 std=0.832 n=100 | cpp mean=32.494 std=0.827 n=100
+LOADAVG_AFTER: 0.96 1.37 1.33 1/545 487307
+```
+
+(Two additional combined-state sessions, run before the idle-host
+directive, agree: ratio=1.038, 1.038.) Across all 4 combined-state
+sessions (2 pre-directive + 2 idle-host-confirmed): `dyn_add`
+**1.034-1.038**, no other gate outside its recorded M2.6 task 2 band.
+`build_100k`≈1.0 (unaffected, as task 4 predicted — the unroll only
+matters for the many small dyn-forest rebuild scans, not the wide
+one-shot 100k build). `dyn_add`: baseline **1.13-1.14** → fix-1-only
+**1.06** → combined **1.03-1.04**, closing roughly 90% of the gap task 4
+identified. Both fixes preserve bit-exact parity: full `cargo test
+--workspace` green after each landed commit, heavy `--ignored` release
+suite (incl. both mutation canaries) green after each, `cargo clippy
+--workspace --all-targets -- -D warnings` clean, `--no-default-features`
+builds, rustdoc (`RUSTDOCFLAGS="-D warnings" cargo doc -p flannrust -p
+xval -p nanoflann-ref --no-deps`) clean. Neither diff touches `unsafe`
+(`git diff | grep unsafe` empty for both commits), so miri was not
+re-run, per the M2.6 controller's task 5 scoping.
+
+Also landed in the `3d64c8b` commit (test-only, controller ruling):
+`node::tests::test_offset_children_panics_on_leaf_in_debug` (a
+`#[should_panic]` test on a `debug_assert!`) is now `#[cfg(debug_assertions)]`
+— it cannot fire under `cargo test --release`, which task 4 reproduced
+as a pre-existing failure unrelated to any fidelity fix.
+
 ## 5. Number provenance
 
 Every figure that appears in `README.md` or `docs/benchmarks.md` traces to
@@ -2073,6 +2219,8 @@ cite the M2.5 ranges, not these).
 | `m25_diag` `RUNS` bump 7→15 (n>=10, M2.6 task 2's only code change) | `git diff crates/xval/examples/m25_diag.rs` (12 lines, doc comment + one constant) | the file itself; re-run commands unchanged |
 | **M2.6 task 3 Python bench statistical baseline** (`bench_py.py`'s `timed_stats_interleaved` — `measure_pair`'s policy generalized to N engines, `n=10..100` per cell, `schema_version:2` JSON, `xval::render_python` gated rejection of old-format JSON) — README "Python bindings (M-py)" Benchmarks section, `docs/benchmarks.md` M-py section | `bench_py.py`, §3 "M2.6 task 3" subsection, single pasted run | `report_py_m26t3.json`'s `schema_version`/`workloads[].{lib}_stats`/`ratio_ckdtree`/`ratio_pynanoflann` fields; `crates/xval/tests/render_report_test.rs`'s `render_python_*` tests |
 | **M2.6 task 3 M-py conclusion re-verification** (batched knn workers=1 vs cKDTree **0.493** — single-session outlier, flagged not folded in, new honest range 0.493–0.830; workers=-1 **0.703–0.827**; build 100k **0.553** confirmed; build 1M **0.543–0.553**; dim-32 **0.878–0.922**; per-call overhead flannrust ≈2.0–2.4µs / cKDTree ≈7.2–8.5µs / pynanoflann ≈2.3–2.8µs; honest misses: batched-knn-workers1-vs-pynanoflann now **1.009–1.216** (near-parity this session, same volatility caveat, not declared resolved), dim8-f64-vs-pynanoflann now **1.233–1.271**) — README "Python bindings (M-py)" Benchmarks/honest-misses, `docs/benchmarks.md` M-py section, `docs/ROADMAP.md` M-pub dim8 lead | §3 "M2.6 task 3" subsection, "Per-conclusion re-verification" | same `report_py_m26t3.json` fields as the row above |
+| **M2.6 task 5 `dyn_add` C++-fidelity fixes** (baseline **1.13–1.14** → merge-capacity-fix-only **1.06** → both fixes combined, landed, **1.034–1.038** across 4 sessions incl. 2 idle-host-confirmed — `docs/benchmarks.md` M2.6 section "Update (M2.6 task 5)") | Dyn-filtered and full perf gate commands, §3 "M2.6 task 5" subsection | `PERF_GATE perf_gate_dyn_add_20k_dim3_f32: ... ratio=...`, all 8 pasted sessions (4 baseline/fix-1-only + 4 combined) |
+| **M2.6 task 5 no-regression check** (`build_100k`≈1.0, `knn_fixed3`/`knn_dyn_dim8`/`radius`/`dyn_knn_after_churn` all within their M2.6 task 2 recorded bands, both fixes applied) — `docs/benchmarks.md` M2.6 section "Update (M2.6 task 5)" | Full (unfiltered) perf gate command, §3 "M2.6 task 5" subsection, "Fix 1 + Fix 2" block | same `PERF_GATE perf_gate_*: ... ratio=...` lines, both full-suite sessions |
 
 ## 6. See also
 

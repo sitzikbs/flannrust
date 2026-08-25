@@ -754,6 +754,38 @@ floor" sub-subsection. Every "noise floor" citation elsewhere in this
 file, `README.md`, and `docs/ROADMAP.md` now points here; the old figure
 is kept as historical text, not deleted.
 
+**Update (M2.6 task 5, commits `3d64c8b`/`a68df86`, 2026-08-24):** task 4's
+line-by-line C++ fidelity audit (diagnosis only, no code changed) found
+`dyn_add_20k_dim3_f32` to be the one gate with a real, non-noise gap, and
+identified two places `DynamicKdTree::add_points`/`compute_min_max`
+diverged from `nanoflann.hpp` 1.12.1. Task 5 (this update) implemented
+both, exactly matching the C++: (1) the merge loop's slot `vind` now
+mirrors C++'s `vAcc_.clear()` — the allocation is retained across a merge
+instead of being dropped and regrown from capacity 0 every time; (2)
+`compute_min_max` now uses the same 4-wide unrolled scan `middleSplit_`
+actually runs (`UNROLL=4` in `nanoflann.hpp:1510-1530`), not the separate
+plain-loop `computeMinMax` the port had used instead. Both preserve
+bit-exact parity (min/max and merge order are unaffected; the xval
+dynamic-parity suite, incl. both mutation canaries, stayed green
+throughout). Full A/B evidence (8 pasted sessions, incl. 4 with
+`/proc/loadavg` captured on a user-confirmed-idle host):
+`docs/EXPERIMENTS.md` "M2.6 task 5" subsection.
+
+| Workload | M2.6 task 2 (4 sessions) | M2.6 task 5, both fixes landed (4 sessions, 2 idle-host-confirmed) |
+|---|---|---|
+| `dyn_add_20k_dim3_f32` | 1.112–1.149 | **1.034–1.038** |
+
+No other gate moved outside its M2.6 task 2 recorded band (`build_100k`
+stayed ≈1.0 under the unroll fix, as task 4 predicted — the 4-wide scan
+only matters for the many small dyn-forest rebuild splits, not the one
+wide 100k build). Conclusion (f) above (`dyn_add` "1.11–1.24", previously
+CONFIRMED/narrowed at M2.6 task 2) is now **IMPROVED BY A LANDED FIX**:
+the residual this repo characterized as noise-adjacent is, for
+`dyn_add`, substantially closed by a real C++-fidelity correction, not
+just re-measured. `build_100k`'s own configuration-split finding
+(conclusion (g)) is unaffected by this update and is left for Task 6 per
+the M2.6 controller's scoping.
+
 ## M-py — Python bindings
 
 Same machine as every section above (WSL2, AMD Ryzen 7 9800X3D, 8 threads,
