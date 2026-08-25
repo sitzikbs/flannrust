@@ -325,9 +325,9 @@ before any public announcement.
 
 ### Perf gate (six gated workloads; pass threshold is ratio ≤ 1.25)
 
-**Post-M2.5** (T4's fresh two-run sweep, commit `2d23db4` — full pasted runs
-in `docs/EXPERIMENTS.md`, milestone-by-milestone comparison in
-`docs/benchmarks.md`'s "M2.5 — performance deep-dive" section):
+**Post-M2.5** (T4's fresh two-run sweep, commit `2d23db4`, median-of-7 —
+full pasted runs in `docs/EXPERIMENTS.md`, milestone-by-milestone comparison
+in `docs/benchmarks.md`'s "M2.5 — performance deep-dive" section):
 
 | Workload | Ratio range (2 fresh runs) |
 |---|---|
@@ -338,36 +338,68 @@ in `docs/EXPERIMENTS.md`, milestone-by-milestone comparison in
 | `dyn_add_20k_dim3_f32` | 1.121–1.170 |
 | `dyn_knn_after_churn_dim3_f32` | 0.873–0.916 |
 
-¹ within this host's documented noise floor (0.956–1.192 across 8 runs of
-one unchanged tree — pasted in `docs/EXPERIMENTS.md`'s "M2.5 task 1"
-subsection); only 2 final runs are pasted above, so this range shouldn't
-be read as more precise than that floor.
+¹ within this host's documented noise floor — see the Update below.
 
-All six pass the ≤1.25 gate. `dyn_add_20k_dim3_f32` is the one workload
-whose margin is not "comfortable": 1.121–1.170 in this sweep and up to
-1.237 across its pre-M2.5 re-runs, ~1% below the threshold — see the
-"Dynamic adaptor (M2)" → "Performance" section below; no other gate's
-recorded sweep median exceeds 1.10 (individual `knn_fixed3` noise-sweep
-runs have: 1.104, 1.192, see `docs/EXPERIMENTS.md` "M2.5 task 1"). Build
-is effectively at parity. `knn_fixed3`'s
-residual (~1-4%) is no longer recursive-call overhead: M2.5's T2 task
+**Update (M2.6, commit `a30a819`, 2026-08-25):** the table above is T4's
+2-run, median-of-7 sweep, kept as-is (pasted evidence, never edited in
+place). A statistically stronger re-verification — `xval::measure_pair`'s
+adaptive `n=clamp(10,100,...)` harness, n=100 reps/side, mean/std/median
+published, 4 independent sessions (2 gate + 2 report-chain) — widens or
+corrects several of these ranges (full account: `docs/EXPERIMENTS.md`
+"M2.6 task 2", `docs/benchmarks.md` "M2.6 — statistical re-verification"):
+
+| Workload | Ratio range (4 fresh n=100 sessions) |
+|---|---|
+| `build_100k_dim3_f32_seq` | 0.967–1.039 (dataset-dependent, not noise — see below) |
+| `knn_fixed3_dim3_f32_k10`¹ | 1.030–1.067 |
+| `knn_dyn_dim8_f64_k10` | 0.929–0.937 (better than the entire pre-M2.5 range) |
+| `radius_dim3_f32` | 0.807–0.867 |
+| `dyn_add_20k_dim3_f32` | 1.112–1.149 (narrower than every prior range) |
+| `dyn_knn_after_churn_dim3_f32` | 0.940–0.947 |
+
+¹ within this host's documented noise floor, **now the n=100-per-side,
+4-session characterization** (session medians 1.030–1.067, approx.
+mean±2σ band 0.94–1.16 — `docs/EXPERIMENTS.md` "M2.6 task 2"), superseding
+the old 8-run 0.956–1.192 figure (`docs/EXPERIMENTS.md` "M2.5 task 1",
+kept as historical). Individual `knn_fixed3` old noise-sweep runs of
+1.104/1.192 remain historical context, not the current floor.
+
+All six pass the ≤1.25 gate in every session, both sweeps. `dyn_add_20k_dim3_f32`
+looked like the tightest-margin gate under the old n=7 methodology (up to
+1.237, ~1% below threshold); the new n=100 data settles at a narrower
+1.112–1.149, suggesting the old high-water mark was itself small-sample
+noise, not the true steady-state ratio — see the "Dynamic adaptor (M2)" →
+"Performance" section below. Build's `build_100k_dim3_f32_seq` spread
+(previously read as "suspiciously wide," 0.974–1.139) turns out to be
+genuinely dataset-dependent: the perf-gate binary's own dataset builds
+consistently ~0.967 across sessions, while `report_data`'s independently
+seeded dataset of the same shape builds consistently ~1.037 — each stable
+to <1% on its own, ~7 points apart from the other (`docs/EXPERIMENTS.md`
+"M2.6 task 2" conclusion (g)). `knn_fixed3`'s residual is no longer
+recursive-call overhead: M2.5's T2 task
 converted the query walk to a fully-inlined explicit-stack iteration — 0
 `search_level` call targets remain in the compiled asm (reproduction
 command and grep output in `docs/EXPERIMENTS.md`'s "M2.5 asm re-capture"
 subsection). What the residual now IS has not been separately measured:
 T2's reviewer attributes it to frame store/reload cost intrinsic to the
 explicit-stack form, a diagnosis consistent with the A/B data but not
-asm-quantified (see `docs/benchmarks.md`'s "Honest residuals" section).
+asm-quantified (see `docs/benchmarks.md`'s "Honest residuals" section); the
+n=100 data honestly widens the residual itself to 1.030–1.067 (3.0–6.7%),
+still comfortably inside the (also newly-characterized) noise floor.
 **That conversion is a trade-off, not a free win**: it gave back all of
-`dim8`'s M2.5 kernel-fix win (0.867 → 0.950–0.966, back to its pre-M2.5
-range) and left `radius` ~4.4% worse than its pre-M2.5 range (0.767–0.792 →
-0.827–0.828); both still beat C++ (ratio < 1.0). In exchange: the
-`knn_fixed3` win, a substantial `dyn_knn_after_churn` win, and query-path
-stack-overflow immunity on degenerate trees that the C++ oracle's native
-recursion still lacks — at the cost of per-query heap allocation for
-queries deeper than 128 levels (see "Deliberate deviations" above). Full
-honest accounting: `docs/benchmarks.md`'s "M2.5 — performance deep-dive"
-section (this is explicitly not a "no regression" story).
+`dim8`'s M2.5 kernel-fix win (0.867 → 0.929–0.937 in the n=100 re-run —
+now BETTER than dim8's entire pre-M2.5 range, not merely back inside it)
+and left `radius` measurably worse than its pre-M2.5 range (0.767–0.792 →
+0.807–0.867 in the n=100 re-run, wider than the single "~0.83"/0.827–0.828
+point estimate previously published); both still beat C++ (ratio < 1.0).
+In exchange: the `knn_fixed3` win, a substantial (if slightly narrower in
+this fresh sweep, 0.940–0.947 vs. the earlier 0.873–0.916) `dyn_knn_after_churn`
+win, and query-path stack-overflow immunity on degenerate trees that the
+C++ oracle's native recursion still lacks — at the cost of per-query heap
+allocation for queries deeper than 128 levels (see "Deliberate deviations"
+above). Full honest accounting, both sweeps: `docs/benchmarks.md`'s "M2.5
+— performance deep-dive" and "M2.6 — statistical re-verification" sections
+(this is explicitly not a "no regression" story).
 
 ### dim-32/64 knn: the M1-era gap is closed at f32 (M2.5)
 
@@ -395,11 +427,19 @@ Result, this task's (T4's) fresh two-run sweep:
 | 64 | f32 | 1.918 | 1.162–1.171 |
 | 64 | f64 | 1.213 | 0.879–0.887 |
 
-dim-32 f32 flips from a real C++ win to parity-or-better; dim-32 f64 and
-dim-64 f32 both improve substantially but remain open residuals (not this
-task's target); dim-64 f64 lands under parity. Full mechanism, A/B
-methodology, and residual analysis: `docs/benchmarks.md`'s "M2.5 —
-performance deep-dive" section.
+dim-32 f32 flips from a real C++ win to near-parity in T4's 2-run sweep;
+dim-32 f64 and dim-64 f32 both improve substantially but remain open
+residuals (not this task's target); dim-64 f64 lands under parity. Full
+mechanism, A/B methodology, and residual analysis: `docs/benchmarks.md`'s
+"M2.5 — performance deep-dive" section.
+
+**Update (M2.6):** a fresh median-of-15, 2-session re-run
+(`docs/EXPERIMENTS.md` "M2.6 task 2" conclusion (a)) widens dim-32 f32 to
+**0.986–1.062** — straddling parity, including one session where C++ is
+measurably faster (+6.2%). The headline gap closure (1.423x → ~1.0x) is
+unaffected and re-confirmed; only the "parity-or-better" framing is
+corrected — read this row as "near parity, occasionally a few percent
+either way," not a guaranteed Rust win at every measurement.
 
 ### `leaf_max_size` sweep
 
@@ -495,16 +535,25 @@ through the normal API — it only surfaces if you reach for
 
 Both new dynamic perf gates pass (same 1.25-ratio pass bar as M1's four
 static gates). `dyn_add_20k_dim3_f32` (contiguous adds from empty) has
-ranged **1.106–1.237** across repeated re-runs on this WSL2 host — the
-margin is real, not "comfortable" (1.237 is only 1.1% below the 1.25
-threshold) — see [`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md) for every
-pasted run. `dyn_knn_after_churn_dim3_f32` (knn against a forest with LIVE
+ranged **1.106–1.237** across repeated re-runs on this WSL2 host under the
+old median-of-7 methodology — the margin looked real, not "comfortable"
+(1.237 is only 1.1% below the 1.25 threshold) — see
+[`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md) for every pasted run.
+**Update (M2.6):** a fresh n=100-per-side, 4-session re-verification
+settles at a narrower **1.112–1.149** (`docs/EXPERIMENTS.md` "M2.6 task 2"
+conclusion (f)) — comfortably inside the old range, with the old 1.237
+high-water mark now reading as small-sample noise rather than the true
+steady-state ratio; every session still comfortably clears the 1.25 gate.
+`dyn_knn_after_churn_dim3_f32` (knn against a forest with LIVE
 tombstones and real cross-slot merges, not a self-cancelling churn — see
 `docs/benchmarks.md` for why the workload was corrected) originally ranged
 **0.971–0.976**; **M2.5's T2 task** (explicit-stack iterative
 `search_level`, see "Benchmarks" above) improved it substantially further,
-to **0.873–0.916** in this task's fresh sweep — one of M2.5's two clear
-wins, not a give-back workload. The churned-forest accuracy row is
+to **0.873–0.916** in T4's fresh two-run sweep — one of M2.5's two clear
+wins, not a give-back workload. **Update (M2.6):** a fresh n=100-per-side,
+4-session re-verification narrows this to **0.940–0.947** — still a clear,
+comfortable win over the pre-M2.5 0.956–0.976 band, though not as large a
+margin as T4's own 2-run sweep suggested. The churned-forest accuracy row is
 bit-exact against the C++ oracle (`1.0`/`1.0`/bit-exact at `eps=0` on a
 live-set-restricted brute-force ground truth). Full numbers, the
 `dyn_add`/`dyn_churn`/`dyn_knn_after_churn` criterion benchmarks, and why
@@ -631,20 +680,24 @@ re-deriving from the C++ source; full tracker:
 [`docs/ROADMAP.md`](docs/ROADMAP.md)):
 
 - **M2.5 — performance deep-dive (complete)**: two headline outcomes — the
-  dim-32 knn gap (~1.3-1.45x) is closed at f32 to parity-or-better via a
+  dim-32 knn gap (~1.3-1.45x) is closed at f32 to near-parity via a
   bounds-check-free chunked kernel row walk, and the fixed-dim-3 knn
   residual is substantially closed via an explicit-stack iterative
   `search_level` (a documented trade-off: it gave back all of `dim8`'s
-  kernel-fix win and left `radius` ~4.4% worse than its pre-M2.5 range, both
-  still Rust wins vs C++, in exchange for that win, the churn win, and
+  kernel-fix win and left `radius` measurably worse than its pre-M2.5 range,
+  both still Rust wins vs C++, in exchange for that win, the churn win, and
   query-path stack-overflow immunity on degenerate trees C++ still lacks).
   See "Benchmarks" and "Dynamic adaptor (M2)" → "Performance" above, and
-  `docs/benchmarks.md`'s "M2.5 — performance deep-dive" section for the
-  full honest accounting. Future perf leads explicitly **not** taken this
+  `docs/benchmarks.md`'s "M2.5 — performance deep-dive" and "M2.6 —
+  statistical re-verification" sections for the full honest accounting
+  (M2.6 re-measured every one of these ranges at n=100/side across 4
+  sessions — several widened or corrected, see the sections linked above).
+  Future perf leads explicitly **not** taken this
   milestone: dim-64 f32 (1.16–1.23x across T3+T4 runs, improved not
   closed), dim-32 f64 (~1.10-1.11x, improved not closed), the fixed-dim-3
-  residual's last ~1-4% (attributed by T2's reviewer to frame store/reload
-  cost — not asm-quantified — and within this host's noise floor), a
+  residual's last ~3-7% (attributed by T2's reviewer to frame store/reload
+  cost — not asm-quantified — and within this host's newly-characterized
+  n=100 noise floor), a
   fast-math/reordered-arithmetic kernel feature flag, and parallel slot
   rebuilds for the dynamic adaptor.
 - **M3 — incremental adaptor** (`KDTreeSingleIndexIncrementalAdaptor`, a

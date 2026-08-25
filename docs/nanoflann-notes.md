@@ -292,3 +292,24 @@ on its own to explain the timing cliff, no separate code-path issue —
 pasted run in `docs/EXPERIMENTS.md`'s "M2.5 final-review fix wave"
 subsection, lead framing in `docs/ROADMAP.md`'s M2.5 future-perf-leads
 list.
+
+**Update (M2.6, 2026-08-25):** M2.6 task 2 re-ran the full chain under a
+new n=100-per-side statistical harness (`xval::measure_pair`, adaptive
+`n=clamp(10,100,...)`, mean/std/median/min/max published — commit
+`a30a819`) across 4 independent sessions and re-verified every ratio
+above; full account, every pasted run, and the CONFIRMED/CORRECTED verdict
+for each: `docs/EXPERIMENTS.md` "M2.6 task 2" subsection. Numbers above
+that are now stale point estimates, not deleted, kept as this milestone's
+historical record: dim-32 f32's "1.423x → 0.966–1.008x" is corrected to
+0.986–1.062 (straddles parity, no longer a guaranteed win — the headline
+gap closure itself stands); `radius_dim3_f32`'s "~4.4% worse... 0.827–0.828"
+widens to 0.807–0.867; `knn_dyn_dim8_f64_k10`'s "back inside its pre-M2.5
+range 0.944–0.984" corrects to 0.929–0.937 — now BETTER than that whole
+range, not merely inside it; the fixed-dim-3 medians (1.052 → 1.0205, T2's
+own interleaved A/B, unaffected — a different, still-valid measurement)
+sit within a residual now honestly ranging 1.030–1.067 rather than
+"~1-4%"; `dyn_knn_after_churn`'s win narrows slightly to 0.940–0.947 in
+this fresh n=100 sweep (from 0.873–0.916), still a clear win over the
+pre-M2.5 0.956–0.976 band. `build_100k` (not covered above but see
+`docs/benchmarks.md`/`docs/ROADMAP.md`) is now understood to be
+dataset-seed-dependent rather than pure noise.

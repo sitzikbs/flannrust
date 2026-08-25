@@ -16,8 +16,12 @@ Machine: WSL2 (Linux 6.6.87.2-microsoft-standard-WSL2), AMD Ryzen 7 9800X3D,
 target-cpu=native"`, release profile. C++ oracle built `-O3 -march=native
 -ffp-contract=off` (`crates/nanoflann-ref/build.rs`). WSL2 introduces real
 run-to-run scheduler/thermal jitter (~±5-10% on individual runs — M1's
-characterization; the repo's canonical noise floor is the later 8-run
-`knn_fixed3` sweep, 0.956–1.192, `docs/EXPERIMENTS.md` "M2.5 task 1"). The perf
+characterization; **Update (M2.6):** the repo's canonical noise floor is now
+the n=100-per-side, 4-session `knn_fixed3` characterization — session
+medians 1.030–1.067, per-session per-rep ratio σ≈0.03–0.05, approx.
+mean±2σ band 0.94–1.16, `docs/EXPERIMENTS.md` "M2.6 task 2" — superseding
+the old 8-run `knn_fixed3` sweep, 0.956–1.192, `docs/EXPERIMENTS.md` "M2.5
+task 1" (kept there as historical). The perf
 gate table below mixes sample sizes across its columns (see the column
 headers): the "Before Task 14" column is Step 0's baseline, a **median of
 3** timed runs; every "After Task 14" column is a **median of 7** timed runs
@@ -198,9 +202,12 @@ compiled asm now contains zero `search_level` call targets (re-captured
 at `84c0781`, `docs/EXPERIMENTS.md` "M2.5 asm re-capture" subsection),
 and what that conversion won and gave back is accounted for in this
 file's "M2.5 — performance deep-dive" section. Item 2's 7-run 0.937–1.079
-spread is an older, smaller sample than the repo's canonical 8-run noise
-floor (0.956–1.192, `docs/EXPERIMENTS.md` "M2.5 task 1"). Both retained
-below as the M1 record, not as the current state.
+spread is an older, smaller sample than the repo's canonical noise floor —
+**Update (M2.6):** now the n=100-per-side, 4-session characterization
+(session medians 1.030–1.067, approx. mean±2σ band 0.94–1.16,
+`docs/EXPERIMENTS.md` "M2.6 task 2"), superseding the 8-run 0.956–1.192
+figure (`docs/EXPERIMENTS.md` "M2.5 task 1", kept there as historical).
+Both retained below as the M1 record, not as the current state.
 
 What's left in the ~4-5% gap is architectural, not a missed optimization in
 the hot kernel:
@@ -507,6 +514,21 @@ fresh two-run sweep with both changes landed (commit `2d23db4`).
 | `dyn_add_20k_dim3_f32` | 1.106–1.237 | 1.123 | 1.121–1.170 |
 | `dyn_knn_after_churn_dim3_f32` | 0.956–0.976 | 0.974 | **0.873–0.916** |
 
+**Update (M2.6):** the "Post-T2/final" column above is T4's 2-run,
+median-of-7 sweep (commit `2d23db4`) and is retained as-is (historical
+pasted evidence, never edited in place). A fresh n=100-per-side, 4-session
+re-verification (2 gate + 2 report-chain sessions, commit `a30a819`,
+`docs/EXPERIMENTS.md` "M2.6 task 2") widens/corrects several of these
+figures: `build_100k` **0.967–1.039** (settled as dataset-dependent, not
+noise — see below), `knn_fixed3` **1.030–1.067**, `dim8` **0.929–0.937**
+(now BETTER than the entire pre-M2.5 range, not merely back inside it),
+`radius` **0.807–0.867** (wider than the single "~0.83" point estimate
+this file and `docs/ROADMAP.md` previously used), `dyn_add`
+**1.112–1.149** (narrower than the old 1.121–1.170/1.106–1.237 spreads),
+`dyn_knn_after_churn` **0.940–0.947**. Full per-conclusion verdicts and
+every pasted run: `docs/EXPERIMENTS.md` "M2.6 task 2" subsection; the "M2.6
+— statistical re-verification" section below this one.
+
 **The T2 trade-off, stated plainly — this is not a "no regression" story.**
 `knn_dyn_dim8_f64_k10` and `radius_dim3_f32` both moved measurably worse
 after T2 landed than they were immediately post-T3: T3's kernel fix took
@@ -559,7 +581,13 @@ proven bit-exact with the fallback via a 6-salt-per-dim discriminating test
 sweep (RED captures under two sabotages pasted in `docs/EXPERIMENTS.md`'s
 "M2.5 task 3" subsection; full transcripts `task-3-report.md` §8.1),
 **not** a reordering or SIMD intrinsic. dim-32 f32 flips from a ~1.42x
-C++ win to parity-or-better (0.97–1.01x); dim-64 f32 improves
+C++ win to near-parity (0.97–1.01x in T4's 2-run sweep). **Update (M2.6):**
+a fresh median-of-15, 2-session re-run (`docs/EXPERIMENTS.md` "M2.6 task
+2", conclusion (a)) widens this to **0.986–1.062** — straddling parity,
+including one session where C++ is measurably faster — so "parity-or-better"
+is corrected to "near parity, occasionally a few percent either way"; the
+headline ~1.42x→~1.0x gap closure itself is unaffected and re-confirmed.
+dim-64 f32 improves
 substantially (1.918x → 1.16–1.23x across T3+T4 runs: T3's A/B median
 1.228, T4's 1.162–1.171, the fix-wave re-run's 1.169) but remains open
 (see "Honest residuals" below); dim-32/64 f64 both land close to or under
@@ -593,16 +621,22 @@ was A/B-tested and did not help (NEW32 columns in `docs/EXPERIMENTS.md`'s
 
 ### Honest residuals (still open after M2.5)
 
-- **Fixed-dim-3 knn**: 1.011–1.040x in this task's fresh sweep. What IS
+- **Fixed-dim-3 knn**: 1.011–1.040x in T4's fresh sweep. What IS
   asm-evidenced: the walk is fully inlined — zero `search_level` call
   targets (`docs/EXPERIMENTS.md` "M2.5 asm re-capture"). What is NOT
   separately measured: the residual's mechanism — the T2 reviewer's
   diagnosis attributes it to frame store/reload cost in the explicit-stack
   form (`task-2-report.md` Fix round 1, Item 2), consistent with the
   give-back A/B data but never quantified from asm, so no "~2%" or any
-  other share of the residual should be read as asm-derived. The whole
-  residual sits inside this host's documented noise floor (0.956–1.192
-  over 8 runs, `docs/EXPERIMENTS.md` "M2.5 task 1"), not chased further.
+  other share of the residual should be read as asm-derived. **Update
+  (M2.6):** an n=100-per-side, 4-session re-verification widens the
+  honestly-observed range to **1.030–1.067** (3.0–6.7%,
+  `docs/EXPERIMENTS.md` "M2.6 task 2" conclusion (c)) — the whole residual
+  still sits inside this host's documented noise floor, which is now
+  itself an n=100-grounded characterization (session medians 1.030–1.067,
+  approx. mean±2σ band 0.94–1.16) superseding the old 8-run 0.956–1.192
+  figure (`docs/EXPERIMENTS.md` "M2.5 task 1", kept as historical) — not
+  chased further.
 - **dim-32 f64**: ~1.10–1.11x — closed substantially (from 1.315x) but not
   to parity; not specifically targeted by T3 (which prioritized f32).
 - **dim-64 f32**: 1.16–1.23x across T3+T4 runs — improved substantially (from 1.918x) but
@@ -621,6 +655,85 @@ was A/B-tested and did not help (NEW32 columns in `docs/EXPERIMENTS.md`'s
   (T2/T3 both worked the query/kernel hot paths, not `add_points`'s
   sequential rebuild schedule); C++ rebuilds sequentially too, so this
   remains a documented deviation-not-yet-taken, not a regression.
+
+## M2.6 — statistical re-verification
+
+M2.6 task 1 (commit `a30a819`) replaced the perf gates' and `report_data`'s
+fixed median-of-7 timing with an adaptive `n = clamp(10, 100,
+floor(budget_s*1000/t_est_ms))` scheme (`xval::measure_pair`, 30s
+budget/side) that publishes mean/std/median/min/max at `n=100` per side for
+every workload in this repo. M2.6 task 2 (this section, commit `a30a819`,
+2026-08-25) ran the full chain twice (2 gate sessions + 2 report-chain
+runs, all n=100/side) plus `m25_diag`'s dim-8/16/32/64 sweep twice at a
+bumped `RUNS=15` (up from 7), and re-verified every conclusion the M2.5
+docs previously recorded. Full pasted evidence: `docs/EXPERIMENTS.md`
+"M2.6 task 2" subsection. Combined ranges across all 4 fresh n=100
+sessions (2 gate + 2 report-chain):
+
+| Workload | M2.5 "Post-T2/final" (T4, 2 runs, median-of-7) | M2.6 (4 sessions, median-of-100) |
+|---|---|---|
+| `build_100k_dim3_f32_seq` | 0.974–1.079 | **0.967–1.039** (dataset-dependent — see below, not noise) |
+| `knn_fixed3_dim3_f32_k10` | 1.011–1.040 | **1.030–1.067** |
+| `knn_dyn_dim8_f64_k10` | 0.950–0.966 | **0.929–0.937** (better than the entire pre-M2.5 band) |
+| `radius_dim3_f32` | 0.827–0.828 | **0.807–0.867** |
+| `dyn_add_20k_dim3_f32` | 1.121–1.170 | **1.112–1.149** (narrower than every prior range) |
+| `dyn_knn_after_churn_dim3_f32` | 0.873–0.916 | **0.940–0.947** |
+
+Every M2.6 figure is retained alongside, not instead of, the M2.5 pasted
+evidence above (house style: pasted evidence is never edited in place).
+Per-conclusion verdicts (each ends CONFIRMED or CORRECTED, per the M2.6
+controller's binding list):
+
+- **(a) dim-32 f32 win**: **CORRECTED**. Previously "parity-or-better"
+  (0.966–1.008, T4's median-of-7). Fresh median-of-15, 2-session re-run:
+  **0.986–1.062** — straddles parity, one session C++-faster by 6.2%. The
+  ~1.42x→~1.0x gap-closing mechanism/magnitude is unaffected; only the
+  "never loses" framing is corrected.
+- **(b) T2 give-backs (radius ~0.83, dim8 f64 back to pre-M2.5 band)**:
+  **CORRECTED**. `radius` ranges **0.807–0.867** across 4 sessions — wider
+  than any single "~0.83" estimate, spanning from better-than-T2's-own-A/B
+  to worse-than-M-py's-peak. `knn_dyn_dim8_f64_k10` ranges **0.929–0.937**
+  — better than the entire pre-M2.5 pasted band (0.944–1.091 /
+  0.944–0.984 excluding the flagged outlier), not merely "back inside" it.
+- **(c) fixed-dim-3 residual "~1–4%"**: **CORRECTED**. 4-session range
+  **1.030–1.067** (3.0–6.7%) — upper end exceeds the old characterization,
+  though still comfortably inside the newly-characterized noise floor
+  (below).
+- **(d) dim-16 curse-of-dimensionality attribution**: **CONFIRMED**.
+  Median-of-15 re-run: f32 ratio 0.682/0.682 (both sessions), rust_ms
+  ~83.2–83.4ms vs. dim-8's ~3.53–3.56ms (~23.5x); `frac_points_scanned`
+  (deterministic, byte-identical re-run) still jumps 0.0176→0.4875
+  (27.7x), still sufficient alone to explain the timing cliff.
+- **(e) the noise floor itself**: **CORRECTED** (replaced). See "the new
+  noise floor" callout below.
+- **(f) `dyn_add` "1.11–1.24"**: **CONFIRMED, narrowed**. 4-session range
+  **1.112–1.149**, comfortably inside the old 1.106–1.237 — the n=100-median
+  data suggests the true steady-state band is narrower than the old
+  n=7-median range implied; the old 1.237 high-water mark reads as
+  small-sample noise in hindsight, not a wider true distribution.
+- **(g) `build_100k` "0.974–1.139," suspiciously wide**: **CORRECTED/SETTLED**.
+  NOT primarily measurement noise or temporal drift: both gate sessions
+  (dataset seeded `"perf_gate_build"`) land at 0.967/0.967; both
+  report-chain sessions (independently-seeded dataset, `"report_build_100k"`)
+  land at 1.037/1.037 — each pair internally stable to <1%, ~7 points apart
+  from the other pair. The old wide spread reflects which dataset was
+  measured, not run-to-run jitter on one dataset.
+
+**The new noise floor.** The old 8-run, median-of-7 `knn_fixed3` sweep
+(0.956–1.192, `docs/EXPERIMENTS.md` "M2.5 task 1") is superseded by an
+n=100-per-side, 4-session characterization: session medians **1.030–1.067**
+(mean 1.0475, session-to-session sd 0.019, n=4), with each session's own
+per-repetition ratio estimated (delta-method, from the published
+mean/std at n=100/side) at σ≈0.03–0.05 — an approximate **mean±2σ band of
+0.94–1.16**, comfortably inside the 1.25 gate margin and narrower on both
+ends than the old eyeballed range, now with an actual computed σ behind
+it rather than 8 point values read by eye. Full derivation, the
+delta-method formula, and the caveat about `measure_pair`'s fixed
+rust-then-cpp interleave order (a residual, accepted, non-zero risk of
+one-sided bias): `docs/EXPERIMENTS.md` "M2.6 task 2", "The new noise
+floor" sub-subsection. Every "noise floor" citation elsewhere in this
+file, `README.md`, and `docs/ROADMAP.md` now points here; the old figure
+is kept as historical text, not deleted.
 
 ## M-py — Python bindings
 
@@ -708,6 +821,16 @@ honestly (`build_100k` new range 0.974–1.139, `radius` new range
 0.827–0.845 — both ordinary WSL2 noise, not a regression, since no
 perf-relevant `crates/flannrust` code changed during M-py). Full comparison
 against the M2.5 ranges: `docs/EXPERIMENTS.md`'s "M-py" subsection.
+
+**Update (M2.6):** the M-py-era `build_100k` 0.974–1.139 spread motivated a
+dedicated re-verification (`docs/EXPERIMENTS.md` "M2.6 task 2" conclusion
+(g)) — settled as genuinely dataset-dependent, not noise or drift: the
+`perf_gate.rs` binary's own (differently-seeded) dataset builds
+consistently at ~0.967 across 2 fresh sessions, while `report_data.rs`'s
+independently-seeded dataset of the same shape builds consistently at
+~1.037 across 2 fresh sessions — each individually stable to <1%, but
+~7 points apart from each other. `radius` similarly widens to a fresh
+0.807–0.867 (conclusion (b)) rather than narrowing.
 
 ### Test status (M-py, T6 final sweep — commit `0cea30c` + T6's own changes)
 
