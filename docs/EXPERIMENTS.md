@@ -1703,8 +1703,7 @@ medians 1.030–1.067 (n=4 sessions), per-session per-rep ratio σ≈0.03–0.05
 (delta-method, n=100/side), and a conservative envelope of 0.94–1.16
 (extreme session medians ± 2×max per-session σ — not a grand mean±2σ). Old
 0.956–1.192 (8 runs, median-of-7 each) kept as historical, superseded.
-**Update (M2.6 task 7): re-confirmed on the idle host**, 0.94–1.16
-unchanged — see "M2.6 task 7" subsection below.
+**Update (M2.6 task 7): re-checked on the idle host — not inflated; the fresh 4-session envelope computes slightly *wider* (0.884–1.176), 0.94–1.16 kept (see `docs/EXPERIMENTS.md` "M2.6 task 7").** Full derivation: "M2.6 task 7" subsection below.
 
 **(f) `dyn_add` range "1.11–1.24."** **CONFIRMED, narrowed.** 4 fresh n=100
 sessions range **1.112–1.149** (gate 1.141/1.149; report-chain 1.112/1.124)
@@ -2750,10 +2749,11 @@ canonical floor, re-confirmed on the idle host, not replaced.** All four
 fresh session medians (1.025–1.035) sit comfortably inside 0.94–1.16, as
 does every prior gate/report-chain session this milestone (task 2 through
 task 6, all of which also passed the ≤1.25 gate margin). The recorded
-0.94–1.16 remains a valid, appropriately conservative floor — in fact
-slightly *more* conservative on the low end than this fresh batch's own
-number alone would require (0.94 vs. 0.884 — the recorded figure already
-sits below this fresh batch's low end). `docs/EXPERIMENTS.md`,
+0.94–1.16 remains the working floor, per the controller's ruling (not
+promoted to a new canonical figure from a single 4-session batch); the
+recorded low end (0.94) is in fact *less* conservative than this fresh
+batch's own 0.884 — readers needing a worst-case single-session bound
+should use the wider 0.884–1.176. `docs/EXPERIMENTS.md`,
 `README.md`, `docs/benchmarks.md`, and `docs/ROADMAP.md` all keep citing
 **0.94–1.16** as the canonical floor; a "re-confirmed on idle host, M2.6
 task 7" note is added at each citation below rather than a value change.
@@ -2873,7 +2873,7 @@ cite the M2.5 ranges, not these).
 | **M2.6 task 6 Python bench outlier resolution** (the flagged `knn_batched_dim3_f32_..._workers1` cell's 0.493/1.009 pair CONFIRMED as host-load contamination, not a new steady state — fresh idle-host re-run measures **0.688**/**1.055**, with cKDTree's absolute median (423.19ms) returning to its historical 426–430ms band; honest combined ranges now `ratio_ckdtree` **0.493–0.830**, `ratio_pynanoflann` **1.009–1.216**, both flagged outlier points kept, not deleted) — README, `docs/benchmarks.md`, `docs/EXPERIMENTS.md` "M2.6 task 3", all "Update (M2.6 task 6)" banners | `bench_py.py`, §3 "M2.6 task 6" subsection, "Python bench: full idle-host re-run and outlier resolution" | fresh `report_py_t6.json`'s `workloads[].{lib}_stats`/`ratio_ckdtree`/`ratio_pynanoflann` fields for `knn_batched_dim3_f32_k10_q200k_workers1` |
 | **M2.6 task 6 measurement-conditions protocol** (idle-host requirement, `LOADAVG_BEFORE`/`LOADAVG_AFTER` convention generalized to a standing protocol, `bench_py.py`'s new `meta.loadavg_start`/`meta.loadavg_end` fields) | §1's "Measurement-conditions protocol" subsection | `bench_py.py`'s `_loadavg()` function and its two call sites; this task's own pasted `LOADAVG_BEFORE`/`LOADAVG_AFTER` lines throughout §3 "M2.6 task 6" |
 | **M2.6 task 7 dim sweep re-measurement** (dim-32 f32 CONFIRMED 0.986–1.062; dim-32 f64/dim-64 f32/dim-64 f64 CORRECTED wider — **1.080–1.104** / **1.082–1.235** / **0.862–0.956**, superseding "1.103–1.111" / "1.16–1.23x" / "0.879–0.887" everywhere cited; dim-8/dim-16 CONFIRMED) — README "dim-32/64 knn" section, `docs/benchmarks.md` dim-32/64 headline + "Honest residuals", `docs/ROADMAP.md` future-perf-leads bullet | `cargo run -p xval --release --example m25_diag -- knn`, §3 "M2.6 task 7" subsection | stdout CSV, `dim,scalar,rust_ms,cpp_ms,ratio` rows, both fresh sessions, cross-referenced against "M2.6 task 2"'s own pasted CSV |
-| **M2.6 task 7 noise-envelope re-characterization** (4 fresh, loadavg-bracketed `knn_fixed3` gate sessions compute a conservative envelope of **0.884–1.176**, slightly wider than — not narrower than — the recorded 0.94–1.16; canonical floor kept at 0.94–1.16, re-confirmed on the idle host, not replaced) — every `0.94–1.16` citation (`README.md`, `docs/benchmarks.md` x3, `docs/ROADMAP.md` x2, this file's §1 and "M2.6 task 2") gets a "re-confirmed on idle host, M2.6 task 7" note, no value change | `PERF_GATE=1 RUSTFLAGS="-C target-cpu=native" cargo test -p xval --release --test perf_gate -- --ignored perf_gate_knn_dim3 --test-threads=1 --nocapture`, §3 "M2.6 task 7" subsection | `PERF_GATE perf_gate_knn_dim3_f32_k10: ... ratio=... | rust mean=... std=... | cpp mean=... std=...` lines, all 4 pasted sessions, `LOADAVG_BEFORE`/`LOADAVG_AFTER` on each |
+| **M2.6 task 7 noise-envelope re-characterization** (4 fresh, loadavg-bracketed `knn_fixed3` gate sessions compute a conservative envelope of **0.884–1.176**, slightly wider than — not narrower than — the recorded 0.94–1.16; canonical floor kept at 0.94–1.16, re-confirmed on the idle host, not replaced) — every `0.94–1.16` citation (`README.md`, `docs/benchmarks.md` x4, `docs/ROADMAP.md` x2, this file's §1 and "M2.6 task 2") gets a "re-confirmed on idle host, M2.6 task 7" note, no value change | `PERF_GATE=1 RUSTFLAGS="-C target-cpu=native" cargo test -p xval --release --test perf_gate -- --ignored perf_gate_knn_dim3 --test-threads=1 --nocapture`, §3 "M2.6 task 7" subsection | `PERF_GATE perf_gate_knn_dim3_f32_k10: ... ratio=... | rust mean=... std=... | cpp mean=... std=...` lines, all 4 pasted sessions, `LOADAVG_BEFORE`/`LOADAVG_AFTER` on each |
 
 ## 6. See also
 

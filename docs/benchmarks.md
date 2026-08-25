@@ -22,9 +22,7 @@ medians 1.030–1.067, per-session per-rep ratio σ≈0.03–0.05, approx.
 conservative envelope of 0.94–1.16 (extreme session medians ± 2×max
 per-session σ), `docs/EXPERIMENTS.md` "M2.6 task 2" — superseding
 the old 8-run `knn_fixed3` sweep, 0.956–1.192, `docs/EXPERIMENTS.md` "M2.5
-task 1" (kept there as historical). **Update (M2.6 task 7): re-confirmed
-on the idle host**, 0.94–1.16 unchanged (`docs/EXPERIMENTS.md` "M2.6 task
-7"). The perf
+task 1" (kept there as historical). **Update (M2.6 task 7): re-checked on the idle host — not inflated; the fresh 4-session envelope computes slightly *wider* (0.884–1.176), 0.94–1.16 kept (see `docs/EXPERIMENTS.md` "M2.6 task 7").** The perf
 gate table below mixes sample sizes across its columns (see the column
 headers): the "Before Task 14" column is Step 0's baseline, a **median of
 3** timed runs; every "After Task 14" column is a **median of 7** timed runs
@@ -211,8 +209,7 @@ spread is an older, smaller sample than the repo's canonical noise floor —
 session medians ± 2×max per-session σ),
 `docs/EXPERIMENTS.md` "M2.6 task 2"), superseding the 8-run 0.956–1.192
 figure (`docs/EXPERIMENTS.md` "M2.5 task 1", kept there as historical).
-**Update (M2.6 task 7): re-confirmed on the idle host**, 0.94–1.16
-unchanged (`docs/EXPERIMENTS.md` "M2.6 task 7").
+**Update (M2.6 task 7): re-checked on the idle host — not inflated; the fresh 4-session envelope computes slightly *wider* (0.884–1.176), 0.94–1.16 kept (see `docs/EXPERIMENTS.md` "M2.6 task 7").**
 Both retained below as the M1 record, not as the current state.
 
 What's left in the ~4-5% gap is architectural, not a missed optimization in
