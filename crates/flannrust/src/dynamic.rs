@@ -567,8 +567,15 @@ where
             self.tree_index[self.point_count] = pos as i32;
 
             for i in 0..pos {
-                let entries = std::mem::take(&mut self.slots[i].vind);
-                for e in entries {
+                // nanoflann.hpp:2653-2664: iterate `vAcc_` by index (not
+                // consuming it), push each entry into slot `pos`, THEN
+                // `vAcc_.clear()` -- clearing retains the Vec's allocation,
+                // so steady-state merges push into an already-sized buffer
+                // instead of regrowing from capacity 0 through the doubling
+                // ladder on every merge (C++ fidelity; `Vec::clear` mirrors
+                // `std::vector::clear` here -- length 0, capacity unchanged).
+                let mut entries = std::mem::take(&mut self.slots[i].vind);
+                for &e in entries.iter() {
                     self.slots[pos].vind.push(e);
                     let e_usize = e.to_usize();
                     if self.tree_index[e_usize] != -1 {
@@ -577,6 +584,8 @@ where
                         self.removed.insert(e_usize, pos as i32);
                     }
                 }
+                entries.clear();
+                self.slots[i].vind = entries;
             }
 
             self.slots[pos].vind.push(Idx::from_usize(idx));

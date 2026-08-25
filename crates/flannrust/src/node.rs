@@ -175,6 +175,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic]
     fn test_offset_children_panics_on_leaf_in_debug() {
         let mut node = Node::<f64>::leaf(0, 3);
