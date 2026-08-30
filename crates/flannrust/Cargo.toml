@@ -9,9 +9,6 @@ repository = "https://github.com/sitzikbs/flannrust"
 keywords = ["kdtree", "nearest-neighbor", "nanoflann", "spatial", "knn"]
 categories = ["algorithms", "data-structures", "science"]
 readme = "../../README.md"
-# Not yet published to crates.io -- the crates.io distribution story
-# (versioning, publishing cadence) hasn't been decided yet.
-publish = false
 
 [features]
 default = ["parallel"]
