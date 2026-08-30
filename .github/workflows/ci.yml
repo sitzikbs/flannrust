@@ -67,7 +67,7 @@ jobs:
       # useful for here. Verified locally: passes clean (194 passed, 0
       # failed, 3 ignored) without needing MIRIFLAGS.
       - name: cargo miri test
-        run: cargo miri test -p flannrust --lib --no-default-features
+        run: cargo +nightly miri test -p flannrust --lib --no-default-features
 
   python:
     name: python
