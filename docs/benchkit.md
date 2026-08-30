@@ -98,6 +98,15 @@ its "confirmed idle" methodology notes throughout). Before running
 }
 ```
 
+`benchkit.py` always sets `RUSTFLAGS="-C target-cpu=native"` before running
+`report_data` (the same flag the perf-gate/report-chain methodology uses —
+see `docs/EXPERIMENTS.md` Section 1), so `rust_report`'s speed numbers are
+compiled for the *capturing* host's own CPU, not a portable baseline. That
+makes them representative on that host but not bit-for-bit comparable to
+another host's speed numbers if the two CPUs differ — cross-host comparison
+should read each bundle's own numbers on their own terms rather than diff
+raw ms values across hosts.
+
 `rust_report` and `python_report` are each embedded exactly as their
 respective tool emits them (`report_data.rs` and `bench_py.py` own their own
 schemas and versioning — `bench_py.py`'s JSON carries its own
