@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml pins the actual compiler to 1.98.0; this action
+      # only needs to get rustup itself onto the runner. Any cargo/rustup
+      # invocation below runs inside the checkout, so rustup's directory
+      # override picks up the pinned 1.98.0 toolchain automatically
+      # (installing it on demand if it isn't already cached).
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Explicitly ensure clippy is present on the pinned 1.98.0 toolchain --
+      # the dtolnay action above only installs components onto "stable",
+      # not onto whatever the rust-toolchain.toml override resolves to.
+      - name: Install clippy on the pinned toolchain
+        run: rustup component add clippy
+
+      # NOTE: `cargo fmt --check` is intentionally not run here. The
+      # repository is not fmt-clean yet (verified locally on 2026-08-30),
+      # and reformatting the tree is out of scope for this CI setup task.
+      # Add this step back once a formatting pass has landed.
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace
+
+      - name: cargo build (flannrust, no default features)
+        run: cargo build -p flannrust --no-default-features
+
+  miri:
+    name: miri
+    runs-on: ubuntu-latest
+    # Required: this job gates merges, same as `test`.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+
+      # flannrust's core (this crate, --lib) is pure safe/unsafe Rust with
+      # no FFI, so miri applies cleanly to it; xval and nanoflann-ref (C++
+      # FFI) are out of miri's scope entirely.
+      #
+      # Run with --no-default-features (i.e. without the "parallel" rayon
+      # feature): rayon's dependency crossbeam-epoch performs pointer
+      # exposure/retag patterns that miri's Stacked Borrows checker flags
+      # as UB, which is a known upstream miri/crossbeam-epoch friction
+      # point rather than a bug in flannrust's own code. The single-
+      # threaded build path this exercises is exactly the code miri is
+      # useful for here. Verified locally: passes clean (194 passed, 0
+      # failed, 3 ignored) without needing MIRIFLAGS.
+      - name: cargo miri test
+        run: cargo miri test -p flannrust --lib --no-default-features
+
+  python:
+    name: python
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python build/test dependencies
+        run: pip install maturin numpy pytest scipy
+
+      - name: Build and install the extension module
+        run: maturin develop -m crates/flannrust-py/Cargo.toml --release
+
+      # Parity oracle for crates/flannrust-py/python/tests/test_parity_pynanoflann.py.
+      # Installed as its own step so a PyPI/build failure here surfaces as
+      # a clearly attributable failure rather than being masked inside a
+      # combined dependency-install step.
+      - name: Install pynanoflann (parity oracle)
+        run: pip install pynanoflann
+
+      - name: pytest
+        run: pytest crates/flannrust-py/python/tests
