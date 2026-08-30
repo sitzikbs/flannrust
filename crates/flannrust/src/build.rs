@@ -56,31 +56,50 @@ pub(crate) fn cpp_max<T: Scalar>(a: T, b: T) -> T {
     }
 }
 
-/// Plain min/max scan over `ind` on dimension `dim` (nanoflann's
-/// `computeMinMax`, nanoflann.hpp:1193-1205). The C++ has a 4-way-unrolled
-/// variant inline inside `middleSplit_` (nanoflann.hpp:1510-1530) for
-/// performance, but a plain sequential loop computes the identical min/max
-/// (unrolling only reorders independent `<`/`>` comparisons — associative
-/// and commutative for min/max, so the result is bit-identical regardless of
-/// grouping; no NaNs are in play here).
+/// 4-wide unrolled min/max scan over `ind` on dimension `dim` — the inline
+/// scan `middleSplit_` actually uses (nanoflann.hpp:1507-1530), NOT the
+/// separate plain-loop `computeMinMax` (nanoflann.hpp:1193-1205, unused by
+/// `middleSplit_`). Ported for the C++'s 4-way load-ILP shape (not just
+/// result parity): min/max is associative/commutative and there are no NaNs
+/// here, so the result is bit-identical to a 1-wide loop regardless of
+/// grouping — this is a throughput port, not a behavior change. `std::min`/
+/// `std::max` over an initializer list resolve via `std::min_element`/
+/// `std::max_element`, i.e. a left fold that keeps the earliest value on a
+/// tie; `cpp_min`/`cpp_max` (defined above) already have that exact
+/// tie-breaking semantics, so the fold below is bit-identical to the C++'s
+/// `std::min({local_min, v0, v1, v2, v3})` / `std::max({...})`.
 fn compute_min_max<T, DS, Idx>(ds: &DS, ind: &[Idx], dim: usize) -> (T, T)
 where
     T: Scalar,
     DS: DataSource<T> + ?Sized,
     Idx: IndexType,
 {
-    let mut min_elem = ds.point_component(ind[0].to_usize(), dim);
-    let mut max_elem = min_elem;
-    for &i in &ind[1..] {
-        let v = ds.point_component(i.to_usize(), dim);
-        if v < min_elem {
-            min_elem = v;
-        }
-        if v > max_elem {
-            max_elem = v;
-        }
+    let count = ind.len();
+    let mut local_min = ds.point_component(ind[0].to_usize(), dim);
+    let mut local_max = local_min;
+
+    // nanoflann.hpp:1510-1521: `constexpr size_t UNROLL = 4;` main loop.
+    const UNROLL: usize = 4;
+    let mut k: usize = 1;
+    while k + UNROLL <= count {
+        let v0 = ds.point_component(ind[k].to_usize(), dim);
+        let v1 = ds.point_component(ind[k + 1].to_usize(), dim);
+        let v2 = ds.point_component(ind[k + 2].to_usize(), dim);
+        let v3 = ds.point_component(ind[k + 3].to_usize(), dim);
+
+        local_min = cpp_min(cpp_min(cpp_min(cpp_min(local_min, v0), v1), v2), v3);
+        local_max = cpp_max(cpp_max(cpp_max(cpp_max(local_max, v0), v1), v2), v3);
+        k += UNROLL;
     }
-    (min_elem, max_elem)
+    // nanoflann.hpp:1523-1529: remainder loop.
+    while k < count {
+        let val = ds.point_component(ind[k].to_usize(), dim);
+        local_min = cpp_min(local_min, val);
+        local_max = cpp_max(local_max, val);
+        k += 1;
+    }
+
+    (local_min, local_max)
 }
 
 /// Three-way partition of `ind` around `cutval` on `cutfeat`:

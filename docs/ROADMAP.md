@@ -43,23 +43,113 @@ suite green throughout, both changes reviewed with fix rounds):
   performance deep-dive" section; every pasted run behind these figures:
   `docs/EXPERIMENTS.md` §3's "M2.5 task 1/2/3/4" subsections.
 
+**Update (M2.6, commit `a30a819`, 2026-08-25):** every ratio above was
+re-verified at n=100/side across 4 independent sessions
+(`docs/EXPERIMENTS.md` "M2.6 task 2"). Corrected: dim-32 f32 widens to
+**0.986–1.062** (straddles parity — the gap-closing mechanism itself is
+unaffected); `radius_dim3_f32` widens to **0.807–0.867**; `dyn_add`
+narrows to **1.112–1.149**; `dyn_knn_after_churn` narrows to
+**0.940–0.947** (still a clear win over the pre-M2.5 band). Corrected,
+improved: `knn_dyn_dim8_f64_k10` is now **0.929–0.937** — better than the
+entire pre-M2.5 range, not merely back inside it. Widened, still inside
+the (also newly-characterized) noise floor: the fixed-dim-3 residual is
+**1.030–1.067**. `build_100k_dim3_f32_seq` (not covered above) is now
+understood to be reproducibly split by configuration (0.967 vs. 1.037–1.039
+depending on which of two differently-seeded datasets is measured) — not
+primarily noise or drift, though dataset seed and process context were
+never crossed to isolate which one is the cause (`docs/EXPERIMENTS.md`
+conclusion (g); a crossing experiment — swap which dataset each binary
+builds — is a concrete Task-4-audit input). Full
+per-conclusion verdicts: `docs/EXPERIMENTS.md` "M2.6 task 2";
+`docs/benchmarks.md` "M2.6 — statistical re-verification".
+
+**Update (M2.6 task 4/6): the `build_100k` "configuration split" above is
+corrected — it did not reproduce.** T4's own crossing experiment (identical
+unpatched code/seeds) measured 0.9825/0.984, no trace of the old
+0.967-vs-1.037/1.039 clustering; T6's independent fresh 3-session sweep
+corroborates this a second way (0.993–1.009 across both gate AND
+report-chain sessions, the opposite ordering from the original split — see
+`docs/benchmarks.md` "M2.6 task 6" section). Current verdict: `build_100k`
+shows no reproducible configuration-dependent gap; the original split most
+likely reflected session/host-load state, consistent with a background
+game process the user identified as consuming host compute during some
+earlier M2.6 sessions (`docs/EXPERIMENTS.md` §1's "Measurement-conditions
+protocol"). T6's fresh 0.993–1.009 range is the current record for this
+workload. **Also landed this milestone (M2.6 task 5, commits `3d64c8b`/
+`a68df86`):** a C++-fidelity audit found and fixed two real divergences in
+`dyn_add`'s hot path — merge-loop `Vec` capacity preservation and a 4-wide
+unrolled min/max scan matching `middleSplit_`'s actual C++ shape —
+`dyn_add` **1.112–1.149 → 1.034–1.038**, confirmed durable by T6's
+follow-up sweep (**1.0315–1.039**), bit-exact parity preserved throughout.
+
+**M2.6 milestone status: complete** (tasks 1–7, plan
+`docs/superpowers/plans/2026-08-25-flannrust-m2.6-rigor.md`). Delivered:
+adaptive n=10..100 statistical methodology for both the Rust-vs-C++ gates
+and the Python bench (mean/std/median/min/max/n replacing fixed
+median-of-7); a line-by-line fidelity audit against vendored nanoflann
+1.12.1 of every underperforming/losing workload ("no extra tricks, follow
+flann exactly"), landing two real fixes (`dyn_add` above) and producing
+evidence-backed REJECTs for everything else (`build_100k`/`knn_fixed3` no
+unported behavior, dim-32/64 f64 = compiler codegen not a Rust defect,
+arena pre-reserve measured worse); a resolved Python-bench outlier
+(`docs/benchmarks.md` M-py section, "Update (M2.6 task 6)"); and a
+standing idle-host measurement-conditions protocol. Full verdict table:
+`docs/benchmarks.md`'s "M2.6 task 6" section. **Task 7 (user-directed,
+2026-08-25):** the two data sets recorded during the game-load window
+that task 6 hadn't independently re-checked — the `m25_diag` dim-32/64
+sweep and the `knn_fixed3` noise envelope — were re-measured fresh on the
+idle host; dim-32 f64/dim-64 f32/dim-64 f64 CORRECTED wider (see above),
+the 0.94–1.16 noise envelope re-confirmed unchanged (its own fresh
+4-session envelope computes slightly wider, not narrower — no evidence
+of inflation). Full evidence: `docs/EXPERIMENTS.md` "M2.6 task 7".
+
 Full sweep, provenance, and every pasted run: `docs/benchmarks.md` +
 `docs/EXPERIMENTS.md`; task reports:
-`docs/reports/m2.5/task-{1,2,3,4}-report.md`.
+`docs/reports/m2.5/task-{1,2,3,4}-report.md`,
+`docs/reports/m2.6/task-{1..7}-report.md`.
 
 **Future perf leads (explicitly NOT taken this milestone):**
 
 - Dim-64 f32 (1.16–1.23x across T3+T4 runs) and dim-32 f64 (~1.10–1.11x)
   — both improved substantially by T3's kernel fix but not closed to
-  parity; T3's target was dim-32 f32 specifically.
+  parity; T3's target was dim-32 f32 specifically. **Update (M2.6 task 4,
+  fidelity audit):** the dim-32/64 f64 residual is compiler codegen, not a
+  Rust fidelity defect — asm comparison (`m25_asm` vs. `g++ -O3
+  -march=native -ffp-contract=off -S` on the vendored header) shows the
+  Rust kernel already runs the exact same arithmetic as C++ (bit-parity
+  holds), but LLVM emits conservative 256-bit AVX2 for the kernel body
+  while g++ emits 512-bit AVX-512 for the identical vectorizable
+  summation on this AVX-512-capable host. **REJECTED as a further
+  port-fidelity change** — nothing to fix in the Rust source. A
+  `RUSTFLAGS`-level 512-bit-vector experiment (a toolchain knob, not a
+  code change) remains a possible future lever, still unexplored
+  (`docs/reports/m2.6/task-4-report.md` §6). **Update (M2.6 task 7, user-directed
+  idle-host re-measurement):** both ranges CORRECTED wider — dim-64 f32
+  **1.082–1.235** (was 1.16–1.23x; this workload is inherently
+  higher-variance on this host, independent of load), dim-32 f64
+  **1.080–1.104** (was ~1.10–1.11x); dim-64 f64 (not called out in this
+  bullet before) is also CORRECTED wider, **0.862–0.956** (was
+  0.879–0.887). Qualitative read ("improved, not closed") unaffected —
+  only bounds widen (`docs/EXPERIMENTS.md` "M2.6 task 7").
 - The fixed-dim-3 residual's last ~1–4% (1.011–1.040x in T4's sweep).
   What is asm-evidenced: the walk is fully inlined, zero `search_level`
   call targets. What is not: the residual's mechanism — the T2 reviewer's
   diagnosis attributes it to frame store/reload cost in the explicit-stack
   form, consistent with the interleaved A/B data but never separately
-  quantified from asm. Within this host's documented noise floor
-  (`knn_fixed3` 0.956–1.192 across 8 runs of the unmodified tree,
-  `docs/EXPERIMENTS.md` "M2.5 task 1"), not chased further.
+  quantified from asm. **Update (M2.6):** an n=100-per-side, 4-session
+  re-verification widens the honestly-observed range to **1.030–1.067**
+  (3.0–6.7%, `docs/EXPERIMENTS.md` "M2.6 task 2" conclusion (c)). Within
+  this host's documented noise floor — **now the n=100-grounded
+  characterization**, session medians 1.030–1.067 across 4 sessions,
+  a conservative envelope of 0.94–1.16 (extreme session medians ± 2×max
+  per-session σ) (`docs/EXPERIMENTS.md` "M2.6 task 2",
+  superseding the old 8-run 0.956–1.192 figure, `docs/EXPERIMENTS.md`
+  "M2.5 task 1", kept as historical) — not chased further. **Update
+  (M2.6 task 7): re-confirmed on the idle host**, 0.94–1.16 unchanged —
+  4 fresh loadavg-bracketed sessions computed a slightly *wider*, not
+  narrower, envelope (0.884–1.176), so there is no evidence this figure
+  was inflated by the game-load window (`docs/EXPERIMENTS.md` "M2.6 task
+  7").
 - A fast-math / reordered-arithmetic kernel feature flag (non-default, own
   accuracy docs, never in parity suites) — remains an unexplored idea, no
   code written.
@@ -81,6 +171,11 @@ Full sweep, provenance, and every pasted run: `docs/benchmarks.md` +
   fix wave" subsection. Not chased further this wave (out of T1/T3's
   dim-32/64 scope; a future perf task could still target the traversal
   itself at this dimensionality, now that the mechanism is known).
+  **Update (M2.6):** re-confirmed at a bumped `RUNS=15` (2 sessions,
+  `docs/EXPERIMENTS.md` "M2.6 task 2" conclusion (d)) — dim-16 f32 ratio
+  0.682/0.682 (identical both sessions), rust_ms ~83.2–83.4ms vs. dim-8's
+  ~3.53–3.56ms (~23.5x); `frac_points_scanned` re-run byte-identical
+  (0.0176→0.4875, 27.7x). Same conclusion, same mechanism, no change.
 - `radius_dim3_f32` took one real step worse in M2.5: every pre-M2.5
   pasted run sits in 0.767–0.792, T3's post-fix 0.777 is inside that
   range (not a step), and T2 moved it to 0.827–0.828 (T4's sweep) — ~4.4%
@@ -89,11 +184,21 @@ Full sweep, provenance, and every pasted run: `docs/benchmarks.md` +
   2"). One reviewed, justified step, not a trend — but a watch-item for
   any future perf-tuning pass touching the query hot path: still a
   comfortable Rust win vs. C++ today, but worth checking this gate
-  specifically before give-backs accumulate. **Pre-announcement
+  specifically before give-backs accumulate. ~~**Pre-announcement
   re-measure mandate**: before M-pub's bare-metal re-run is published,
   re-measure `radius_dim3_f32` with 8 interleaved repeats (the T2 rigor
   mandate's methodology, not a single before/after pair) — don't publish
-  the 0.827–0.828 figure as final without that check.
+  the 0.827–0.828 figure as final without that check.~~ **Update (M2.6):
+  mandate satisfied, superseded by a stronger re-measure.** M2.6 task 2
+  re-measured `radius_dim3_f32` via 4 independent n=100-per-side sessions
+  (2 gate + 2 report-chain, `docs/EXPERIMENTS.md` "M2.6 task 2" conclusion
+  (b)) — well beyond the "8 interleaved repeats" this item asked for. The
+  honest current range is **0.807–0.867** (WIDER than the single 0.827–0.828
+  point this item was gating on, spanning from better-than-T2's-own-A/B at
+  the low end to worse-than-M-py's-recorded-peak at the high end) — still
+  a comfortable Rust win vs. C++ (< 1.0 throughout), still well under the
+  1.25 gate margin, but do not publish "0.83" or "0.827–0.828" as the final
+  bare-metal-pending figure; publish the new 0.807–0.867 range instead.
 
 ## M-py — Python bindings (complete; user directive, 2026-08-22: "most people use Python these days")
 
@@ -102,15 +207,17 @@ Goal: make flannrust usable from Python so it can replace the common Python rout
 - **Parity, scoped by binding controller ruling**: `pynanoflann` 0.10.0 (only PyPI release) vendors nanoflann 1.5.5 vs. flannrust's own 1.12.1 C++ oracle — a version-gap summation-order artifact produces exactly-1-ULP squared-distance differences at `dim >= 3`, not a flannrust defect. Parity claim: tie-free KNN index-sequence parity (96/96 nodes, bit-exact) + dim=2 distance bit-exactness (4/4) hold unconditionally; 16 nodes attributable to the documented mechanism are pinned `xfail(strict=True)`, not silently dropped. Full root-cause writeup: `docs/EXPERIMENTS.md`.
 - The row-major owned `DataSource` (`OwnedRows`, `crates/flannrust/src/data_source.rs`) shipped with `point_row` pre-overridden, so Python-bound NumPy buffers get the M2.5 dim-32/64 kernel speedup for free — this closed the API lead originally flagged here.
 - Full task reports: `docs/reports/m-py/task-{0..6}-report.md` (decisive outputs also reproduced in `docs/EXPERIMENTS.md`).
+- **Update (M2.6 task 3, 2026-08-25):** `bench_py.py` re-run under an adaptive `n=10..100` mean/std/median statistical harness (`docs/EXPERIMENTS.md` "M2.6 task 3") re-measures every range in this bullet's first paragraph: batched knn dim3 f32 vs cKDTree widens to **0.493–0.830** (the 0.493 low end is a flagged single-session outlier — see below — not a confirmed new steady state), build vs pynanoflann to **0.543–0.561**, dim-32 knn vs pynanoflann to **0.878–0.922**, per-call overhead to flannrust ≈2.0–2.4µs / cKDTree ≈7.2–8.5µs / pynanoflann ≈2.3–2.8µs. All still meet their gates. Full per-conclusion detail and the outlier caveat: `docs/EXPERIMENTS.md` "M2.6 task 3", `docs/benchmarks.md` M-py section.
+- **Update (M2.6 task 6, full fresh run, idle host, 2026-08-25):** the flagged `workers=1` outlier above is resolved. A fresh idle-host `bench_py.py` run (loadavg captured before/after) measures the same cell at `ratio_ckdtree` **0.688** and `ratio_pynanoflann` **1.055** — cKDTree's absolute median (423.19ms) is back in its historical 426–430ms band, decisively away from the flagged session's 698.9ms. **Verdict: CONFIRMED as host-load contamination** (consistent with a background game process the user identified as running during some earlier M2.6 sessions), **not a new steady state.** Honest ranges unchanged in their bounds (`ratio_ckdtree` 0.493–0.830, `ratio_pynanoflann` 1.009–1.216, both flagged outlier points kept, not deleted) — the outlier is now resolved rather than open. Full detail: `docs/EXPERIMENTS.md` "M2.6 task 6" subsection.
 
 ## M-pub — Announcement readiness (blog post + repo launch)
 
 Cross-the-t's checklist before anything public:
-- **Re-run the full evaluation on bare-metal Linux** (current numbers are WSL2; the documented noise floor is `knn_fixed3` 0.956–1.192 across 8 runs of one unchanged tree — `docs/EXPERIMENTS.md` "M2.5 task 1"). Publish only the bare-metal numbers; keep WSL2 as a secondary data point. This applies to the M-py Python bench numbers too, not just the Rust-vs-C++ gates.
+- **Re-run the full evaluation on bare-metal Linux, under the M2.6 task 6 measurement-conditions protocol** (current numbers are WSL2; the documented noise floor is now the M2.6 n=100-per-side, 4-session characterization — `knn_fixed3` session medians 1.030–1.067, conservative envelope 0.94–1.16 (extreme session medians ± 2×max per-session σ) — `docs/EXPERIMENTS.md` "M2.6 task 2", superseding the old 8-run 0.956–1.192 figure, `docs/EXPERIMENTS.md` "M2.5 task 1", kept as historical). **Update (M2.6 task 7): re-checked on the idle host — not inflated; the fresh 4-session envelope computes slightly *wider* (0.884–1.176), 0.94–1.16 kept (see `docs/EXPERIMENTS.md` "M2.6 task 7").** Publish only the bare-metal numbers; keep WSL2 as a secondary data point. This applies to the M-py Python bench numbers too, not just the Rust-vs-C++ gates. **Confirm the host is idle first**: close compute-heavy background applications and capture `/proc/loadavg` before/after every session — `docs/EXPERIMENTS.md` §1's "Measurement-conditions protocol" (M2.6 task 6), added after a background game process was found to have contaminated some earlier M2.6 sessions' numbers (a flagged Python-bench outlier and a mis-recorded `build_100k` "configuration split," both since resolved). M2.6 task 7 additionally re-measured the `m25_diag` dim sweep and the noise envelope itself on the idle host (`docs/EXPERIMENTS.md` "M2.6 task 7") — the dim-32-f64/dim-64 corrections above are its output.
 - **Claims audit**: every performance/parity sentence in the post traces to the generated report + EXPERIMENTS.md; independent re-review of the draft post against the data.
 - **Licensing/attribution**: nanoflann is BSD-2-Clause — vendored header retains its license text; README + post credit Blanco-Claraco et al. and link upstream; our LICENSE chosen (BSD-2 to match, or MIT/Apache-2.0 dual — decide explicitly).
 - **CI**: GitHub Actions running the workspace tests + `--no-default-features` + (nightly job) heavy/ignored tests and perf gates on a dedicated runner. **The miri job is required, not optional**: `search.rs`'s `FrameStack` (M2.5 task 2) is this crate's first `unsafe` code, and both aliasing models (Stacked Borrows + Tree Borrows: `cargo +nightly miri test -p flannrust --lib -- search`, once plain and once with `MIRIFLAGS="-Zmiri-tree-borrows"`, see `docs/EXPERIMENTS.md`'s "Miri" subsection) must stay green on every change that touches `search.rs`, not just at milestone close-out — a nightly-only or manual-only miri run would let a regression sit undetected for however long the interval is.
 - **Wheel CI matrix + PyPI publish** (new, M-py close-out): a `maturin`-based GitHub Actions matrix building `flannrust-py` wheels across the usual PyO3/maturin axes (Linux/macOS/Windows × the abi3-supported CPython range this crate already targets — `pyproject.toml`'s `requires-python = ">=3.9"`, abi3), running the pytest suite per-wheel before upload; publish to PyPI under the package name **`flannrust`** (decided — matches the Rust crate name, `crates/flannrust-py/pyproject.toml`'s `[project].name` already set to it). `crates.io` publish dry run below covers the Rust crate; this is the parallel PyPI checklist item for the Python package.
 - **crates.io publish dry run**, docs.rs rendering check, README badges honest (no green-checkmark theater).
-- **Investigate the dim8 f64 knn miss vs pynanoflann before the announcement**: M-py's bench measured `knn_dim8_float64_..._workers1` at **1.233–1.249x vs pynanoflann** (flannrust 23–25% slower, the most consistent single-workload miss in the whole M-py matrix, both bench runs agreeing closely — `docs/benchmarks.md`'s M-py section) — **against flannrust's own 1.12.1 C++ oracle at the same dim/dtype, the same workload measures ~0.95x** (`knn_dyn_dim8_f64_k10` perf gate, M2.5 section above). That contrast means the miss is specifically a pynanoflann-vs-flannrust shape, not a flannrust regression against C++ ground truth — most likely pynanoflann's simpler pybind11 marshalling path or its vendored 1.5.5 kernel doing less per-call work than this crate's own FFI/binding path. Not root-caused this milestone; profile it (or at minimum characterize which side the gap sits on — Python/pybind11 overhead vs. kernel) before publishing a claim that leans on this workload.
-- Blog post draft: the story is (1) bit-exact parity as a verification method (in-process oracle, tree-permutation equality, mutation canaries), (2) the wins (1.7× parallel build, 1.2–1.3× radius, M2.5's dim-32 fix, M-py's build/dim-32/batched-knn wins vs both scipy and pynanoflann), (3) honest residuals (dim-64/dim-32-f64 still open, the fixed-dim-3 last ~1-4%, the M2.5 T2 trade-off — dim8 gave back all of its T3 win and radius landed ~4.4% worse than its pre-M2.5 range, both still < 1.0 vs C++, in exchange for the fixed-dim-3 win, the churn win, and stack-overflow immunity — and M-py's own two non-gating misses vs pynanoflann, dim8 f64 chief among them) — credibility comes from publishing the losses too.
+- **Investigate the dim8 f64 knn miss vs pynanoflann before the announcement**: M-py's bench measured `knn_dim8_float64_..._workers1` at **1.233–1.249x vs pynanoflann** (flannrust 23–25% slower, the most consistent single-workload miss in the whole M-py matrix, both bench runs agreeing closely — `docs/benchmarks.md`'s M-py section) — **against flannrust's own 1.12.1 C++ oracle at the same dim/dtype, the same workload measures ~0.95x** (`knn_dyn_dim8_f64_k10` perf gate, M2.5 section above). That contrast means the miss is specifically a pynanoflann-vs-flannrust shape, not a flannrust regression against C++ ground truth — most likely pynanoflann's simpler pybind11 marshalling path or its vendored 1.5.5 kernel doing less per-call work than this crate's own FFI/binding path. Not root-caused this milestone; profile it (or at minimum characterize which side the gap sits on — Python/pybind11 overhead vs. kernel) before publishing a claim that leans on this workload. **Update (M2.6 task 3):** re-measured (adaptive `n=56`) at **1.271** — widens the range to **1.233–1.271**, an ordinary (non-outlier-shaped) worsening, still the most consistent miss in the matrix; the pynanoflann-vs-flannrust-shape reasoning above is unaffected (`docs/EXPERIMENTS.md` "M2.6 task 3" conclusion (h)). **Update (M2.6 task 4, fidelity audit):** the "1.5.5's kernel autovectorizes faster" half of the pynanoflann-vs-flannrust-shape hypothesis is refuted. A direct head-to-head C++ benchmark of nanoflann 1.5.5 (what pynanoflann vendors) against 1.12.1 (this repo's own oracle) on the identical dim8 f64 workload found **1.5.5 is ~5–6% *slower*** than 1.12.1 (median-of-15, same compiler/flags, both with and without `-ffp-contract=off`; `docs/reports/m2.6/task-4-report.md` §7). Since flannrust already wins against its own 1.12.1 oracle at this dim/dtype (0.929–0.937, `docs/benchmarks.md` M2.6 section), the miss cannot be a Rust kernel/library defect, and it isn't explained by pynanoflann's C++ kernel being faster either — it narrows specifically to the Python/pybind11 **binding layer** (marshalling/call-overhead shape), an M-py investigation item, still not root-caused this milestone, still open. **Update (M2.6 task 6):** re-measured on a fresh idle-host run at **1.227** — 0.006 below the old 1.233 low end, essentially at the boundary, unchanged conclusion.
+- Blog post draft: the story is (1) bit-exact parity as a verification method (in-process oracle, tree-permutation equality, mutation canaries), (2) the wins (1.7× parallel build, 1.2–1.3× radius, M2.5's dim-32 fix, M-py's build/dim-32/batched-knn wins vs both scipy and pynanoflann), (3) honest residuals (dim-64/dim-32-f64 still open, the fixed-dim-3 last ~3-7% per M2.6's n=100 re-verification, the M2.5 T2 trade-off — dim8 gave back all of its T3 win and radius landed measurably worse than its pre-M2.5 range (0.807–0.867 per M2.6, wider than the single ~4.4%/0.827–0.828 point estimate this line used to cite), both still < 1.0 vs C++, in exchange for the fixed-dim-3 win, the churn win, and stack-overflow immunity — and M-py's own two non-gating misses vs pynanoflann, dim8 f64 chief among them) — credibility comes from publishing the losses too. Use the M2.6-verified ranges (`docs/EXPERIMENTS.md` "M2.6 task 2", `docs/benchmarks.md` "M2.6 — statistical re-verification"), not the M2.5 T4 point estimates, when drafting.

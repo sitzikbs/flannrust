@@ -5,15 +5,22 @@
 //! Run: `PERF_GATE=1 RUSTFLAGS="-C target-cpu=native" cargo test -p xval
 //! --release -- --ignored perf_gate --test-threads=1 --nocapture`
 //!
-//! Each gate: fixed-seed workload, BOTH sides warmed up (one untimed pass),
-//! then timed with `std::time::Instant` -- MEDIAN of 7 timed runs per side.
-//! Asserts `rust_median <= cpp_median * 1.25` (the 1.25 margin absorbs
-//! machine noise). Every gate prints `PERF_GATE {name}: rust={..}ms
-//! cpp={..}ms ratio={..}` unconditionally (pass or fail) so runs are
-//! self-documenting; a failing assert repeats the same numbers in its panic
-//! message. A gate FAILURE is a milestone blocker (route to the perf task),
-//! NOT a flaky test to loosen -- the 1.25 margin may only be changed by the
-//! controller.
+//! M2.6 Task 1: each gate's workload is timed via `xval::measure_pair`,
+//! which interleaves rust/cpp PER REPETITION (2 warmup reps, discarded,
+//! then an adaptive `n = clamp(10, 100, floor(budget_s*1000 / t_est_ms))`
+//! timed reps of BOTH sides -- see `xval::measure_pair`'s doc comment) in
+//! place of the old fixed median-of-7. `BUDGET_S` (30s, per side) is the
+//! same value `examples/report_data.rs` uses for its speed rows -- both
+//! consumers share the M2.6 controller's repetition-budget policy. The gate
+//! decision is UNCHANGED: `rust_median <= cpp_median * 1.25` (the 1.25
+//! margin absorbs machine noise), now computed over >=10 (usually 100)
+//! reps instead of 7. Every gate prints `PERF_GATE {name}: rust={..}ms
+//! cpp={..}ms ratio={..}` (medians, same prefix shape prior runs' doc
+//! pastes grep for) UNCONDITIONALLY (pass or fail), with the full
+//! mean/std/n stats for both sides appended after a `|` -- see `report`
+//! below for the exact appended shape. A gate FAILURE is a milestone
+//! blocker (route to the perf task), NOT a flaky test to loosen -- the 1.25
+//! margin may only be changed by the controller.
 //!
 //! Guard: besides `#[ignore]`, every gate test FIRST checks whether
 //! `PERF_GATE` is set and returns early (printing `PERF_GATE skipped: set
@@ -27,11 +34,14 @@
 use flannrust::{ConstDim, DynDim, DynamicKdTreeBuilder, KdTreeBuilder, ResultItem, L2};
 use nanoflann_ref::{Metric, RefDynIndexF32, RefIndex3F32, RefIndexF32, RefIndexF64};
 use xval::{
-    build_rust_f32, build_rust_f64, cfg_seed, queries, sample_distinct_indices, timed_median_ms, to_array3, to_f32,
-    uniform, BuildThreads, GrowableFlat, RoundRobin, XMetric,
+    build_rust_f32, build_rust_f64, cfg_seed, measure_pair, queries, sample_distinct_indices, to_array3, to_f32,
+    uniform, BuildThreads, GrowableFlat, RoundRobin, TimingStats, XMetric,
 };
 
-const RUNS: usize = 7;
+/// Per-side budget (seconds) for `measure_pair`'s adaptive `n` -- see
+/// `xval::rep_count`'s policy. 30s per side, per the M2.6 controller
+/// directive (shared with `examples/report_data.rs`'s `BUDGET_S`).
+const BUDGET_S: f64 = 30.0;
 const MARGIN: f64 = 1.25;
 
 /// Pure decision function: given the *result* of reading the `PERF_GATE`
@@ -45,30 +55,53 @@ fn should_skip_perf_gate(env_var: Result<String, std::env::VarError>) -> bool {
 }
 
 /// Prints the self-documenting `PERF_GATE {name}: ...` line and returns the
-/// ratio, for both the unconditional print and the assert message below.
-fn report(name: &str, rust_ms: f64, cpp_ms: f64) -> f64 {
-    let ratio = rust_ms / cpp_ms;
-    println!("PERF_GATE {name}: rust={rust_ms:.3}ms cpp={cpp_ms:.3}ms ratio={ratio:.3}");
-    ratio
+/// ratio of MEDIANS (the gate's decision quantity), for both the
+/// unconditional print and the assert message below. Keeps the historical
+/// `PERF_GATE {name}: rust={..}ms cpp={..}ms ratio={..}` prefix byte-for-
+/// byte (older doc pastes grep for exactly that shape; `rust`/`cpp` are now
+/// the MEDIANS instead of a bare median-of-7, same field names/positions),
+/// then appends the full stats after a `|`: `rust mean=.. std=.. n=..`,
+/// `cpp mean=.. std=.. n=..`, and an explicit `ratio_medians=..` (same
+/// value as the leading `ratio=`, spelled out for the JSON/report
+/// consumer's benefit -- see `examples/report_data.rs`'s emitted
+/// `ratio_medians` field).
+fn report(name: &str, rust: &TimingStats, cpp: &TimingStats) -> f64 {
+    let ratio_medians = rust.median_ms / cpp.median_ms;
+    println!(
+        "PERF_GATE {name}: rust={:.3}ms cpp={:.3}ms ratio={:.3} | rust mean={:.3} std={:.3} n={} | cpp mean={:.3} std={:.3} n={} | ratio_medians={:.3}",
+        rust.median_ms,
+        cpp.median_ms,
+        ratio_medians,
+        rust.mean_ms,
+        rust.std_ms,
+        rust.n,
+        cpp.mean_ms,
+        cpp.std_ms,
+        cpp.n,
+        ratio_medians
+    );
+    ratio_medians
 }
 
 macro_rules! assert_gate {
-    ($name:expr, $rust_ms:expr, $cpp_ms:expr) => {{
-        let ratio = report($name, $rust_ms, $cpp_ms);
+    ($name:expr, $rust:expr, $cpp:expr) => {{
+        let ratio = report($name, &$rust, &$cpp);
         assert!(
             ratio <= MARGIN,
-            "PERF_GATE {} FAILED: rust={:.3}ms cpp={:.3}ms ratio={:.3} (must be <= {MARGIN})",
+            "PERF_GATE {} FAILED: rust_median={:.3}ms cpp_median={:.3}ms ratio={:.3} (must be <= {MARGIN})",
             $name,
-            $rust_ms,
-            $cpp_ms,
+            $rust.median_ms,
+            $cpp.median_ms,
             ratio
         );
     }};
 }
 
-// `median_of`/`timed_median_ms` now live in `xval` itself (shared with
-// `examples/report_data.rs`); their unit tests moved to
-// `crates/xval/src/lib.rs`'s test mod. Only the guard logic below is
+// `median_of`/`timed_median_ms` (the OLD fixed-median-of-7 helpers) and
+// their unit tests live in `crates/xval/src/lib.rs` still (kept for
+// `examples/m25_diag.rs`'s unrelated diagnostics, out of this task's
+// scope) -- `measure_pair`/`TimingStats`/`rep_count` (this task's adaptive
+// replacement) are unit-tested there too. Only the guard logic below is
 // specific to this file.
 #[cfg(test)]
 mod guard_tests {
@@ -109,16 +142,19 @@ fn perf_gate_build_100k_dim3_f32_seq() {
 
     let data = to_f32(&uniform(cfg_seed("perf_gate_build", &[N, DIM]), N, DIM));
 
-    let rust_ms = timed_median_ms(RUNS, || {
-        let idx = build_rust_f32(&data, DIM, XMetric::L2, LEAF, BuildThreads::Sequential);
-        std::hint::black_box(idx.size());
-    });
-    let cpp_ms = timed_median_ms(RUNS, || {
-        let idx = RefIndexF32::build(&data, DIM, Metric::L2, LEAF, 1);
-        std::hint::black_box(idx.size());
-    });
+    let (rust, cpp) = measure_pair(
+        || {
+            let idx = build_rust_f32(&data, DIM, XMetric::L2, LEAF, BuildThreads::Sequential);
+            std::hint::black_box(idx.size());
+        },
+        || {
+            let idx = RefIndexF32::build(&data, DIM, Metric::L2, LEAF, 1);
+            std::hint::black_box(idx.size());
+        },
+        BUDGET_S,
+    );
 
-    assert_gate!("perf_gate_build_100k_dim3_f32_seq", rust_ms, cpp_ms);
+    assert_gate!("perf_gate_build_100k_dim3_f32_seq", rust, cpp);
 }
 
 #[test]
@@ -146,28 +182,31 @@ fn perf_gate_knn_dim3_f32_k10() {
         KdTreeBuilder::new(ConstDim::<3>, arr3.as_slice()).with_metric(L2).leaf_max_size(LEAF).build_sequential();
     let cpp_tree = RefIndex3F32::build(&data32, LEAF, 1);
 
-    let rust_ms = timed_median_ms(RUNS, || {
-        let mut rr = RoundRobin::new(&q32, DIM);
-        let mut out_idx = vec![0u32; K];
-        let mut out_dist = vec![0.0f32; K];
-        for _ in 0..N_QUERIES {
-            let query = std::hint::black_box(rr.next());
-            let found = rust_tree.knn_search(query, &mut out_idx, &mut out_dist);
-            std::hint::black_box(found);
-        }
-    });
-    let cpp_ms = timed_median_ms(RUNS, || {
-        let mut rr = RoundRobin::new(&q32, DIM);
-        let mut out_idx = vec![0u32; K];
-        let mut out_dist = vec![0.0f32; K];
-        for _ in 0..N_QUERIES {
-            let query = std::hint::black_box(rr.next());
-            let found = cpp_tree.knn_into(query, K, &mut out_idx, &mut out_dist);
-            std::hint::black_box(found);
-        }
-    });
+    let (rust, cpp) = measure_pair(
+        || {
+            let mut rr = RoundRobin::new(&q32, DIM);
+            let mut out_idx = vec![0u32; K];
+            let mut out_dist = vec![0.0f32; K];
+            for _ in 0..N_QUERIES {
+                let query = std::hint::black_box(rr.next());
+                let found = rust_tree.knn_search(query, &mut out_idx, &mut out_dist);
+                std::hint::black_box(found);
+            }
+        },
+        || {
+            let mut rr = RoundRobin::new(&q32, DIM);
+            let mut out_idx = vec![0u32; K];
+            let mut out_dist = vec![0.0f32; K];
+            for _ in 0..N_QUERIES {
+                let query = std::hint::black_box(rr.next());
+                let found = cpp_tree.knn_into(query, K, &mut out_idx, &mut out_dist);
+                std::hint::black_box(found);
+            }
+        },
+        BUDGET_S,
+    );
 
-    assert_gate!("perf_gate_knn_dim3_f32_k10", rust_ms, cpp_ms);
+    assert_gate!("perf_gate_knn_dim3_f32_k10", rust, cpp);
 }
 
 #[test]
@@ -191,28 +230,31 @@ fn perf_gate_knn_dyn_dim8_f64_k10() {
     let rust_tree = build_rust_f64(&data, DIM, XMetric::L2, LEAF, BuildThreads::Sequential);
     let cpp_tree = RefIndexF64::build(&data, DIM, Metric::L2, LEAF, 1);
 
-    let rust_ms = timed_median_ms(RUNS, || {
-        let mut rr = RoundRobin::new(&q, DIM);
-        let mut out_idx = vec![0u32; K];
-        let mut out_dist = vec![0.0f64; K];
-        for _ in 0..N_QUERIES {
-            let query = std::hint::black_box(rr.next());
-            let found = rust_tree.knn_into(query, K, 0.0, &mut out_idx, &mut out_dist);
-            std::hint::black_box(found);
-        }
-    });
-    let cpp_ms = timed_median_ms(RUNS, || {
-        let mut rr = RoundRobin::new(&q, DIM);
-        let mut out_idx = vec![0u32; K];
-        let mut out_dist = vec![0.0f64; K];
-        for _ in 0..N_QUERIES {
-            let query = std::hint::black_box(rr.next());
-            let found = cpp_tree.knn_into(query, K, 0.0, &mut out_idx, &mut out_dist);
-            std::hint::black_box(found);
-        }
-    });
+    let (rust, cpp) = measure_pair(
+        || {
+            let mut rr = RoundRobin::new(&q, DIM);
+            let mut out_idx = vec![0u32; K];
+            let mut out_dist = vec![0.0f64; K];
+            for _ in 0..N_QUERIES {
+                let query = std::hint::black_box(rr.next());
+                let found = rust_tree.knn_into(query, K, 0.0, &mut out_idx, &mut out_dist);
+                std::hint::black_box(found);
+            }
+        },
+        || {
+            let mut rr = RoundRobin::new(&q, DIM);
+            let mut out_idx = vec![0u32; K];
+            let mut out_dist = vec![0.0f64; K];
+            for _ in 0..N_QUERIES {
+                let query = std::hint::black_box(rr.next());
+                let found = cpp_tree.knn_into(query, K, 0.0, &mut out_idx, &mut out_dist);
+                std::hint::black_box(found);
+            }
+        },
+        BUDGET_S,
+    );
 
-    assert_gate!("perf_gate_knn_dyn_dim8_f64_k10", rust_ms, cpp_ms);
+    assert_gate!("perf_gate_knn_dyn_dim8_f64_k10", rust, cpp);
 }
 
 #[test]
@@ -245,27 +287,30 @@ fn perf_gate_radius_dim3_f32() {
     let (_idx, dist) = cpp_tree.knn(probe, SELECTIVITY_K, 0.0);
     let radius = *dist.last().expect("calibration knn must return at least one neighbor");
 
-    let rust_ms = timed_median_ms(RUNS, || {
-        let mut rr = RoundRobin::new(&q, DIM);
-        let mut out: Vec<ResultItem<u32, f32>> = Vec::new();
-        for _ in 0..N_QUERIES {
-            let query = std::hint::black_box(rr.next());
-            let found = rust_tree.radius_into(query, radius, true, 0.0, &mut out);
-            std::hint::black_box(found);
-        }
-    });
-    let cpp_ms = timed_median_ms(RUNS, || {
-        let mut rr = RoundRobin::new(&q, DIM);
-        let mut out_idx: Vec<u32> = Vec::new();
-        let mut out_dist: Vec<f32> = Vec::new();
-        for _ in 0..N_QUERIES {
-            let query = std::hint::black_box(rr.next());
-            let found = cpp_tree.radius_into(query, radius, true, 0.0, &mut out_idx, &mut out_dist);
-            std::hint::black_box(found);
-        }
-    });
+    let (rust, cpp) = measure_pair(
+        || {
+            let mut rr = RoundRobin::new(&q, DIM);
+            let mut out: Vec<ResultItem<u32, f32>> = Vec::new();
+            for _ in 0..N_QUERIES {
+                let query = std::hint::black_box(rr.next());
+                let found = rust_tree.radius_into(query, radius, true, 0.0, &mut out);
+                std::hint::black_box(found);
+            }
+        },
+        || {
+            let mut rr = RoundRobin::new(&q, DIM);
+            let mut out_idx: Vec<u32> = Vec::new();
+            let mut out_dist: Vec<f32> = Vec::new();
+            for _ in 0..N_QUERIES {
+                let query = std::hint::black_box(rr.next());
+                let found = cpp_tree.radius_into(query, radius, true, 0.0, &mut out_idx, &mut out_dist);
+                std::hint::black_box(found);
+            }
+        },
+        BUDGET_S,
+    );
 
-    assert_gate!("perf_gate_radius_dim3_f32", rust_ms, cpp_ms);
+    assert_gate!("perf_gate_radius_dim3_f32", rust, cpp);
 }
 
 // ============================================================================
@@ -293,34 +338,37 @@ fn perf_gate_dyn_add_20k_dim3_f32() {
 
     let data = to_f32(&uniform(cfg_seed("perf_gate_dyn_add", &[CAP, DIM]), CAP, DIM));
 
-    let rust_ms = timed_median_ms(RUNS, || {
-        let growable = GrowableFlat::new(&data, DIM);
-        let mut tree = DynamicKdTreeBuilder::new(DynDim(DIM), &growable)
-            .leaf_max_size(LEAF)
-            .maximum_point_count(CAP)
-            .build();
-        let mut start = 0usize;
-        for _ in 0..BATCHES {
-            let end = start + BATCH;
-            growable.set_current_n(end);
-            tree.add_points(start, end - 1);
-            start = end;
-        }
-        std::hint::black_box(tree.tree_count());
-    });
-    let cpp_ms = timed_median_ms(RUNS, || {
-        let mut oracle = RefDynIndexF32::build(&data, DIM, LEAF, CAP);
-        let mut start = 0u32;
-        for _ in 0..BATCHES {
-            let end = start + BATCH as u32;
-            oracle.set_current_n(end as usize);
-            oracle.add_points(start, end - 1);
-            start = end;
-        }
-        std::hint::black_box(oracle.tree_count());
-    });
+    let (rust, cpp) = measure_pair(
+        || {
+            let growable = GrowableFlat::new(&data, DIM);
+            let mut tree = DynamicKdTreeBuilder::new(DynDim(DIM), &growable)
+                .leaf_max_size(LEAF)
+                .maximum_point_count(CAP)
+                .build();
+            let mut start = 0usize;
+            for _ in 0..BATCHES {
+                let end = start + BATCH;
+                growable.set_current_n(end);
+                tree.add_points(start, end - 1);
+                start = end;
+            }
+            std::hint::black_box(tree.tree_count());
+        },
+        || {
+            let mut oracle = RefDynIndexF32::build(&data, DIM, LEAF, CAP);
+            let mut start = 0u32;
+            for _ in 0..BATCHES {
+                let end = start + BATCH as u32;
+                oracle.set_current_n(end as usize);
+                oracle.add_points(start, end - 1);
+                start = end;
+            }
+            std::hint::black_box(oracle.tree_count());
+        },
+        BUDGET_S,
+    );
 
-    assert_gate!("perf_gate_dyn_add_20k_dim3_f32", rust_ms, cpp_ms);
+    assert_gate!("perf_gate_dyn_add_20k_dim3_f32", rust, cpp);
 }
 
 #[test]
@@ -405,26 +453,29 @@ fn perf_gate_dyn_knn_after_churn_dim3_f32() {
     cpp_tree.set_current_n(N);
     cpp_tree.add_points(BASE as u32, (N - 1) as u32);
 
-    let rust_ms = timed_median_ms(RUNS, || {
-        let mut rr = RoundRobin::new(&q, DIM);
-        let mut out_idx = vec![0u32; K];
-        let mut out_dist = vec![0.0f32; K];
-        for _ in 0..N_QUERIES {
-            let query = std::hint::black_box(rr.next());
-            let found = rust_tree.knn_search(query, &mut out_idx, &mut out_dist);
-            std::hint::black_box(found);
-        }
-    });
-    let cpp_ms = timed_median_ms(RUNS, || {
-        let mut rr = RoundRobin::new(&q, DIM);
-        let mut out_idx = vec![0u32; K];
-        let mut out_dist = vec![0.0f32; K];
-        for _ in 0..N_QUERIES {
-            let query = std::hint::black_box(rr.next());
-            let found = cpp_tree.knn_into(query, K, 0.0, &mut out_idx, &mut out_dist);
-            std::hint::black_box(found);
-        }
-    });
+    let (rust, cpp) = measure_pair(
+        || {
+            let mut rr = RoundRobin::new(&q, DIM);
+            let mut out_idx = vec![0u32; K];
+            let mut out_dist = vec![0.0f32; K];
+            for _ in 0..N_QUERIES {
+                let query = std::hint::black_box(rr.next());
+                let found = rust_tree.knn_search(query, &mut out_idx, &mut out_dist);
+                std::hint::black_box(found);
+            }
+        },
+        || {
+            let mut rr = RoundRobin::new(&q, DIM);
+            let mut out_idx = vec![0u32; K];
+            let mut out_dist = vec![0.0f32; K];
+            for _ in 0..N_QUERIES {
+                let query = std::hint::black_box(rr.next());
+                let found = cpp_tree.knn_into(query, K, 0.0, &mut out_idx, &mut out_dist);
+                std::hint::black_box(found);
+            }
+        },
+        BUDGET_S,
+    );
 
-    assert_gate!("perf_gate_dyn_knn_after_churn_dim3_f32", rust_ms, cpp_ms);
+    assert_gate!("perf_gate_dyn_knn_after_churn_dim3_f32", rust, cpp);
 }

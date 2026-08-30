@@ -53,12 +53,37 @@ struct Meta {
     wsl: Option<bool>,
 }
 
+/// A deliberately loose subset of `xval::TimingStats` -- only the three
+/// fields `render_speed_rows` actually displays (`mean_ms`/`std_ms`/`n`;
+/// `median_ms`/`min_ms`/`max_ms` are present in the real JSON, emitted by
+/// `report_data.rs`'s `timing_stats_json`, but simply ignored here since
+/// `SpeedRow.rust_ms`/`cpp_ms` already carry the median -- see serde's
+/// default "ignore unknown JSON fields" behavior). `Option`al on `SpeedRow`
+/// (below) so a pre-M2.6 report.json (only `rust_ms`/`cpp_ms`/`ratio`, no
+/// nested stats objects) still parses; `render_speed_rows` falls back to
+/// the plain median-only display when absent.
+#[derive(Debug, Deserialize)]
+struct SpeedStats {
+    mean_ms: f64,
+    std_ms: f64,
+    n: u64,
+}
+
 #[derive(Debug, Deserialize)]
 struct SpeedRow {
     workload: String,
+    /// Kept as the MEDIAN (per M2.6 -- see `report_data.rs`'s module doc):
+    /// gate PASS/FAIL and the bar geometry below both key off medians, not
+    /// means.
     rust_ms: f64,
     cpp_ms: f64,
     ratio: f64,
+    #[serde(default)]
+    rust: Option<SpeedStats>,
+    #[serde(default)]
+    cpp: Option<SpeedStats>,
+    #[serde(default)]
+    ratio_medians: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -93,12 +118,27 @@ struct AccuracyRow {
 #[derive(Debug)]
 pub enum RenderError {
     Json(serde_json::Error),
+    /// M2.6 task 3: `render_python`'s document carries a `schema_version`
+    /// key specifically so an old-format `bench_py.py` JSON (pre-task-3:
+    /// flat `flannrust_ms`/`ckdtree_ms`/`pynanoflann_ms` fields, no
+    /// `schema_version` at all -- defaults to `0` below) is rejected with
+    /// a clear, specific message INSTEAD OF whatever generic "missing
+    /// field flannrust_stats" serde error would otherwise fire first --
+    /// see `render_python`'s explicit version check, done before the full
+    /// document is parsed.
+    SchemaVersion { expected: u64, found: u64 },
 }
 
 impl fmt::Display for RenderError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             RenderError::Json(e) => write!(f, "failed to parse report JSON: {e}"),
+            RenderError::SchemaVersion { expected, found } => write!(
+                f,
+                "python bench JSON schema_version mismatch: expected {expected}, found {found} -- \
+                 re-run the updated bench_py.py to regenerate (an old-format JSON, without the \
+                 mean/std/median/min/max/n stats objects this renderer expects, is no longer supported)"
+            ),
         }
     }
 }
@@ -549,45 +589,79 @@ fn render_tiles(accuracy: &[AccuracyRow], speed: &[SpeedRow]) -> String {
 }
 
 /// Horizontal diverging bars around a parity midline: bar side/color by
-/// who's faster (`ratio = rust_ms / cpp_ms`; `< 1.0` is rust-faster, `>
-/// 1.0` is cpp-faster), width proportional to `|1 - ratio|` scaled so a
-/// 70% difference (`ratio` 0.3 or 1.7) fills the full half-track (50%),
-/// capped beyond that with a visible annotation (the numeric value column
-/// always shows the true, uncapped ratio regardless).
+/// who's faster (`ratio` -- `< 1.0` is rust-faster, `> 1.0` is cpp-faster;
+/// M2.6: this is `ratio_medians` when the row carries it, else the legacy
+/// `ratio` field -- see `render_speed_rows`'s bar-geometry comment), width
+/// proportional to `|1 - ratio|` scaled so a 70% difference (`ratio` 0.3 or
+/// 1.7) fills the full half-track (50%), capped beyond that with a visible
+/// annotation (the numeric value column always shows the true, uncapped
+/// ratio regardless).
+///
+/// M2.6: when a row carries the new `rust`/`cpp` `TimingStats` objects, the
+/// tooltip and bar-value cell additionally show `mean &plusmn; std (n=N)`
+/// for BOTH sides -- the bar's geometry itself still keys off the ratio of
+/// MEDIANS (gate decisions and doc ratio claims are median-based, not
+/// mean-based -- see `report_data.rs`'s module doc). A pre-M2.6 row
+/// (`rust`/`cpp` both `None`) falls back to the original plain
+/// `ratio (rust ms / cpp ms)` display unchanged.
 fn render_speed_rows(speed: &[SpeedRow]) -> String {
     speed
         .iter()
         .map(|r| {
-            let diff = (1.0 - r.ratio).abs();
+            let ratio = r.ratio_medians.unwrap_or(r.ratio);
+            let diff = (1.0 - ratio).abs();
             let capped = diff > 0.7;
             let pct = (diff / 0.7).min(1.0) * 50.0;
-            let (side_class, style) = if r.ratio < 1.0 {
+            let (side_class, style) = if ratio < 1.0 {
                 ("rust", format!("width:{pct:.2}%; right:50%;"))
-            } else if r.ratio > 1.0 {
+            } else if ratio > 1.0 {
                 ("cpp", format!("width:{pct:.2}%; left:50%;"))
             } else {
                 ("rust", "width:0%; right:50%;".to_string())
             };
             let cap_note =
                 if capped { r#"<span class="capped-note">capped at &plusmn;70%</span>"# } else { "" };
+            // Raw HTML (goes directly into the bar-value `<div>`, not
+            // through `html_escape`) -- entities, matching the rest of
+            // this function's markup.
+            let stats_suffix = match (&r.rust, &r.cpp) {
+                (Some(rs), Some(cs)) => format!(
+                    " | rust {:.3}&plusmn;{:.3}&nbsp;ms&nbsp;(n={}) &middot; cpp {:.3}&plusmn;{:.3}&nbsp;ms&nbsp;(n={})",
+                    rs.mean_ms, rs.std_ms, rs.n, cs.mean_ms, cs.std_ms, cs.n
+                ),
+                _ => String::new(),
+            };
+            // Plain Unicode (this text is built THEN passed through
+            // `html_escape` below, which escapes `&` -- an HTML entity
+            // string here would come out as literal "&plusmn;" text, not
+            // the "\u{b1}" glyph, so this variant uses the raw characters
+            // directly instead of reusing `stats_suffix`).
+            let tooltip_stats_suffix = match (&r.rust, &r.cpp) {
+                (Some(rs), Some(cs)) => format!(
+                    " | rust {:.3}\u{b1}{:.3} ms (n={}) \u{b7} cpp {:.3}\u{b1}{:.3} ms (n={})",
+                    rs.mean_ms, rs.std_ms, rs.n, cs.mean_ms, cs.std_ms, cs.n
+                ),
+                _ => String::new(),
+            };
             let tooltip = html_escape(&format!(
-                "{}: ratio {:.3} (rust {:.3} ms / cpp {:.3} ms)",
-                r.workload, r.ratio, r.rust_ms, r.cpp_ms
+                "{}: ratio_medians {:.3} (rust median {:.3} ms / cpp median {:.3} ms){}",
+                r.workload, ratio, r.rust_ms, r.cpp_ms, tooltip_stats_suffix
             ));
             format!(
                 r#"<div class="bar-row" title="{tooltip}">
 <div class="bar-label">{workload}</div>
 <div class="track"><div class="parity-line"></div><div class="bar {side_class}" style="{style}"></div></div>
-<div class="bar-value">{ratio:.3}&middot;{rust_ms:.3}&nbsp;ms&nbsp;/&nbsp;{cpp_ms:.3}&nbsp;ms{cap_note}</div>
+<div class="bar-value">{ratio:.3}&middot;{rust_ms:.3}&nbsp;ms&nbsp;/&nbsp;{cpp_ms:.3}&nbsp;ms{cap_note}{stats_suffix}</div>
 </div>"#,
                 tooltip = tooltip,
                 workload = html_escape(&r.workload),
                 side_class = side_class,
                 style = style,
-                ratio = r.ratio,
+                ratio = ratio,
                 rust_ms = r.rust_ms,
                 cpp_ms = r.cpp_ms,
                 cap_note = cap_note,
+                stats_suffix = stats_suffix,
             )
         })
         .collect::<Vec<_>>()
@@ -695,4 +769,229 @@ pub fn render(json: &str) -> Result<String, RenderError> {
         .replace("{speed_methodology}", &html_escape(&doc.meta.speed_methodology));
 
     Ok(html)
+}
+
+// ============================================================================
+// M2.6 task 3 -- "Python bindings" section, rendered from
+// `crates/flannrust-py/python/bench/bench_py.py`'s emitted JSON. Lives in
+// the library (not `examples/render_report.rs`, where the pre-task-3
+// version of this code lived) specifically so `tests/render_report_test.rs`
+// can unit-test it directly, the same way `render` above is tested --
+// `render_report.rs` is now just the thin CLI/stdin-vs-file/splice wrapper
+// around this function. Deliberately its own small parse/escape/format
+// surface (reuses `html_escape` above, but not `ReportDoc`/`SpeedRow`/etc.
+// -- a different JSON document entirely, from a different producer).
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+struct PyMeta {
+    python: String,
+    numpy: String,
+    scipy: String,
+    pynanoflann: String,
+    cpu: String,
+    threads: u64,
+    date: String,
+    git_sha: String,
+    #[serde(default)]
+    rustflags: String,
+    #[serde(default)]
+    wheel_profile: String,
+}
+
+/// One engine's adaptive-repetition stats for one workload row --
+/// `bench_py.py`'s `stats_from_samples` mirrors `xval::TimingStats`
+/// field-for-field; `min_ms`/`max_ms` are present in the real JSON but
+/// unused by this renderer (serde silently ignores unknown/unread JSON
+/// fields), same "deliberately loose subset" tradeoff as `report.rs`'s own
+/// `SpeedStats`.
+#[derive(Debug, Deserialize)]
+struct PyStats {
+    mean_ms: f64,
+    std_ms: f64,
+    median_ms: f64,
+    n: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct PyWorkload {
+    name: String,
+    flannrust_stats: PyStats,
+    ckdtree_stats: PyStats,
+    pynanoflann_stats: PyStats,
+    /// Median-based (per M2.6 -- same decision statistic as the Rust-vs-C++
+    /// section's `ratio_medians`), computed by `bench_py.py` itself.
+    ratio_ckdtree: f64,
+    ratio_pynanoflann: f64,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+/// Only used to peek at `schema_version` BEFORE attempting the full
+/// `PyReport` parse -- see `render_python`'s ordering comment. `#[serde(default)]`
+/// so a document that omits the key entirely (every pre-task-3 JSON) reads
+/// as `0`, which never matches `EXPECTED_SCHEMA_VERSION` below, rather than
+/// failing to parse this tiny probe struct itself.
+#[derive(Debug, Deserialize)]
+struct PySchemaCheck {
+    #[serde(default)]
+    schema_version: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct PyReport {
+    meta: PyMeta,
+    workloads: Vec<PyWorkload>,
+}
+
+const EXPECTED_PY_SCHEMA_VERSION: u64 = 2;
+
+/// Reuses the base template's existing `.pill` classes (`good`/`fail`) for
+/// the ratio cells -- `ratio < 1.0` means flannrust is faster (per the
+/// brief: "ratios < 1.0 = flannrust faster"), styled the same "good" green
+/// as every other win-indicator on the page. `ratio` here is always
+/// `bench_py.py`'s median-based ratio (the only kind this schema emits).
+fn ratio_pill_py(ratio: f64) -> String {
+    if ratio < 1.0 {
+        format!(r#"<span class="pill good">{ratio:.3}&times; flannrust faster</span>"#)
+    } else {
+        format!(r#"<span class="pill fail">{ratio:.3}&times; other faster</span>"#)
+    }
+}
+
+/// `median_ms` as the headline value (same statistic the ratio pill uses),
+/// with `mean &plusmn; std (n=N)` alongside -- mirrors `render_speed_rows`'s
+/// `stats_suffix`/tooltip pattern above, adapted to this section's
+/// fixed-column (not diverging-bar) table layout. Deliberately no new CSS
+/// class (reuses only the existing `.num` cell styling) -- plain inline
+/// text, same as `render_speed_rows`'s `stats_suffix`.
+///
+/// Precision is chosen ONCE from `median_ms`'s own magnitude (not
+/// independently per number) -- `fmt_ms`'s per-value adaptive precision
+/// would otherwise print e.g. `10.295 (10.338±0.250652, n=100)` (std < 1.0
+/// ms widened to 6 decimals while the median/mean next to it stay at 3),
+/// which is legible but visually inconsistent within one cell; a std
+/// smaller than its own median is the common case, not the exception.
+fn fmt_py_stat_cell(s: &PyStats) -> String {
+    let (median, mean, std) = if s.median_ms.abs() < 1.0 {
+        (format!("{:.6}", s.median_ms), format!("{:.6}", s.mean_ms), format!("{:.6}", s.std_ms))
+    } else {
+        (format!("{:.3}", s.median_ms), format!("{:.3}", s.mean_ms), format!("{:.3}", s.std_ms))
+    };
+    format!("{median}&nbsp;({mean}&plusmn;{std},&nbsp;n={n})", n = s.n)
+}
+
+fn render_python_workload_rows(workloads: &[PyWorkload]) -> String {
+    workloads
+        .iter()
+        .map(|w| {
+            // Per the brief: "single-query row labeled 'overhead-bound (see
+            // EXPERIMENTS)'".
+            let overhead_badge = if w.name.contains("single_query") {
+                r#" <span class="pill fail">overhead-bound (see EXPERIMENTS)</span>"#.to_string()
+            } else {
+                String::new()
+            };
+            let tooltip = format!(
+                "{name}: rust {rmean:.3}\u{b1}{rstd:.3} ms (n={rn}) \u{b7} cKDTree {cmean:.3}\u{b1}{cstd:.3} ms \
+                 (n={cn}) \u{b7} pynanoflann {pmean:.3}\u{b1}{pstd:.3} ms (n={pn}){note}",
+                name = w.name,
+                rmean = w.flannrust_stats.mean_ms,
+                rstd = w.flannrust_stats.std_ms,
+                rn = w.flannrust_stats.n,
+                cmean = w.ckdtree_stats.mean_ms,
+                cstd = w.ckdtree_stats.std_ms,
+                cn = w.ckdtree_stats.n,
+                pmean = w.pynanoflann_stats.mean_ms,
+                pstd = w.pynanoflann_stats.std_ms,
+                pn = w.pynanoflann_stats.n,
+                note = w.note.as_deref().map(|n| format!(" \u{b7} {n}")).unwrap_or_default(),
+            );
+            let title_attr = format!(r#" title="{}""#, html_escape(&tooltip));
+
+            format!(
+                r#"<tr{title_attr}>
+<td>{name}{overhead_badge}</td>
+<td class="num">{f_cell}</td>
+<td class="num">{c_cell}</td>
+<td class="num">{p_cell}</td>
+<td class="num">{c_ratio}</td>
+<td class="num">{p_ratio}</td>
+</tr>"#,
+                title_attr = title_attr,
+                name = html_escape(&w.name),
+                overhead_badge = overhead_badge,
+                f_cell = fmt_py_stat_cell(&w.flannrust_stats),
+                c_cell = fmt_py_stat_cell(&w.ckdtree_stats),
+                p_cell = fmt_py_stat_cell(&w.pynanoflann_stats),
+                c_ratio = ratio_pill_py(w.ratio_ckdtree),
+                p_ratio = ratio_pill_py(w.ratio_pynanoflann),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Parses `json` (the document `bench_py.py` emits) and renders a
+/// self-contained `<section>` fragment -- same visual language as this
+/// module's own template (reuses `.legend`/`.pill`/`.table`/`.scroll-x`,
+/// no new CSS), ready to splice into the base HTML by
+/// `examples/render_report.rs`'s `inject_python_section`.
+///
+/// The `schema_version` check runs FIRST, via the tiny `PySchemaCheck`
+/// probe struct, deliberately BEFORE the full `PyReport` parse -- an
+/// old-format document (no `schema_version` key, flat `flannrust_ms`
+/// instead of nested `flannrust_stats`) would also fail the full parse
+/// with a generic "missing field" serde error, but that error doesn't say
+/// WHY (a schema mismatch, not a typo/corruption) or what to do about it
+/// (re-run bench_py.py) -- see `RenderError::SchemaVersion`'s doc comment.
+pub fn render_python(json: &str) -> Result<String, RenderError> {
+    let check: PySchemaCheck = serde_json::from_str(json)?;
+    if check.schema_version != EXPECTED_PY_SCHEMA_VERSION {
+        return Err(RenderError::SchemaVersion {
+            expected: EXPECTED_PY_SCHEMA_VERSION,
+            found: check.schema_version,
+        });
+    }
+
+    let doc: PyReport = serde_json::from_str(json)?;
+
+    let native = doc.meta.rustflags.contains("target-cpu=native");
+    let meta_line = format!(
+        "Python {} &middot; numpy {} &middot; scipy {} &middot; pynanoflann {} &middot; {} &middot; {} threads &middot; {} &middot; git {}{}",
+        html_escape(&doc.meta.python),
+        html_escape(&doc.meta.numpy),
+        html_escape(&doc.meta.scipy),
+        html_escape(&doc.meta.pynanoflann),
+        html_escape(&doc.meta.cpu),
+        doc.meta.threads,
+        html_escape(&doc.meta.date),
+        html_escape(&doc.meta.git_sha),
+        if native { " &middot; target-cpu=native" } else { "" },
+    );
+
+    let rows = render_python_workload_rows(&doc.workloads);
+
+    Ok(format!(
+        r#"<section class="python-bindings">
+<h2 title="{wheel_profile}">Python bindings vs cKDTree / pynanoflann</h2>
+<p class="machine-line">{meta_line}</p>
+<div class="legend"><span class="pill good">ratio &lt; 1.0</span>flannrust faster<span class="pill fail">ratio &ge; 1.0</span>other faster</div>
+<div class="scroll-x">
+<table>
+<thead>
+<tr><th>Workload</th><th>flannrust ms (median / mean&plusmn;std, n)</th><th>cKDTree ms</th><th>pynanoflann ms</th><th>ratio vs cKDTree (medians)</th><th>ratio vs pynanoflann (medians)</th></tr>
+</thead>
+<tbody>
+{rows}
+</tbody>
+</table>
+</div>
+</section>
+
+"#,
+        wheel_profile = html_escape(&doc.meta.wheel_profile),
+        meta_line = meta_line,
+        rows = rows,
+    ))
 }

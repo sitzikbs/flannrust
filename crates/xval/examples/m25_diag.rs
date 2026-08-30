@@ -6,8 +6,14 @@
 //!
 //! Answers the M2.5 T1 brief's questions with measurements. Every subcommand
 //! uses the perf-gate methodology (`xval::timed_median_ms`: one untimed
-//! warmup + median of 7 timed runs) and expects
-//! `RUSTFLAGS="-C target-cpu=native"` + `--release`.
+//! warmup + median of `RUNS` timed runs) and expects
+//! `RUSTFLAGS="-C target-cpu=native"` + `--release`. M2.6 Task 2 bumped
+//! `RUNS` from 7 to 15 (n>=10 per the M2.6 statistical-rigor directive) --
+//! a constant change only; this file's `timed_median_ms`/median-of-N
+//! methodology predates and is independent of `xval::measure`/
+//! `measure_pair`'s adaptive-n mean/std harness (`perf_gate.rs`/
+//! `report_data.rs`), which this file intentionally does not adopt (see
+//! `docs/EXPERIMENTS.md`'s M2.6 section for why).
 //!
 //! Subcommands:
 //!   kernel   -- L2 kernel in isolation (library eval vs hand-written access-path variants)
@@ -32,7 +38,7 @@ use xval::{
     BuildThreads, XMetric,
 };
 
-const RUNS: usize = 7;
+const RUNS: usize = 15;
 
 // ===========================================================================
 // Hand-written kernels: SAME summation order as `metric.rs`'s `impl_l2!`
