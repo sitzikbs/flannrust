@@ -49,8 +49,10 @@ below), which checks every result index, distance, and internal tree
 permutation against the real C++ library, in-process, on every change.
 Every performance figure quoted in this README and `docs/benchmarks.md`
 traces to a reproducible, pasted command and run recorded in
-`docs/EXPERIMENTS.md`; see `docs/reports/m-pub/claims-audit.md` for the
-audit that verified that claim against both files' current text.
+`docs/EXPERIMENTS.md` or, for post-merge confirmation runs, in the
+commit-tagged report data cited alongside the figure; see
+`docs/reports/m-pub/claims-audit.md` for the audit that verified that
+claim against both files' current text.
 
 ## Quickstart
 
