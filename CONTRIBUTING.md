@@ -52,6 +52,7 @@ cargo test -p xval
 If you have the Python bindings installed:
 
 ```bash
+cd crates/flannrust-py
 pytest
 ```
 
