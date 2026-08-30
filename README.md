@@ -33,6 +33,25 @@ everything M3+ needs to know about the incremental/MT adaptors) live in
 benchmarks and experimental setup: [`docs/benchmarks.md`](docs/benchmarks.md)
 and [`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md).
 
+## How this was built
+
+This codebase was implemented by an AI agent (Claude Code), directed and
+reviewed by Itzik Ben-Shabat, who does not write Rust. Every line of Rust,
+C++ FFI, and Python-binding code here is agent-written; the author's role
+was specifying requirements, reviewing the generated code and each task's
+report, and directing dedicated rigor/fidelity-audit passes (see
+`docs/superpowers/plans/` and `docs/reports/`). Because the author cannot
+independently vet Rust idioms or catch subtle logic errors by reading the
+code, correctness here does not rest on the author's Rust expertise — it
+rests on the bit-exact cross-validation suite run against the vendored
+nanoflann 1.12.1 C++ reference implementation (see "Parity & testing"
+below), which checks every result index, distance, and internal tree
+permutation against the real C++ library, in-process, on every change.
+Every performance figure quoted in this README and `docs/benchmarks.md`
+traces to a reproducible, pasted command and run recorded in
+`docs/EXPERIMENTS.md`; see `docs/reports/m-pub/claims-audit.md` for the
+audit that verified that claim against both files' current text.
+
 ## Quickstart
 
 ```rust
