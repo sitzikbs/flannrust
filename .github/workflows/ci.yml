@@ -81,6 +81,14 @@ jobs:
         with:
           python-version: "3.11"
 
+      # maturin develop refuses to run outside a virtualenv, so the job
+      # works inside one; every later step must activate it via GITHUB_ENV.
+      - name: Create virtualenv
+        run: |
+          python -m venv .ci-venv
+          echo "VIRTUAL_ENV=$PWD/.ci-venv" >> "$GITHUB_ENV"
+          echo "$PWD/.ci-venv/bin" >> "$GITHUB_PATH"
+
       - name: Install Python build/test dependencies
         run: pip install maturin numpy pytest scipy
 
