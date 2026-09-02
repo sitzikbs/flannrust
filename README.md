@@ -875,9 +875,13 @@ re-deriving from the C++ source; full tracker:
   fresh idle-host re-run as host-load contamination, not a new steady
   state — still all MET, see the "Benchmarks" → "Update (M2.6 task 3)"/
   "Update (M2.6 task 6)" entries above).
-- **M-pub — announcement readiness** (bare-metal re-run under the M2.6
-  task 6 measurement-conditions protocol, claims audit, CI matrix +
-  wheel/PyPI publish, crates.io dry run) — not started; see
+- **M-pub — announcement readiness (delivered, real publish deferred)**:
+  CI live and green on GitHub Actions (stable test/clippy + miri + python
+  jobs), `cargo publish --dry-run` and `maturin build` + fresh-venv wheel
+  smoke test both pass, every published performance claim re-audited
+  against its source measurement, and a portable bench kit added so
+  readers can reproduce numbers on their own hardware; real `cargo
+  publish` / PyPI upload deliberately not run this milestone; see
   `docs/ROADMAP.md`.
 
 See `docs/nanoflann-notes.md` for the verified C++ source facts (class
