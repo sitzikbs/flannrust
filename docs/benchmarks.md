@@ -344,6 +344,26 @@ table) — this measurement is consistent with that documented difference in
 scheduling strategy translating into a real wall-clock win here, not just a
 "produces the same tree" equivalence.
 
+**Update (M2.6 task 6 / M-pub, `n=100`-per-side re-measurement, table kept
+as-is — historical pasted evidence, never edited in place):** unlike every
+other headline figure in this document, this section's "roughly 1.75x" was
+never re-verified under the statistical (`n=100`, mean/std/median)
+methodology M2.6 introduced. It has since been, twice: M2.6 task 6's
+idle-host report-chain run (commit `b9335fd`) measured `build_1M_dim3_f32_par`
+at **0.6151** (rust 27.976±1.624 ms / cpp 45.830±4.122 ms, median 27.590/
+44.857, `n=100`, `docs/EXPERIMENTS.md` "M2.6 task 6") — a **1.63x** win, not
+1.75x — and the post-merge confirmation run at commit `9cac562` measured
+**0.604** (a **1.66x** win), consistent with 0.6151 to within ordinary
+session noise. Both land inside the 1.47–1.58x band the "two-command report
+chain" subsection of `docs/EXPERIMENTS.md` already documented for this same
+`build_1M_dim3_f32_par` workload under its own lighter-weight
+median-of-7 methodology — so this isn't a new finding, just the first time
+the `n=100` statistical rigor introduced for the six gated workloads was
+applied back to this one. **Read "roughly 1.75x" as the original M1
+single-run point estimate, not the current steady state: publish 1.6–1.66x
+(the `n=100`-grounded range) in any forward-facing claim, not 1.75x.** Still
+a decisive, comfortably-reproduced parallel-build win either way.
+
 ### Test status (at M1 completion — superseded)
 
 `cargo test --workspace --all-features` reported 269 passed / 0 failed / 8

@@ -1,0 +1,32 @@
+name: Wheels
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # abi3-py39 is already set on the pyo3 dependency in
+      # crates/flannrust-py/Cargo.toml, so a single build per OS produces a
+      # forward-compatible wheel covering CPython 3.9+.
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          args: --release -m crates/flannrust-py/Cargo.toml
+          manylinux: auto
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: target/wheels/*.whl
