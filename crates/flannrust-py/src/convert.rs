@@ -1,20 +1,33 @@
 //! numpy <-> `flannrust` marshalling helpers. No `unsafe`: every array is
-//! read via `PyReadonlyArray` (dtype/bounds-checked by the `numpy` crate)
-//! and copied element-by-element into a plain row-major `Vec` -- this also
-//! makes the copy correct for non-C-contiguous input (Fortran order,
-//! strided views, ...) without needing to special-case it.
+//! read via `PyReadonlyArray` (dtype/bounds-checked by the `numpy` crate).
+//!
+//! Optimizations over the naive per-element copy:
+//! - `to_ndarray` caches the numpy module in a `GILOnceCell` (avoids a
+//!   `PyModule::import("numpy")` call per query).
+//! - `as_rows_2d` uses `as_slice().to_vec()` (single memcpy) for
+//!   C-contiguous arrays; falls back to per-element copy for strided views.
 
 use numpy::{Element, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArray, PyUntypedArrayMethods};
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::sync::PyOnceLock;
 use pyo3::types::PyAny;
+
+static NUMPY_MODULE: PyOnceLock<Py<PyModule>> = PyOnceLock::new();
+
+fn numpy<'py>(py: Python<'py>) -> PyResult<&'py Bound<'py, PyModule>> {
+    if let Some(m) = NUMPY_MODULE.get(py) {
+        return Ok(m.bind(py));
+    }
+    let m = PyModule::import(py, "numpy")?;
+    Ok(NUMPY_MODULE.get_or_init(py, || m.unbind()).bind(py))
+}
 
 /// Normalizes `x` to a numpy array via `numpy.asarray` -- accepts an
 /// existing ndarray (no-op, no-copy) as well as nested lists/tuples
 /// (`np.ascontiguousarray`-equivalent semantics per the design spec).
 pub fn to_ndarray<'py>(py: Python<'py>, x: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
-    let np = PyModule::import(py, "numpy")?;
-    np.call_method1("asarray", (x,))
+    numpy(py)?.call_method1("asarray", (x,))
 }
 
 /// `x` must already be a numpy array (see [`to_ndarray`]), 1-D `(d,)` or
@@ -31,8 +44,12 @@ pub fn as_rows_2d<'py, T: Element + Copy>(
     match untyped.ndim() {
         1 => {
             let a: PyReadonlyArray1<T> = x.extract().map_err(|_| dtype_mismatch::<T>())?;
-            let v: Vec<T> = a.as_array().iter().copied().collect();
-            let d = v.len();
+            let view = a.as_array();
+            let d = view.len();
+            let v = match view.as_slice() {
+                Some(s) => s.to_vec(),
+                None => view.iter().copied().collect(),
+            };
             Ok((v, 1, d))
         }
         2 => {
@@ -40,10 +57,16 @@ pub fn as_rows_2d<'py, T: Element + Copy>(
             let view = a.as_array();
             let m = view.shape()[0];
             let d = view.shape()[1];
-            let mut v = Vec::with_capacity(m * d);
-            for row in view.outer_iter() {
-                v.extend(row.iter().copied());
-            }
+            let v = match view.as_slice() {
+                Some(s) => s.to_vec(),
+                None => {
+                    let mut v = Vec::with_capacity(m * d);
+                    for row in view.outer_iter() {
+                        v.extend(row.iter().copied());
+                    }
+                    v
+                }
+            };
             Ok((v, m, d))
         }
         n => Err(PyValueError::new_err(format!(
