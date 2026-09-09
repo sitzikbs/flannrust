@@ -143,7 +143,7 @@ fn debug_check_point_row_contract<T: Scalar, DS: DataSource<T> + ?Sized>(
 /// is bit-identical to `-v` here because this arm is only reached when `v`
 /// is strictly negative (never `-0.0`/`+0.0`), so there is no zero-sign
 /// ambiguity between the two spellings.
-#[inline]
+#[inline(always)]
 fn l1_eval_row<T: Scalar>(query: &[T], row: &[T], dim: usize) -> T {
     let zero = T::default();
     #[inline]
@@ -167,14 +167,16 @@ fn l1_eval_row<T: Scalar>(query: &[T], row: &[T], dim: usize) -> T {
     }
     let d = multof4;
     let rem = dim - multof4;
+    let qt = &query[d..d + rem];
+    let rt = &row[d..d + rem];
     if rem >= 3 {
-        result = result + abs_t(query[d + 2] - row[d + 2], zero);
+        result = result + abs_t(qt[2] - rt[2], zero);
     }
     if rem >= 2 {
-        result = result + abs_t(query[d + 1] - row[d + 1], zero);
+        result = result + abs_t(qt[1] - rt[1], zero);
     }
     if rem >= 1 {
-        result = result + abs_t(query[d] - row[d], zero);
+        result = result + abs_t(qt[0] - rt[0], zero);
     }
     result
 }
@@ -242,7 +244,7 @@ macro_rules! impl_l1 {
 /// only the *loads* move (row-indexed rather than `point_component`-indexed).
 /// Row-vs-fallback bit-equality is asserted by
 /// `metric::tests::l2_eval_row_path_bit_equals_fallback_path_all_dims_{f32,f64}`.
-#[inline]
+#[inline(always)]
 fn l2_eval_row<T: Scalar>(query: &[T], row: &[T], dim: usize) -> T {
     let mut result: T = T::default(); // zero, per Scalar's contract
     let multof4 = (dim >> 2) << 2; // largest multiple of 4
@@ -262,16 +264,18 @@ fn l2_eval_row<T: Scalar>(query: &[T], row: &[T], dim: usize) -> T {
     // d+0.
     let d = multof4;
     let rem = dim - multof4;
+    let qt = &query[d..d + rem];
+    let rt = &row[d..d + rem];
     if rem >= 3 {
-        let diff = query[d + 2] - row[d + 2];
+        let diff = qt[2] - rt[2];
         result = result + diff * diff;
     }
     if rem >= 2 {
-        let diff = query[d + 1] - row[d + 1];
+        let diff = qt[1] - rt[1];
         result = result + diff * diff;
     }
     if rem >= 1 {
-        let diff = query[d] - row[d];
+        let diff = qt[0] - rt[0];
         result = result + diff * diff;
     }
     result

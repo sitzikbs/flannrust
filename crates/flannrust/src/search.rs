@@ -135,8 +135,11 @@ where
     DS: DataSource<T> + ?Sized,
     M: Distance<T>,
 {
+    let dim = ctx.dim.dim();
+    let query = &query[..dim];
+    let dists = &mut dists[..dim];
     let mut dist = M::DistanceType::ZERO;
-    for i in 0..ctx.dim.dim() {
+    for i in 0..dim {
         if query[i] < ctx.root_bbox[i].low {
             dists[i] = ctx.metric.accum_dist(query[i], ctx.root_bbox[i].low, i);
             dist = dist + dists[i];
@@ -440,6 +443,7 @@ where
     }
 
     let idx = node.split_dim();
+    assert!(idx < dists.len());
     let val = query[idx];
     let diff1 = val - node.div_low();
     let diff2 = val - node.div_high();
@@ -606,6 +610,7 @@ where
 
             // Which child branch should be taken first? (unchanged)
             let idx = node.split_dim();
+            assert!(idx < dists.len());
             let val = query[idx];
             let diff1 = val - node.div_low();
             let diff2 = val - node.div_high();
@@ -773,7 +778,18 @@ where
     M: Distance<T>,
     Idx: IndexType,
 {
-    for i in 0..ctx.dim.dim() {
+    let dim = ctx.dim.dim();
+    if let Some(row) = ctx.ds.point_row(idx.to_usize()) {
+        if row.len() >= dim {
+            for i in 0..dim {
+                if !bounds[i].contains(row[i]) {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+    for i in 0..dim {
         let point = ctx.ds.point_component(idx.to_usize(), i);
         if !bounds[i].contains(point) {
             return false;
