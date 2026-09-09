@@ -380,6 +380,14 @@ macro_rules! impl_l2_fma {
                 let mut result: $t = 0.0;
                 if let Some(row) = ds.point_row(idx) {
                     if row.len() >= dim && query.len() >= dim {
+                        #[cfg(target_arch = "x86_64")]
+                        {
+                            if let Some(d) =
+                                <$t as crate::simd::L2FmaSimd>::dispatch(query, row, dim)
+                            {
+                                return d;
+                            }
+                        }
                         for (q, p) in query[..dim].iter().zip(&row[..dim]) {
                             let diff = *q - *p;
                             result = diff.mul_add(diff, result);
@@ -1051,5 +1059,83 @@ mod tests {
         let acc = metric.accum_dist(0.0, 2.0, 1);
         // weight[1] * (0-2)^2 = 4 * 4 = 16
         assert_eq!(acc, 16.0);
+    }
+
+    // ---- SIMD L2Fma property tests: SIMD dispatch vs scalar mul_add loop
+    // within 4*EPS*max(1, |result|) over BIT_EQ_DIMS x SALTS. ----
+
+    /// Scalar reference: plain sequential mul_add loop (same as the
+    /// `impl_l2_fma!` fallback).
+    fn scalar_l2fma_f64(q: &[f64], r: &[f64], dim: usize) -> f64 {
+        let mut result = 0.0f64;
+        for i in 0..dim {
+            let d = q[i] - r[i];
+            result = d.mul_add(d, result);
+        }
+        result
+    }
+
+    fn scalar_l2fma_f32(q: &[f32], r: &[f32], dim: usize) -> f32 {
+        let mut result = 0.0f32;
+        for i in 0..dim {
+            let d = q[i] - r[i];
+            result = d.mul_add(d, result);
+        }
+        result
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn l2fma_simd_matches_scalar_all_dims_f64() {
+        use crate::simd::L2FmaSimd;
+        for &dim in BIT_EQ_DIMS {
+            for &salt in SALTS_F64 {
+                let (q, p) = gen_random_ish_f64(dim, salt);
+                let scalar = scalar_l2fma_f64(&q, &p, dim);
+                if let Some(simd) = f64::dispatch(&q, &p, dim) {
+                    let tol = 4.0 * f64::EPSILON * scalar.abs().max(1.0);
+                    assert!(
+                        (simd - scalar).abs() <= tol,
+                        "f64 dim={dim} salt={salt}: simd={simd} scalar={scalar} diff={} tol={tol}",
+                        (simd - scalar).abs()
+                    );
+                }
+            }
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn l2fma_simd_matches_scalar_all_dims_f32() {
+        use crate::simd::L2FmaSimd;
+        for &dim in BIT_EQ_DIMS {
+            for &salt in SALTS_F32 {
+                let (q, p) = gen_random_ish_f32(dim, salt);
+                let scalar = scalar_l2fma_f32(&q, &p, dim);
+                if let Some(simd) = f32::dispatch(&q, &p, dim) {
+                    let tol = 4.0 * f32::EPSILON * scalar.abs().max(1.0);
+                    assert!(
+                        (simd - scalar).abs() <= tol,
+                        "f32 dim={dim} salt={salt}: simd={simd} scalar={scalar} diff={} tol={tol}",
+                        (simd - scalar).abs()
+                    );
+                }
+            }
+        }
+    }
+
+    /// Verify dispatch returns None for dim < 8 (the dim-gate).
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn l2fma_simd_returns_none_below_dim8() {
+        use crate::simd::L2FmaSimd;
+        for dim in 0..8 {
+            let q = vec![1.0f64; dim];
+            let r = vec![2.0f64; dim];
+            assert!(f64::dispatch(&q, &r, dim).is_none(), "dim={dim}");
+            let q32 = vec![1.0f32; dim];
+            let r32 = vec![2.0f32; dim];
+            assert!(f32::dispatch(&q32, &r32, dim).is_none(), "dim={dim}");
+        }
     }
 }

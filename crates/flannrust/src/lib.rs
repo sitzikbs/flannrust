@@ -82,6 +82,8 @@ pub mod params;
 pub mod result_set;
 pub mod scalar;
 mod search;
+#[cfg(target_arch = "x86_64")]
+mod simd;
 pub mod tree;
 
 pub use bbox::Interval;
