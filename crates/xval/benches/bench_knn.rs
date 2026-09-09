@@ -22,9 +22,12 @@
 //! fight -- see `bench_build.rs`'s module doc / `xval::lib` docs for why.
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use nanoflann_ref::{Metric, RefIndex3F32, RefIndex3F64, RefIndexF32, RefIndexF64};
 use flannrust::{ConstDim, KdTreeBuilder, L2};
-use xval::{build_rust_f32, build_rust_f64, cfg_seed, queries, to_array3, to_f32, uniform, BuildThreads, RoundRobin, XMetric};
+use nanoflann_ref::{Metric, RefIndex3F32, RefIndex3F64, RefIndexF32, RefIndexF64};
+use xval::{
+    build_rust_f32, build_rust_f64, cfg_seed, queries, to_array3, to_f32, uniform, BuildThreads,
+    RoundRobin, XMetric,
+};
 
 const N: usize = 100_000;
 const LEAF: usize = 10;
@@ -43,7 +46,12 @@ fn bench_knn_runtime_dim(c: &mut Criterion) {
         // f32 arm
         let data64 = uniform(cfg_seed("bench_knn_data_f32", &[dim]), N, dim);
         let data32 = to_f32(&data64);
-        let q64 = queries(cfg_seed("bench_knn_q_f32", &[dim]), &data64, dim, N_QUERIES_POOL);
+        let q64 = queries(
+            cfg_seed("bench_knn_q_f32", &[dim]),
+            &data64,
+            dim,
+            N_QUERIES_POOL,
+        );
         let q32 = to_f32(&q64);
         let rust32 = build_rust_f32(&data32, dim, XMetric::L2, LEAF, BuildThreads::Sequential);
         let cpp32 = RefIndexF32::build(&data32, dim, Metric::L2, LEAF, 1);
@@ -75,7 +83,12 @@ fn bench_knn_runtime_dim(c: &mut Criterion) {
         let q64_dataset = &data64;
         let rust64 = build_rust_f64(&data64, dim, XMetric::L2, LEAF, BuildThreads::Sequential);
         let cpp64 = RefIndexF64::build(&data64, dim, Metric::L2, LEAF, 1);
-        let q64_pool = queries(cfg_seed("bench_knn_q_f64", &[dim]), q64_dataset, dim, N_QUERIES_POOL);
+        let q64_pool = queries(
+            cfg_seed("bench_knn_q_f64", &[dim]),
+            q64_dataset,
+            dim,
+            N_QUERIES_POOL,
+        );
 
         for &k in &KS {
             group.bench_function(format!("rust/{dim}/f64/k{k}"), |b| {
@@ -116,10 +129,18 @@ fn bench_knn_fixed3(c: &mut Criterion) {
     let data64 = uniform(cfg_seed("bench_knn_fixed3_data_f32", &[]), N, DIM);
     let data32 = to_f32(&data64);
     let arr3_32 = to_array3(&data32);
-    let q64 = queries(cfg_seed("bench_knn_fixed3_q_f32", &[]), &data64, DIM, N_QUERIES_POOL);
+    let q64 = queries(
+        cfg_seed("bench_knn_fixed3_q_f32", &[]),
+        &data64,
+        DIM,
+        N_QUERIES_POOL,
+    );
     let q32 = to_f32(&q64);
 
-    let rust32 = KdTreeBuilder::new(ConstDim::<3>, arr3_32.as_slice()).with_metric(L2).leaf_max_size(LEAF).build_sequential();
+    let rust32 = KdTreeBuilder::new(ConstDim::<3>, arr3_32.as_slice())
+        .with_metric(L2)
+        .leaf_max_size(LEAF)
+        .build_sequential();
     let cpp32 = RefIndex3F32::build(&data32, LEAF, 1);
 
     for &k in &KS {
@@ -150,9 +171,17 @@ fn bench_knn_fixed3(c: &mut Criterion) {
     // f64
     let data64b = uniform(cfg_seed("bench_knn_fixed3_data_f64", &[]), N, DIM);
     let arr3_64 = to_array3(&data64b);
-    let q64b = queries(cfg_seed("bench_knn_fixed3_q_f64", &[]), &data64b, DIM, N_QUERIES_POOL);
+    let q64b = queries(
+        cfg_seed("bench_knn_fixed3_q_f64", &[]),
+        &data64b,
+        DIM,
+        N_QUERIES_POOL,
+    );
 
-    let rust64 = KdTreeBuilder::new(ConstDim::<3>, arr3_64.as_slice()).with_metric(L2).leaf_max_size(LEAF).build_sequential();
+    let rust64 = KdTreeBuilder::new(ConstDim::<3>, arr3_64.as_slice())
+        .with_metric(L2)
+        .leaf_max_size(LEAF)
+        .build_sequential();
     let cpp64 = RefIndex3F64::build(&data64b, LEAF, 1);
 
     for &k in &KS {

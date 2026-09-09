@@ -22,7 +22,9 @@ pub fn to_ndarray<'py>(py: Python<'py>, x: &Bound<'py, PyAny>) -> PyResult<Bound
 /// for a 1-D input) and per-point dimension `d`. `T`'s dtype must match
 /// `x`'s exactly (no silent widening/narrowing) -- a mismatch is a
 /// `TypeError`; a wrong rank is a `ValueError`.
-pub fn as_rows_2d<'py, T: Element + Copy>(x: &Bound<'py, PyAny>) -> PyResult<(Vec<T>, usize, usize)> {
+pub fn as_rows_2d<'py, T: Element + Copy>(
+    x: &Bound<'py, PyAny>,
+) -> PyResult<(Vec<T>, usize, usize)> {
     let untyped = x
         .cast::<PyUntypedArray>()
         .map_err(|_| PyValueError::new_err("expected a numpy array"))?;
@@ -44,7 +46,9 @@ pub fn as_rows_2d<'py, T: Element + Copy>(x: &Bound<'py, PyAny>) -> PyResult<(Ve
             }
             Ok((v, m, d))
         }
-        n => Err(PyValueError::new_err(format!("expected a 1-D or 2-D array, got {n}-D"))),
+        n => Err(PyValueError::new_err(format!(
+            "expected a 1-D or 2-D array, got {n}-D"
+        ))),
     }
 }
 
@@ -72,6 +76,8 @@ fn dtype_mismatch<T>() -> PyErr {
 /// never usefully run on more threads than there are cores, silently
 /// clamping is correct behavior, not a validation error.
 pub fn capped_workers(workers: i64) -> usize {
-    let cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    let cpus = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
     (workers as usize).min(cpus)
 }

@@ -30,7 +30,12 @@ fn native_parity_build_knn_dim8_f64() {
     const N_QUERIES: usize = 100;
 
     let data = uniform(cfg_seed("native_parity", &[N, DIM]), N, DIM);
-    let q = queries(cfg_seed("native_parity_q", &[N, DIM]), &data, DIM, N_QUERIES);
+    let q = queries(
+        cfg_seed("native_parity_q", &[N, DIM]),
+        &data,
+        DIM,
+        N_QUERIES,
+    );
 
     let rust_idx = build_rust_f64(&data, DIM, XMetric::L2, LEAF, BuildThreads::Sequential);
     let cpp_idx = RefIndexF64::build(&data, DIM, Metric::L2, LEAF, 1);
@@ -39,7 +44,13 @@ fn native_parity_build_knn_dim8_f64() {
         let query = &q[i * DIM..(i + 1) * DIM];
         let (r_idx, r_dist) = rust_idx.knn(query, K, 0.0);
         let (c_idx, c_dist) = cpp_idx.knn(query, K, 0.0);
-        assert_eq!(r_idx.len(), c_idx.len(), "query {i}: result count mismatch: rust={} cpp={}", r_idx.len(), c_idx.len());
+        assert_eq!(
+            r_idx.len(),
+            c_idx.len(),
+            "query {i}: result count mismatch: rust={} cpp={}",
+            r_idx.len(),
+            c_idx.len()
+        );
         for rank in 0..r_idx.len() {
             assert_eq!(
                 r_idx[rank], c_idx[rank],

@@ -111,8 +111,20 @@ macro_rules! build_matrix_test {
     };
 }
 
-build_matrix_test!(build_matrix_f64, f64, build_rust_f64, RefIndexF64, |v: &Vec<f64>| v.clone());
-build_matrix_test!(build_matrix_f32, f32, build_rust_f32, RefIndexF32, |v: &Vec<f64>| to_f32(v));
+build_matrix_test!(
+    build_matrix_f64,
+    f64,
+    build_rust_f64,
+    RefIndexF64,
+    |v: &Vec<f64>| v.clone()
+);
+build_matrix_test!(
+    build_matrix_f32,
+    f32,
+    build_rust_f32,
+    RefIndexF32,
+    |v: &Vec<f64>| to_f32(v)
+);
 
 // ---------------------------------------------------------------------
 // exponential_spacing (dim 1) -- deep degenerate tree parity. Run on a
@@ -187,20 +199,34 @@ fn build_exponential_spacing_n1000_both_scalars() {
         for &leaf in &leaves {
             let data64 = exponential_spacing(n);
 
-            let rust_idx64 = build_rust_f64(&data64, dim, XMetric::L2, leaf, BuildThreads::Sequential);
+            let rust_idx64 =
+                build_rust_f64(&data64, dim, XMetric::L2, leaf, BuildThreads::Sequential);
             let cpp_idx64 = RefIndexF64::build(&data64, dim, XMetric::L2.to_ref(), leaf, 1);
             let ctx64 = format!("exponential_spacing f64 config: leaf={leaf} n={n}");
             assert_vind_eq(&rust_idx64.vind(), &cpp_idx64.vind(), &ctx64);
-            assert!(rust_idx64.used_memory_bytes() > 0, "{ctx64}\nrust used_memory_bytes() must be > 0");
-            assert!(cpp_idx64.used_memory() > 0, "{ctx64}\ncpp used_memory() must be > 0");
+            assert!(
+                rust_idx64.used_memory_bytes() > 0,
+                "{ctx64}\nrust used_memory_bytes() must be > 0"
+            );
+            assert!(
+                cpp_idx64.used_memory() > 0,
+                "{ctx64}\ncpp used_memory() must be > 0"
+            );
 
             let data32 = exponential_spacing_f32_native(n);
-            let rust_idx32 = build_rust_f32(&data32, dim, XMetric::L2, leaf, BuildThreads::Sequential);
+            let rust_idx32 =
+                build_rust_f32(&data32, dim, XMetric::L2, leaf, BuildThreads::Sequential);
             let cpp_idx32 = RefIndexF32::build(&data32, dim, XMetric::L2.to_ref(), leaf, 1);
             let ctx32 = format!("exponential_spacing f32 config: leaf={leaf} n={n}");
             assert_vind_eq(&rust_idx32.vind(), &cpp_idx32.vind(), &ctx32);
-            assert!(rust_idx32.used_memory_bytes() > 0, "{ctx32}\nrust used_memory_bytes() must be > 0");
-            assert!(cpp_idx32.used_memory() > 0, "{ctx32}\ncpp used_memory() must be > 0");
+            assert!(
+                rust_idx32.used_memory_bytes() > 0,
+                "{ctx32}\nrust used_memory_bytes() must be > 0"
+            );
+            assert!(
+                cpp_idx32.used_memory() > 0,
+                "{ctx32}\ncpp used_memory() must be > 0"
+            );
         }
     });
 }
@@ -230,8 +256,14 @@ fn build_parallel_auto_matches_cpp_n_thread_build_4_uniform_n5000_dim3_f64() {
 
     let ctx = format!("build_parallel_auto_vs_cpp config: n={n} dim={dim} leaf={leaf} seed={seed}");
     assert_vind_eq(&rust_idx.vind(), &cpp_idx.vind(), &ctx);
-    assert!(rust_idx.used_memory_bytes() > 0, "{ctx}\nrust used_memory_bytes() must be > 0");
-    assert!(cpp_idx.used_memory() > 0, "{ctx}\ncpp used_memory() must be > 0");
+    assert!(
+        rust_idx.used_memory_bytes() > 0,
+        "{ctx}\nrust used_memory_bytes() must be > 0"
+    );
+    assert!(
+        cpp_idx.used_memory() > 0,
+        "{ctx}\ncpp used_memory() must be > 0"
+    );
 }
 
 #[test]
@@ -246,8 +278,13 @@ fn build_exponential_spacing_n10000_leaf10_f64() {
         let cpp_idx = RefIndexF64::build(&data, dim, XMetric::L2.to_ref(), leaf, 1);
         let ctx = format!("exponential_spacing deep config: n={n} leaf={leaf}");
         assert_vind_eq(&rust_idx.vind(), &cpp_idx.vind(), &ctx);
-        assert!(rust_idx.used_memory_bytes() > 0, "{ctx}\nrust used_memory_bytes() must be > 0");
-        assert!(cpp_idx.used_memory() > 0, "{ctx}\ncpp used_memory() must be > 0");
+        assert!(
+            rust_idx.used_memory_bytes() > 0,
+            "{ctx}\nrust used_memory_bytes() must be > 0"
+        );
+        assert!(
+            cpp_idx.used_memory() > 0,
+            "{ctx}\ncpp used_memory() must be > 0"
+        );
     });
 }
-

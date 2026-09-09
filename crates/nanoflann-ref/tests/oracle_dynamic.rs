@@ -86,7 +86,11 @@ fn empty_forest_radius_returns_zero_found_f32() {
     // count is 0 and result.full() (always true for RadiusResultSet) does
     // not crash despite nothing ever being added to it.
     let results = idx.radius(&QUERY_F32, 100.0, true, 0.0);
-    assert_eq!(results.len(), 0, "empty forest radius search must return 0 found");
+    assert_eq!(
+        results.len(),
+        0,
+        "empty forest radius search must return 0 found"
+    );
 }
 
 // ---- Test 2: set_current_n + addPoints(0, 3) (end-inclusive) -------------
@@ -99,8 +103,16 @@ fn add_points_0_to_3_matches_hand_computed_knn_f32() {
 
     let (indices, dists) = idx.knn(&QUERY_F32, 2, 0.0);
     assert_eq!(indices, vec![0, 1], "expected nearest-2 indices [0, 1]");
-    assert!((dists[0] - 0.13).abs() < 1e-6, "dist[0] = {} (want ~0.13)", dists[0]);
-    assert!((dists[1] - 0.73).abs() < 1e-6, "dist[1] = {} (want ~0.73)", dists[1]);
+    assert!(
+        (dists[0] - 0.13).abs() < 1e-6,
+        "dist[0] = {} (want ~0.13)",
+        dists[0]
+    );
+    assert!(
+        (dists[1] - 0.73).abs() < 1e-6,
+        "dist[1] = {} (want ~0.73)",
+        dists[1]
+    );
 
     assert!(idx.tree_count() >= 1, "tree_count() must be >= 1");
 
@@ -112,11 +124,18 @@ fn add_points_0_to_3_matches_hand_computed_knn_f32() {
         union.extend(idx.slot_vacc(slot));
     }
     union.sort_unstable();
-    assert_eq!(union, vec![0, 1, 2, 3], "slot vAcc union must be exactly {{0,1,2,3}}");
+    assert_eq!(
+        union,
+        vec![0, 1, 2, 3],
+        "slot vAcc union must be exactly {{0,1,2,3}}"
+    );
 
     let ti = idx.tree_index();
     for (i, &v) in ti.iter().enumerate().take(4) {
-        assert_ne!(v, -1, "tree_index()[{i}] must not be -1 (point {i} is active)");
+        assert_ne!(
+            v, -1,
+            "tree_index()[{i}] must not be -1 (point {i} is active)"
+        );
     }
 }
 
@@ -133,8 +152,16 @@ fn remove_point_1_excludes_it_from_knn_f32() {
     // knn over the whole live set (k=4, more than the 3 remaining live
     // points) must never return 1.
     let (indices, _dists) = idx.knn(&QUERY_F32, 4, 0.0);
-    assert!(!indices.contains(&1), "removed point 1 must never appear in knn results, got {:?}", indices);
-    assert_eq!(indices, vec![0, 2, 3], "expected ascending [0, 2, 3] over the live set");
+    assert!(
+        !indices.contains(&1),
+        "removed point 1 must never appear in knn results, got {:?}",
+        indices
+    );
+    assert_eq!(
+        indices,
+        vec![0, 2, 3],
+        "expected ascending [0, 2, 3] over the live set"
+    );
 
     let ti = idx.tree_index();
     assert_eq!(ti[1], -1, "tree_index()[1] must be -1 after removal");
@@ -153,13 +180,24 @@ fn readd_point_1_reactivates_it_f32() {
     idx.add_points(1, 1); // end-inclusive single-point re-add: reactivation, not a duplicate insert
 
     let (indices, dists) = idx.knn(&QUERY_F32, 2, 0.0);
-    assert_eq!(indices, vec![0, 1], "point 1 must be queryable again after reactivation");
+    assert_eq!(
+        indices,
+        vec![0, 1],
+        "point 1 must be queryable again after reactivation"
+    );
     assert!((dists[0] - 0.13).abs() < 1e-6);
     assert!((dists[1] - 0.73).abs() < 1e-6);
-    assert_eq!(idx.removed_count(), 0, "removed_count() must be 0 after reactivation");
+    assert_eq!(
+        idx.removed_count(),
+        0,
+        "removed_count() must be 0 after reactivation"
+    );
 
     let ti = idx.tree_index();
-    assert_ne!(ti[1], -1, "tree_index()[1] must not be -1 after reactivation");
+    assert_ne!(
+        ti[1], -1,
+        "tree_index()[1] must not be -1 after reactivation"
+    );
 
     // Reactivation must not duplicate the point: the union of live vAcc_
     // entries (points whose tree_index() != -1) must still be exactly 4.
@@ -168,7 +206,11 @@ fn readd_point_1_reactivates_it_f32() {
         union.extend(idx.slot_vacc(slot));
     }
     union.sort_unstable();
-    assert_eq!(union.len(), 4, "vAcc_ must hold exactly 4 physical entries, no duplicate");
+    assert_eq!(
+        union.len(),
+        4,
+        "vAcc_ must hold exactly 4 physical entries, no duplicate"
+    );
     assert_eq!(union, vec![0, 1, 2, 3]);
 }
 
@@ -188,7 +230,11 @@ fn grow_to_8_points_all_queryable_f32() {
     // All 8 points must be queryable: full ascending order is
     // 0, 4, 1, 5, 2, 6, 3, 7 (see module doc comment).
     let (indices, dists) = idx.knn(&QUERY_F32, 8, 0.0);
-    assert_eq!(indices, vec![0, 4, 1, 5, 2, 6, 3, 7], "expected the full hand-computed ascending order");
+    assert_eq!(
+        indices,
+        vec![0, 4, 1, 5, 2, 6, 3, 7],
+        "expected the full hand-computed ascending order"
+    );
     let expected_dists = [0.13f32, 0.53, 0.73, 1.13, 3.33, 3.73, 7.93, 8.33];
     for (got, want) in dists.iter().zip(expected_dists.iter()) {
         assert!((got - want).abs() < 1e-5, "got={got} want={want}");
@@ -199,8 +245,13 @@ fn grow_to_8_points_all_queryable_f32() {
     // consistent with First0Bit-driven slot occupancy after 8 sequential
     // inserts (binary counter pattern: slot 3 alone holds all 8, or some
     // other consistent partition depending on the exact merge history).
-    let total_vacc: usize = (0..idx.tree_count()).map(|slot| idx.slot_vacc(slot).len()).sum();
-    assert_eq!(total_vacc, 8, "sum of slot vAcc_ lengths must equal the live point count");
+    let total_vacc: usize = (0..idx.tree_count())
+        .map(|slot| idx.slot_vacc(slot).len())
+        .sum();
+    assert_eq!(
+        total_vacc, 8,
+        "sum of slot vAcc_ lengths must equal the live point count"
+    );
 }
 
 // ---- Test 6: radius two-call round-trip on the live (8-point) set --------

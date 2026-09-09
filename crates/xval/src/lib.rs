@@ -23,7 +23,7 @@
 
 use flannrust::{
     BuildThreads as RustBuildThreads, Distance, DynDim, FlatSlice, Interval, KdTree, KdTreeBuilder,
-    ResultItem, SearchParams, L1, L2, L2Simple, SO2, SO3,
+    L2Simple, ResultItem, SearchParams, L1, L2, SO2, SO3,
 };
 use rand::Rng;
 use rand::SeedableRng;
@@ -32,8 +32,8 @@ use rand::SeedableRng;
 /// `examples/render_report.rs` for the CLI wrapper. `render` (this
 /// module's entry point) is re-exported at the crate root for convenience.
 pub mod report;
-pub use report::{render, render_python, RenderError};
 use rand_chacha::ChaCha8Rng;
+pub use report::{render, render_python, RenderError};
 
 // ============================================================================
 // Data generators — all produce ROW-MAJOR flat `Vec<f64>` (n*dim) from a
@@ -77,7 +77,10 @@ pub fn clustered(seed: u64, n: usize, dim: usize, clusters: usize) -> Vec<f64> {
 /// overwritten with exact copies of earlier (non-duplicate) points, chosen
 /// deterministically from the same rng stream. `dup_frac` in `[0, 1]`.
 pub fn with_duplicates(seed: u64, n: usize, dim: usize, dup_frac: f64) -> Vec<f64> {
-    assert!((0.0..=1.0).contains(&dup_frac), "with_duplicates: dup_frac must be in [0,1]");
+    assert!(
+        (0.0..=1.0).contains(&dup_frac),
+        "with_duplicates: dup_frac must be in [0,1]"
+    );
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     let mut pts: Vec<f64> = (0..n * dim).map(|_| rng.gen_range(-RANGE..RANGE)).collect();
     let dup_count = ((n as f64) * dup_frac).round() as usize;
@@ -144,7 +147,11 @@ pub fn on_circle_so2(seed: u64, n: usize) -> Vec<f64> {
 /// bbox-miss / no-prune-possible traversal paths.
 pub fn queries(seed: u64, data: &[f64], dim: usize, n_queries: usize) -> Vec<f64> {
     assert!(dim > 0, "queries: dim must be > 0");
-    assert_eq!(data.len() % dim, 0, "queries: data.len() must be a multiple of dim");
+    assert_eq!(
+        data.len() % dim,
+        0,
+        "queries: data.len() must be a multiple of dim"
+    );
     let n_data = data.len() / dim;
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     let third = n_queries / 3;
@@ -186,7 +193,12 @@ pub fn to_f32(v: &[f64]) -> Vec<f32> {
 /// `&[[T; 3]]` `DataSource` impl in `flannrust::data_source`). Panics if
 /// `flat.len()` is not a multiple of 3.
 pub fn to_array3<T: Copy>(flat: &[T]) -> Vec<[T; 3]> {
-    assert_eq!(flat.len() % 3, 0, "to_array3: flat.len() ({}) must be a multiple of 3", flat.len());
+    assert_eq!(
+        flat.len() % 3,
+        0,
+        "to_array3: flat.len() ({}) must be a multiple of 3",
+        flat.len()
+    );
     flat.as_chunks::<3>().0.to_vec()
 }
 
@@ -207,7 +219,13 @@ pub struct RoundRobin<'a, T> {
 impl<'a, T> RoundRobin<'a, T> {
     pub fn new(data: &'a [T], dim: usize) -> Self {
         assert!(dim > 0, "RoundRobin: dim must be > 0");
-        assert_eq!(data.len() % dim, 0, "RoundRobin: data.len() ({}) must be a multiple of dim ({})", data.len(), dim);
+        assert_eq!(
+            data.len() % dim,
+            0,
+            "RoundRobin: data.len() ({}) must be a multiple of dim ({})",
+            data.len(),
+            dim
+        );
         let n = data.len() / dim;
         assert!(n > 0, "RoundRobin: data must contain at least one point");
         Self { data, dim, n, i: 0 }
@@ -444,8 +462,18 @@ macro_rules! impl_radius_comparator {
     };
 }
 
-impl_radius_comparator!(assert_radius_equal_f64, assert_knn_equal_f64, ulp_diff_f64, f64);
-impl_radius_comparator!(assert_radius_equal_f32, assert_knn_equal_f32, ulp_diff_f32, f32);
+impl_radius_comparator!(
+    assert_radius_equal_f64,
+    assert_knn_equal_f64,
+    ulp_diff_f64,
+    f64
+);
+impl_radius_comparator!(
+    assert_radius_equal_f32,
+    assert_knn_equal_f32,
+    ulp_diff_f32,
+    f32
+);
 
 // ============================================================================
 // Build helpers
@@ -540,7 +568,14 @@ macro_rules! define_rust_index {
             /// `out_dist[..found]`). Mirrors `nanoflann_ref::RefIndexF32::
             /// knn_into`'s contract exactly, for allocation-symmetric
             /// benchmark/perf-gate query loops.
-            pub fn knn_into(&self, q: &[$t], k: usize, eps: f32, out_idx: &mut [u32], out_dist: &mut [$t]) -> usize {
+            pub fn knn_into(
+                &self,
+                q: &[$t],
+                k: usize,
+                eps: f32,
+                out_idx: &mut [u32],
+                out_dist: &mut [$t],
+            ) -> usize {
                 assert_eq!(out_idx.len(), k, "knn_into: out_idx.len() must equal k");
                 assert_eq!(out_dist.len(), k, "knn_into: out_dist.len() must equal k");
                 let params = SearchParams { eps, sorted: true };
@@ -629,8 +664,11 @@ macro_rules! define_rust_index {
             /// (raw traversal order).
             pub fn find_within_box(&self, lo: &[$t], hi: &[$t]) -> Vec<u32> {
                 assert_eq!(lo.len(), hi.len(), "find_within_box: lo/hi length mismatch");
-                let bounds: Vec<Interval<$t>> =
-                    lo.iter().zip(hi.iter()).map(|(&low, &high)| Interval { low, high }).collect();
+                let bounds: Vec<Interval<$t>> = lo
+                    .iter()
+                    .zip(hi.iter())
+                    .map(|(&low, &high)| Interval { low, high })
+                    .collect();
                 let mut out = Vec::new();
                 match self {
                     $Name::L1(t) => {
@@ -699,10 +737,18 @@ macro_rules! define_rust_index {
             let threads = threads.to_rust();
             match metric {
                 XMetric::L1 => $Name::L1(
-                    KdTreeBuilder::new(DynDim(dim), ds).with_metric(L1).leaf_max_size(leaf).threads(threads).build(),
+                    KdTreeBuilder::new(DynDim(dim), ds)
+                        .with_metric(L1)
+                        .leaf_max_size(leaf)
+                        .threads(threads)
+                        .build(),
                 ),
                 XMetric::L2 => $Name::L2(
-                    KdTreeBuilder::new(DynDim(dim), ds).with_metric(L2).leaf_max_size(leaf).threads(threads).build(),
+                    KdTreeBuilder::new(DynDim(dim), ds)
+                        .with_metric(L2)
+                        .leaf_max_size(leaf)
+                        .threads(threads)
+                        .build(),
                 ),
                 XMetric::L2Simple => $Name::L2Simple(
                     KdTreeBuilder::new(DynDim(dim), ds)
@@ -712,10 +758,18 @@ macro_rules! define_rust_index {
                         .build(),
                 ),
                 XMetric::SO2 => $Name::SO2(
-                    KdTreeBuilder::new(DynDim(dim), ds).with_metric(SO2).leaf_max_size(leaf).threads(threads).build(),
+                    KdTreeBuilder::new(DynDim(dim), ds)
+                        .with_metric(SO2)
+                        .leaf_max_size(leaf)
+                        .threads(threads)
+                        .build(),
                 ),
                 XMetric::SO3 => $Name::SO3(
-                    KdTreeBuilder::new(DynDim(dim), ds).with_metric(SO3).leaf_max_size(leaf).threads(threads).build(),
+                    KdTreeBuilder::new(DynDim(dim), ds)
+                        .with_metric(SO3)
+                        .leaf_max_size(leaf)
+                        .threads(threads)
+                        .build(),
                 ),
             }
         }
@@ -775,13 +829,28 @@ macro_rules! impl_brute_force_knn {
         /// not a multiple of `dim`.
         pub fn $name(data: &[$t], dim: usize, query: &[$t], k: usize) -> Vec<(u32, $t)> {
             assert!(dim > 0, "{}: dim must be > 0", stringify!($name));
-            assert_eq!(query.len(), dim, "{}: query.len() must equal dim", stringify!($name));
-            assert_eq!(data.len() % dim, 0, "{}: data.len() must be a multiple of dim", stringify!($name));
+            assert_eq!(
+                query.len(),
+                dim,
+                "{}: query.len() must equal dim",
+                stringify!($name)
+            );
+            assert_eq!(
+                data.len() % dim,
+                0,
+                "{}: data.len() must be a multiple of dim",
+                stringify!($name)
+            );
             let n = data.len() / dim;
             let ds = FlatSlice::new(data, dim);
-            let mut all: Vec<(u32, $t)> =
-                (0..n).map(|i| (i as u32, L2.eval(query, &ds, i, DynDim(dim)))).collect();
-            all.sort_by(|a, b| a.1.partial_cmp(&b.1).expect("brute_force_knn: NaN distance").then(a.0.cmp(&b.0)));
+            let mut all: Vec<(u32, $t)> = (0..n)
+                .map(|i| (i as u32, L2.eval(query, &ds, i, DynDim(dim))))
+                .collect();
+            all.sort_by(|a, b| {
+                a.1.partial_cmp(&b.1)
+                    .expect("brute_force_knn: NaN distance")
+                    .then(a.0.cmp(&b.0))
+            });
             all.truncate(k.min(n));
             all
         }
@@ -852,7 +921,10 @@ macro_rules! impl_score_query {
                     rel_dist_errors.push(err);
                 }
             }
-            QueryScore { exact, rel_dist_errors }
+            QueryScore {
+                exact,
+                rel_dist_errors,
+            }
         }
     };
 }
@@ -893,9 +965,20 @@ macro_rules! impl_score_exact_tie_aware {
         /// still rejecting a genuinely wrong neighbor, a wrong distance, or
         /// a missed closer point. Panics if `dim == 0` or `query.len() !=
         /// dim` (same preconditions as `brute_force_knn_l2_*`).
-        pub fn $name(data: &[$t], dim: usize, query: &[$t], gt: &[(u32, $t)], got: &[(u32, $t)]) -> bool {
+        pub fn $name(
+            data: &[$t],
+            dim: usize,
+            query: &[$t],
+            gt: &[(u32, $t)],
+            got: &[(u32, $t)],
+        ) -> bool {
             assert!(dim > 0, "{}: dim must be > 0", stringify!($name));
-            assert_eq!(query.len(), dim, "{}: query.len() must equal dim", stringify!($name));
+            assert_eq!(
+                query.len(),
+                dim,
+                "{}: query.len() must equal dim",
+                stringify!($name)
+            );
             if gt.len() != got.len() {
                 return false;
             }
@@ -950,18 +1033,44 @@ macro_rules! impl_brute_force_knn_live {
         /// `data.len()` is not a multiple of `dim`, or `live.len() != n`.
         /// Returns up to `k` pairs (fewer iff fewer than `k` indices are
         /// live).
-        pub fn $name(data: &[$t], dim: usize, query: &[$t], k: usize, live: &[bool]) -> Vec<(u32, $t)> {
+        pub fn $name(
+            data: &[$t],
+            dim: usize,
+            query: &[$t],
+            k: usize,
+            live: &[bool],
+        ) -> Vec<(u32, $t)> {
             assert!(dim > 0, "{}: dim must be > 0", stringify!($name));
-            assert_eq!(query.len(), dim, "{}: query.len() must equal dim", stringify!($name));
-            assert_eq!(data.len() % dim, 0, "{}: data.len() must be a multiple of dim", stringify!($name));
+            assert_eq!(
+                query.len(),
+                dim,
+                "{}: query.len() must equal dim",
+                stringify!($name)
+            );
+            assert_eq!(
+                data.len() % dim,
+                0,
+                "{}: data.len() must be a multiple of dim",
+                stringify!($name)
+            );
             let n = data.len() / dim;
-            assert_eq!(live.len(), n, "{}: live.len() ({}) must equal n ({n})", stringify!($name), live.len());
+            assert_eq!(
+                live.len(),
+                n,
+                "{}: live.len() ({}) must equal n ({n})",
+                stringify!($name),
+                live.len()
+            );
             let ds = FlatSlice::new(data, dim);
             let mut all: Vec<(u32, $t)> = (0..n)
                 .filter(|&i| live[i])
                 .map(|i| (i as u32, L2.eval(query, &ds, i, DynDim(dim))))
                 .collect();
-            all.sort_by(|a, b| a.1.partial_cmp(&b.1).expect("brute_force_knn_live: NaN distance").then(a.0.cmp(&b.0)));
+            all.sort_by(|a, b| {
+                a.1.partial_cmp(&b.1)
+                    .expect("brute_force_knn_live: NaN distance")
+                    .then(a.0.cmp(&b.0))
+            });
             all.truncate(k.min(all.len()));
             all
         }
@@ -999,7 +1108,12 @@ macro_rules! impl_score_exact_tie_aware_live {
             live: &[bool],
         ) -> bool {
             assert!(dim > 0, "{}: dim must be > 0", stringify!($name));
-            assert_eq!(query.len(), dim, "{}: query.len() must equal dim", stringify!($name));
+            assert_eq!(
+                query.len(),
+                dim,
+                "{}: query.len() must equal dim",
+                stringify!($name)
+            );
             if gt.len() != got.len() {
                 return false;
             }
@@ -1098,7 +1212,10 @@ impl TimingStats {
     /// `#[cfg(test)]` mod. Panics on an empty sample (same policy as
     /// `median_of`).
     pub fn from_samples(samples: &[f64]) -> Self {
-        assert!(!samples.is_empty(), "TimingStats::from_samples: empty sample");
+        assert!(
+            !samples.is_empty(),
+            "TimingStats::from_samples: empty sample"
+        );
         let n = samples.len();
         let mean_ms = samples.iter().sum::<f64>() / n as f64;
         let std_ms = if n > 1 {
@@ -1109,7 +1226,14 @@ impl TimingStats {
         let median_ms = median_of(samples.to_vec());
         let min_ms = samples.iter().cloned().fold(f64::INFINITY, f64::min);
         let max_ms = samples.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        TimingStats { mean_ms, std_ms, median_ms, min_ms, max_ms, n }
+        TimingStats {
+            mean_ms,
+            std_ms,
+            median_ms,
+            min_ms,
+            max_ms,
+            n,
+        }
     }
 }
 
@@ -1168,7 +1292,11 @@ pub fn measure<F: FnMut()>(mut f: F, budget_s: f64) -> TimingStats {
 /// definition, uses less than its own budget at that same `n`). Returns
 /// `(rust_stats, cpp_stats)`, both with the SAME `n` (warmup reps excluded
 /// from both, same as `measure`).
-pub fn measure_pair<A: FnMut(), B: FnMut()>(mut rust_fn: A, mut cpp_fn: B, budget_s: f64) -> (TimingStats, TimingStats) {
+pub fn measure_pair<A: FnMut(), B: FnMut()>(
+    mut rust_fn: A,
+    mut cpp_fn: B,
+    budget_s: f64,
+) -> (TimingStats, TimingStats) {
     let mut rust_warm_ms = [0.0f64; 2];
     let mut cpp_warm_ms = [0.0f64; 2];
     for i in 0..2 {
@@ -1195,7 +1323,10 @@ pub fn measure_pair<A: FnMut(), B: FnMut()>(mut rust_fn: A, mut cpp_fn: B, budge
         cpp_fn();
         cpp_samples_ms.push(start.elapsed().as_secs_f64() * 1000.0);
     }
-    (TimingStats::from_samples(&rust_samples_ms), TimingStats::from_samples(&cpp_samples_ms))
+    (
+        TimingStats::from_samples(&rust_samples_ms),
+        TimingStats::from_samples(&cpp_samples_ms),
+    )
 }
 
 /// Deterministic, order-sensitive mixing hash over `tag` and `parts` (an
@@ -1224,7 +1355,10 @@ pub fn cfg_seed(tag: &str, parts: &[usize]) -> u64 {
 /// set of dataset indices to remove-then-re-add in a dynamic-forest churn
 /// workload. Panics if `count > n`.
 pub fn sample_distinct_indices(seed: u64, n: usize, count: usize) -> Vec<usize> {
-    assert!(count <= n, "sample_distinct_indices: count ({count}) must be <= n ({n})");
+    assert!(
+        count <= n,
+        "sample_distinct_indices: count ({count}) must be <= n ({n})"
+    );
     use rand::seq::SliceRandom;
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     let mut all: Vec<usize> = (0..n).collect();
@@ -1282,8 +1416,8 @@ pub fn with_ctx<F: FnOnce()>(ctx: impl std::fmt::Display, f: F) {
 // `add_points_misaligned_start_documents_silent_corruption_f32`).
 // ============================================================================
 
-use nanoflann_ref::{RefDynIndexF32, RefDynIndexF64};
 use flannrust::{DataSource, DynamicKdTree, Scalar};
+use nanoflann_ref::{RefDynIndexF32, RefDynIndexF64};
 
 /// Fixed backing buffer (`data`, `n_capacity = data.len() / dim` points)
 /// with a growable LOGICAL size -- the Rust-side twin of the oracle's own
@@ -1322,7 +1456,11 @@ impl<'a, T: Scalar> GrowableFlat<'a, T> {
             "GrowableFlat::new: data.len() ({}) must be a multiple of dim ({dim})",
             data.len()
         );
-        Self { data, dim, current_n: std::cell::Cell::new(0) }
+        Self {
+            data,
+            dim,
+            current_n: std::cell::Cell::new(0),
+        }
     }
 
     /// Grows (or shrinks) the logical size `DataSource::point_count()`
@@ -1458,7 +1596,10 @@ pub fn dyn_ops(seed: u64, total_capacity: usize, n_ops: usize) -> Vec<DynOp> {
 
         let total_weight: u32 = choices.iter().map(|&(w, _)| w).sum();
         let mut pick = rng.gen_range(0..total_weight);
-        let mut kind = choices.last().expect("choices is non-empty (asserted above)").1;
+        let mut kind = choices
+            .last()
+            .expect("choices is non-empty (asserted above)")
+            .1;
         for &(w, k) in &choices {
             if pick < w {
                 kind = k;
@@ -1529,7 +1670,10 @@ pub fn validate_dyn_ops_legal(ops: &[DynOp], total_capacity: usize) {
                      count={count} total_capacity={total_capacity}"
                 );
                 for j in point_count..point_count + count {
-                    assert!(live.insert(j), "op {i}: GrowAndAdd re-introduces already-live index {j}");
+                    assert!(
+                        live.insert(j),
+                        "op {i}: GrowAndAdd re-introduces already-live index {j}"
+                    );
                 }
                 point_count += count;
             }
@@ -1539,7 +1683,10 @@ pub fn validate_dyn_ops_legal(ops: &[DynOp], total_capacity: usize) {
                     "op {i}: Remove targets a non-live index {live_idx} (either already \
                      removed or never added)"
                 );
-                assert!(removed.insert(live_idx), "op {i}: internal validator bug: {live_idx} already in removed set");
+                assert!(
+                    removed.insert(live_idx),
+                    "op {i}: internal validator bug: {live_idx} already in removed set"
+                );
             }
             DynOp::ReAdd { removed_idx } => {
                 assert!(
@@ -1547,7 +1694,10 @@ pub fn validate_dyn_ops_legal(ops: &[DynOp], total_capacity: usize) {
                     "op {i}: ReAdd targets a non-removed index {removed_idx} (either still \
                      live or never added)"
                 );
-                assert!(live.insert(removed_idx), "op {i}: internal validator bug: {removed_idx} already live");
+                assert!(
+                    live.insert(removed_idx),
+                    "op {i}: internal validator bug: {removed_idx} already live"
+                );
             }
         }
     }
@@ -1741,7 +1891,9 @@ pub fn git_sha() -> String {
 /// is not evidence of WSL, so this never panics or errors, only reports
 /// `false`.
 pub fn is_wsl() -> bool {
-    std::fs::read_to_string("/proc/version").map(|s| s.to_lowercase().contains("microsoft")).unwrap_or(false)
+    std::fs::read_to_string("/proc/version")
+        .map(|s| s.to_lowercase().contains("microsoft"))
+        .unwrap_or(false)
 }
 
 // ----------------------------------------------------------------------
@@ -1823,13 +1975,26 @@ macro_rules! define_dyn_apply {
 
             let r_rm = rust_tree.removed_len();
             let c_rm = oracle.removed_count();
-            assert_eq!(r_rm, c_rm, "removed count mismatch: rust removed_len={r_rm} cpp removed_count={c_rm}");
+            assert_eq!(
+                r_rm, c_rm,
+                "removed count mismatch: rust removed_len={r_rm} cpp removed_count={c_rm}"
+            );
         }
     };
 }
 
-define_dyn_apply!(f32, RefDynIndexF32, apply_dyn_op_f32, assert_dyn_structure_equal_f32);
-define_dyn_apply!(f64, RefDynIndexF64, apply_dyn_op_f64, assert_dyn_structure_equal_f64);
+define_dyn_apply!(
+    f32,
+    RefDynIndexF32,
+    apply_dyn_op_f32,
+    assert_dyn_structure_equal_f32
+);
+define_dyn_apply!(
+    f64,
+    RefDynIndexF64,
+    apply_dyn_op_f64,
+    assert_dyn_structure_equal_f64
+);
 
 #[cfg(test)]
 mod tests {
@@ -1843,7 +2008,10 @@ mod tests {
     // once via the default hook -- harmless noise, not a correctness issue.
     fn assert_panics<F: FnOnce() + std::panic::UnwindSafe>(f: F, what: &str) {
         let result = panic::catch_unwind(AssertUnwindSafe(f));
-        assert!(result.is_err(), "{what}: expected a panic, but it did not panic");
+        assert!(
+            result.is_err(),
+            "{what}: expected a panic, but it did not panic"
+        );
     }
 
     // ------------------------------------------------------------------
@@ -2175,7 +2343,10 @@ mod tests {
         let data_rows: Vec<&[f64]> = data.chunks(2).collect();
         let q_rows: Vec<&[f64]> = q.chunks(2).collect();
         let has_exact_copy = q_rows.iter().any(|qr| data_rows.contains(qr));
-        assert!(has_exact_copy, "expected at least one exact dataset-point query");
+        assert!(
+            has_exact_copy,
+            "expected at least one exact dataset-point query"
+        );
     }
 
     #[test]
@@ -2343,7 +2514,10 @@ mod tests {
 
         // OLD (order-independent set match) scores this a MISS: {0,1} != {0,2}.
         let old = score_query_f32(&gt, &got);
-        assert!(!old.exact, "old set-match scorer is expected to reject a different tie winner");
+        assert!(
+            !old.exact,
+            "old set-match scorer is expected to reject a different tie winner"
+        );
 
         // NEW (tie-aware) scores this EXACT: both conditions hold (distance
         // list bit-equal positionally; index 2's recomputed true distance
@@ -2362,7 +2536,10 @@ mod tests {
         let got = [(0u32, 0.0f32), (3u32, 1.0)];
 
         let old = score_query_f32(&gt, &got);
-        assert!(!old.exact, "old set-match scorer must reject this too: {{0,1}} != {{0,3}}");
+        assert!(
+            !old.exact,
+            "old set-match scorer must reject this too: {{0,1}} != {{0,3}}"
+        );
 
         assert!(
             !score_exact_tie_aware_f32(&TIE_DATA, 1, &TIE_QUERY, &gt, &got),
@@ -2433,7 +2610,9 @@ mod tests {
         let live = [true, true, true, true];
         let gt = [(0u32, 0.0f32), (1u32, 1.0)];
         let got = [(0u32, 0.0f32), (2u32, 1.0)];
-        assert!(score_exact_tie_aware_live_f32(&TIE_DATA, 1, &TIE_QUERY, &gt, &got, &live));
+        assert!(score_exact_tie_aware_live_f32(
+            &TIE_DATA, 1, &TIE_QUERY, &gt, &got, &live
+        ));
     }
 
     #[test]
@@ -2444,7 +2623,9 @@ mod tests {
         let live = [true, true, true, true];
         let gt = [(0u32, 0.0f32), (1u32, 1.0)];
         let got = [(0u32, 0.0f32), (3u32, 1.0)]; // p3's true distance is 100.0, not 1.0
-        assert!(!score_exact_tie_aware_live_f32(&TIE_DATA, 1, &TIE_QUERY, &gt, &got, &live));
+        assert!(!score_exact_tie_aware_live_f32(
+            &TIE_DATA, 1, &TIE_QUERY, &gt, &got, &live
+        ));
     }
 
     // ------------------------------------------------------------------
@@ -2531,7 +2712,12 @@ mod tests {
         assert!((s.mean_ms - 5.0).abs() < 1e-9, "mean: {}", s.mean_ms);
         // sum((x-mean)^2) = 9+1+1+1+0+0+4+16 = 32; sample std = sqrt(32/7)
         let expected_std = (32.0f64 / 7.0).sqrt();
-        assert!((s.std_ms - expected_std).abs() < 1e-9, "std: {} expected {}", s.std_ms, expected_std);
+        assert!(
+            (s.std_ms - expected_std).abs() < 1e-9,
+            "std: {} expected {}",
+            s.std_ms,
+            expected_std
+        );
         // sorted: [2,4,4,4,5,5,7,9] -- even length, median = avg(4,5) = 4.5
         assert!((s.median_ms - 4.5).abs() < 1e-9, "median: {}", s.median_ms);
         assert_eq!(s.min_ms, 2.0);
@@ -2595,8 +2781,17 @@ mod tests {
         // Warmup reps are excluded from the returned stats' `n` and from
         // its sample set -- total calls must be exactly 2 (warmup) + n
         // (timed), never conflated.
-        assert_eq!(calls.get() as usize, 2 + stats.n, "expected 2 warmup + n timed calls, got {}", calls.get());
-        assert!((10..=100).contains(&stats.n), "n out of policy bounds: {}", stats.n);
+        assert_eq!(
+            calls.get() as usize,
+            2 + stats.n,
+            "expected 2 warmup + n timed calls, got {}",
+            calls.get()
+        );
+        assert!(
+            (10..=100).contains(&stats.n),
+            "n out of policy bounds: {}",
+            stats.n
+        );
     }
 
     #[test]
@@ -2613,7 +2808,10 @@ mod tests {
             },
             30.0,
         );
-        assert_eq!(rust_stats.n, cpp_stats.n, "measure_pair must use the SAME n for both interleaved sides");
+        assert_eq!(
+            rust_stats.n, cpp_stats.n,
+            "measure_pair must use the SAME n for both interleaved sides"
+        );
         assert_eq!(rust_calls.get() as usize, 2 + rust_stats.n);
         assert_eq!(cpp_calls.get() as usize, 2 + cpp_stats.n);
         assert!((10..=100).contains(&rust_stats.n));
@@ -2636,10 +2834,18 @@ mod tests {
             1e-6,
         );
         let seq = order.borrow();
-        assert_eq!(seq.len(), 2 * (2 + rust_stats.n), "expected interleaved R,C pairs for warmup+timed reps");
+        assert_eq!(
+            seq.len(),
+            2 * (2 + rust_stats.n),
+            "expected interleaved R,C pairs for warmup+timed reps"
+        );
         for (i, &c) in seq.iter().enumerate() {
             let expected = if i % 2 == 0 { 'R' } else { 'C' };
-            assert_eq!(c, expected, "call order not interleaved at position {i}: {:?}", *seq);
+            assert_eq!(
+                c, expected,
+                "call order not interleaved at position {i}: {:?}",
+                *seq
+            );
         }
     }
 
@@ -2665,11 +2871,20 @@ mod tests {
         let data = vec![0.0, 0.0, 1.0, 0.0, 2.0, 2.0, -1.0, -1.0, 5.0, 5.0];
         let seq = build_rust_f64(&data, 2, XMetric::L2, 2, BuildThreads::Sequential);
         let auto = build_rust_f64(&data, 2, XMetric::L2, 2, BuildThreads::Auto);
-        let threads2 =
-            build_rust_f64(&data, 2, XMetric::L2, 2, BuildThreads::Threads(core::num::NonZeroU32::new(2).unwrap()));
+        let threads2 = build_rust_f64(
+            &data,
+            2,
+            XMetric::L2,
+            2,
+            BuildThreads::Threads(core::num::NonZeroU32::new(2).unwrap()),
+        );
 
         assert_eq!(seq.vind(), auto.vind(), "Auto vind must match Sequential");
-        assert_eq!(seq.vind(), threads2.vind(), "Threads(2) vind must match Sequential");
+        assert_eq!(
+            seq.vind(),
+            threads2.vind(),
+            "Threads(2) vind must match Sequential"
+        );
     }
 
     // ------------------------------------------------------------------
@@ -2690,7 +2905,11 @@ mod tests {
 
         assert_eq!(found, want_idx.len());
         assert_eq!(&got_idx[..found], want_idx.as_slice());
-        assert_eq!(&got_dist[..found], want_dist.as_slice(), "distances must be bit-identical");
+        assert_eq!(
+            &got_dist[..found],
+            want_dist.as_slice(),
+            "distances must be bit-identical"
+        );
     }
 
     #[test]
@@ -2717,7 +2936,10 @@ mod tests {
         assert_eq!(out.len(), want.len());
         for i in 0..want.len() {
             assert_eq!(out[i].index, want[i].0);
-            assert_eq!(out[i].distance, want[i].1, "distances must be bit-identical at rank {i}");
+            assert_eq!(
+                out[i].distance, want[i].1,
+                "distances must be bit-identical at rank {i}"
+            );
         }
     }
 
@@ -2738,7 +2960,11 @@ mod tests {
 
         let c3 = idx.radius_into(&q, 0.5, true, 0.0, &mut out);
         assert_eq!(c3, 1);
-        assert_eq!(out.len(), 1, "buffer must shrink back down, not leave stale entries");
+        assert_eq!(
+            out.len(),
+            1,
+            "buffer must shrink back down, not leave stale entries"
+        );
     }
 
     // ------------------------------------------------------------------
@@ -2773,7 +2999,11 @@ mod tests {
         let ds_ref: &GrowableFlat<f64> = &g;
         assert_eq!(ds_ref.point_count(), 0);
         g.set_current_n(2);
-        assert_eq!(ds_ref.point_count(), 2, "the reference must see the mutation through the Cell");
+        assert_eq!(
+            ds_ref.point_count(),
+            2,
+            "the reference must see the mutation through the Cell"
+        );
     }
 
     #[test]
@@ -2796,7 +3026,11 @@ mod tests {
         let n_ops = 300usize;
         for seed in 0u64..50 {
             let ops = dyn_ops(seed, total_capacity, n_ops);
-            assert_eq!(ops.len(), n_ops, "seed {seed}: dyn_ops must return exactly n_ops entries");
+            assert_eq!(
+                ops.len(),
+                n_ops,
+                "seed {seed}: dyn_ops must return exactly n_ops entries"
+            );
             // Panics (with the seed's op index) on the first illegal op --
             // an independent model, not a call back into dyn_ops' own state.
             validate_dyn_ops_legal(&ops, total_capacity);
@@ -2942,14 +3176,20 @@ mod tests {
     #[should_panic(expected = "ReAdd targets a non-removed index")]
     fn validate_dyn_ops_legal_catches_a_hand_crafted_illegal_readd() {
         // ReAdds index 0 while it is still live (never removed) -- illegal.
-        let ops = vec![DynOp::GrowAndAdd { count: 1 }, DynOp::ReAdd { removed_idx: 0 }];
+        let ops = vec![
+            DynOp::GrowAndAdd { count: 1 },
+            DynOp::ReAdd { removed_idx: 0 },
+        ];
         validate_dyn_ops_legal(&ops, 10);
     }
 
     #[test]
     #[should_panic(expected = "GrowAndAdd would exceed capacity")]
     fn validate_dyn_ops_legal_catches_a_hand_crafted_capacity_overrun() {
-        let ops = vec![DynOp::GrowAndAdd { count: 5 }, DynOp::GrowAndAdd { count: 5 }];
+        let ops = vec![
+            DynOp::GrowAndAdd { count: 5 },
+            DynOp::GrowAndAdd { count: 5 },
+        ];
         validate_dyn_ops_legal(&ops, 8); // 5 + 5 = 10 > 8
     }
 
@@ -2963,13 +3203,30 @@ mod tests {
 
     #[test]
     fn meta_capture_helpers_return_non_empty_and_wsl_matches_proc_version() {
-        assert!(!cpu_model().is_empty(), "cpu_model() must never return an empty string");
-        assert!(!kernel_version().is_empty(), "kernel_version() must never return an empty string");
-        assert!(!cxx_compiler_version().is_empty(), "cxx_compiler_version() must never return an empty string");
-        assert!(!git_sha().is_empty(), "git_sha() must never return an empty string");
+        assert!(
+            !cpu_model().is_empty(),
+            "cpu_model() must never return an empty string"
+        );
+        assert!(
+            !kernel_version().is_empty(),
+            "kernel_version() must never return an empty string"
+        );
+        assert!(
+            !cxx_compiler_version().is_empty(),
+            "cxx_compiler_version() must never return an empty string"
+        );
+        assert!(
+            !git_sha().is_empty(),
+            "git_sha() must never return an empty string"
+        );
 
-        let expected_wsl =
-            std::fs::read_to_string("/proc/version").map(|s| s.to_lowercase().contains("microsoft")).unwrap_or(false);
-        assert_eq!(is_wsl(), expected_wsl, "is_wsl() must agree with an independent /proc/version check");
+        let expected_wsl = std::fs::read_to_string("/proc/version")
+            .map(|s| s.to_lowercase().contains("microsoft"))
+            .unwrap_or(false);
+        assert_eq!(
+            is_wsl(),
+            expected_wsl,
+            "is_wsl() must agree with an independent /proc/version check"
+        );
     }
 }

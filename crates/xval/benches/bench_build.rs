@@ -27,10 +27,13 @@
 //! ISA. See also `xval::lib` module docs.
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use nanoflann_ref::{Metric, RefIndex3F32, RefIndexF32};
 use flannrust::{ConstDim, KdTreeBuilder, L2};
+use nanoflann_ref::{Metric, RefIndex3F32, RefIndexF32};
 use std::time::Duration;
-use xval::{build_rust_f32, cfg_seed, queries, to_array3, to_f32, uniform, BuildThreads, RoundRobin, XMetric};
+use xval::{
+    build_rust_f32, cfg_seed, queries, to_array3, to_f32, uniform, BuildThreads, RoundRobin,
+    XMetric,
+};
 
 const LEAF: usize = 10;
 
@@ -62,13 +65,25 @@ fn bench_build_matrix(c: &mut Criterion) {
 
             group.bench_function(format!("rust/{n}/{dim}/seq"), |b| {
                 b.iter(|| {
-                    let idx = build_rust_f32(black_box(&data), dim, XMetric::L2, LEAF, BuildThreads::Sequential);
+                    let idx = build_rust_f32(
+                        black_box(&data),
+                        dim,
+                        XMetric::L2,
+                        LEAF,
+                        BuildThreads::Sequential,
+                    );
                     black_box(idx.size());
                 })
             });
             group.bench_function(format!("rust/{n}/{dim}/par"), |b| {
                 b.iter(|| {
-                    let idx = build_rust_f32(black_box(&data), dim, XMetric::L2, LEAF, BuildThreads::Auto);
+                    let idx = build_rust_f32(
+                        black_box(&data),
+                        dim,
+                        XMetric::L2,
+                        LEAF,
+                        BuildThreads::Auto,
+                    );
                     black_box(idx.size());
                 })
             });
@@ -109,7 +124,10 @@ fn bench_build_fixed3(c: &mut Criterion) {
         group.bench_function(format!("rust/{n}"), |b| {
             b.iter(|| {
                 let ds: &[[f32; 3]] = black_box(arr3.as_slice());
-                let tree = KdTreeBuilder::new(ConstDim::<3>, ds).with_metric(L2).leaf_max_size(LEAF).build_sequential();
+                let tree = KdTreeBuilder::new(ConstDim::<3>, ds)
+                    .with_metric(L2)
+                    .leaf_max_size(LEAF)
+                    .build_sequential();
                 black_box(tree.size());
             })
         });
@@ -135,7 +153,12 @@ fn bench_leaf_sweep(c: &mut Criterion) {
 
     let data_f64 = uniform(cfg_seed("bench_leaf_sweep_data", &[N, DIM]), N, DIM);
     let data = to_f32(&data_f64);
-    let q_f64 = queries(cfg_seed("bench_leaf_sweep_q", &[N, DIM]), &data_f64, DIM, N_QUERIES_POOL);
+    let q_f64 = queries(
+        cfg_seed("bench_leaf_sweep_q", &[N, DIM]),
+        &data_f64,
+        DIM,
+        N_QUERIES_POOL,
+    );
     let q = to_f32(&q_f64);
 
     let mut group = c.benchmark_group("leaf_sweep");
@@ -144,7 +167,13 @@ fn bench_leaf_sweep(c: &mut Criterion) {
     for &leaf in &[1usize, 4, 10, 16, 32, 50, 128, 1024] {
         group.bench_function(format!("rust/{leaf}/build"), |b| {
             b.iter(|| {
-                let idx = build_rust_f32(black_box(&data), DIM, XMetric::L2, leaf, BuildThreads::Sequential);
+                let idx = build_rust_f32(
+                    black_box(&data),
+                    DIM,
+                    XMetric::L2,
+                    leaf,
+                    BuildThreads::Sequential,
+                );
                 black_box(idx.size());
             })
         });
@@ -184,5 +213,10 @@ fn bench_leaf_sweep(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_build_matrix, bench_build_fixed3, bench_leaf_sweep);
+criterion_group!(
+    benches,
+    bench_build_matrix,
+    bench_build_fixed3,
+    bench_leaf_sweep
+);
 criterion_main!(benches);

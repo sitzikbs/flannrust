@@ -21,12 +21,13 @@
 //! remove, the per-slot `vind` check -- naming its slot -- for a doctored
 //! oracle slot-order).
 
-use nanoflann_ref::{RefDynIndexF32, RefDynIndexF64};
 use flannrust::{DynDim, DynamicKdTreeBuilder, ResultItem, SearchParams};
+use nanoflann_ref::{RefDynIndexF32, RefDynIndexF64};
 use xval::{
-    apply_dyn_op_f32, apply_dyn_op_f64, assert_dyn_structure_equal_f32, assert_dyn_structure_equal_f64,
-    assert_knn_equal_f32, assert_knn_equal_f64, assert_radius_equal_f32, assert_radius_equal_f64,
-    brute_force_knn_l2_f32, brute_force_knn_l2_f64, cfg_seed, dyn_ops, dyn_ops_stats, queries, to_f32, uniform,
+    apply_dyn_op_f32, apply_dyn_op_f64, assert_dyn_structure_equal_f32,
+    assert_dyn_structure_equal_f64, assert_knn_equal_f32, assert_knn_equal_f64,
+    assert_radius_equal_f32, assert_radius_equal_f64, brute_force_knn_l2_f32,
+    brute_force_knn_l2_f64, cfg_seed, dyn_ops, dyn_ops_stats, queries, to_f32, uniform,
     validate_dyn_ops_legal, with_ctx, with_duplicates, DynOp, GrowableFlat,
 };
 
@@ -74,7 +75,10 @@ const LEAVES: [usize; 2] = [1, 10];
 /// coverage test vouches for the EXACT sequences the matrix runs, not a
 /// separately-seeded stand-in -- see fix-round-1 item 2).
 fn matrix_op_seed(dim: usize, dsk: DatasetKind, leaf: usize, seed_idx: u64) -> u64 {
-    cfg_seed("dyn_xval_ops", &[dim, dataset_tag(dsk), leaf, seed_idx as usize])
+    cfg_seed(
+        "dyn_xval_ops",
+        &[dim, dataset_tag(dsk), leaf, seed_idx as usize],
+    )
 }
 
 // ---------------------------------------------------------------------
@@ -270,10 +274,18 @@ fn dyn_ops_matrix_seed_coverage() {
         }
     }
 
-    assert_eq!(sequences_checked, 3 * 2 * 2 * 3, "expected exactly 36 matrix (dim,dataset,leaf,seed) combos");
+    assert_eq!(
+        sequences_checked,
+        3 * 2 * 2 * 3,
+        "expected exactly 36 matrix (dim,dataset,leaf,seed) combos"
+    );
 
     let total_ops = sequences_checked * N_OPS;
-    assert_eq!(total_grow + total_remove + total_readd, total_ops, "op-kind counts must partition every op");
+    assert_eq!(
+        total_grow + total_remove + total_readd,
+        total_ops,
+        "op-kind counts must partition every op"
+    );
 
     // Sane bands (see this section's comment above for how they were set --
     // observed grow=1759, remove=1605, readd=956, each given ~+/-25%
@@ -318,7 +330,10 @@ macro_rules! dyn_scenario_tests {
         fn tombstone_migration() {
             let dim = 3usize;
             let capacity = 16usize;
-            let seed = cfg_seed(concat!("dyn_scenario_tombstone_", stringify!($suffix)), &[0]);
+            let seed = cfg_seed(
+                concat!("dyn_scenario_tombstone_", stringify!($suffix)),
+                &[0],
+            );
             let data64 = uniform(seed, capacity, dim);
             let data: Vec<$t> = $cast(&data64);
 
@@ -334,7 +349,10 @@ macro_rules! dyn_scenario_tests {
                 DynOp::Remove { live_idx: 3 },
                 DynOp::GrowAndAdd { count: 8 }, // indices 8..15 -- idx 15 triggers the slot0..3 merge into slot4
             ];
-            let readd_ops = [DynOp::ReAdd { removed_idx: 1 }, DynOp::ReAdd { removed_idx: 3 }];
+            let readd_ops = [
+                DynOp::ReAdd { removed_idx: 1 },
+                DynOp::ReAdd { removed_idx: 3 },
+            ];
             // Fix-round-1 item 4: validate the WHOLE hand-written scripted
             // sequence (both halves, in application order) before applying
             // any of it -- an illegal scripted sequence would make the C++
@@ -345,19 +363,38 @@ macro_rules! dyn_scenario_tests {
 
             for (i, op) in ops.iter().enumerate() {
                 $apply_fn(op, &growable, &mut rust_tree, &mut oracle);
-                with_ctx(format!("tombstone_migration<{}> op_idx={i} op={:?}", stringify!($t), op), || {
-                    $assert_struct_fn(&rust_tree, &oracle);
-                });
+                with_ctx(
+                    format!(
+                        "tombstone_migration<{}> op_idx={i} op={:?}",
+                        stringify!($t),
+                        op
+                    ),
+                    || {
+                        $assert_struct_fn(&rust_tree, &oracle);
+                    },
+                );
             }
 
             // Both removed indices must still read -1 / not-present on both
             // sides after the merge that moved their physical storage.
             let r_ti = rust_tree.tree_index();
             let c_ti = oracle.tree_index();
-            assert_eq!(r_ti[1], -1, "rust tree_index[1] must stay -1 through the merge");
-            assert_eq!(c_ti[1], -1, "cpp tree_index[1] must stay -1 through the merge");
-            assert_eq!(r_ti[3], -1, "rust tree_index[3] must stay -1 through the merge");
-            assert_eq!(c_ti[3], -1, "cpp tree_index[3] must stay -1 through the merge");
+            assert_eq!(
+                r_ti[1], -1,
+                "rust tree_index[1] must stay -1 through the merge"
+            );
+            assert_eq!(
+                c_ti[1], -1,
+                "cpp tree_index[1] must stay -1 through the merge"
+            );
+            assert_eq!(
+                r_ti[3], -1,
+                "rust tree_index[3] must stay -1 through the merge"
+            );
+            assert_eq!(
+                c_ti[3], -1,
+                "cpp tree_index[3] must stay -1 through the merge"
+            );
             assert_eq!(rust_tree.removed_len(), 2);
             assert_eq!(oracle.removed_count(), 2);
 
@@ -365,9 +402,16 @@ macro_rules! dyn_scenario_tests {
             // structure equal.
             for (i, op) in readd_ops.iter().enumerate() {
                 $apply_fn(op, &growable, &mut rust_tree, &mut oracle);
-                with_ctx(format!("tombstone_migration<{}> readd op_idx={i} op={:?}", stringify!($t), op), || {
-                    $assert_struct_fn(&rust_tree, &oracle);
-                });
+                with_ctx(
+                    format!(
+                        "tombstone_migration<{}> readd op_idx={i} op={:?}",
+                        stringify!($t),
+                        op
+                    ),
+                    || {
+                        $assert_struct_fn(&rust_tree, &oracle);
+                    },
+                );
             }
             assert_eq!(rust_tree.removed_len(), 0);
             assert_eq!(oracle.removed_count(), 0);
@@ -375,15 +419,35 @@ macro_rules! dyn_scenario_tests {
             let mut out_idx = [0u32; 16];
             let mut out_dist = [<$t as Default>::default(); 16];
             let params = SearchParams::default();
-            let found = rust_tree.knn_search_with(&data[0..dim], &mut out_idx, &mut out_dist, &params);
+            let found =
+                rust_tree.knn_search_with(&data[0..dim], &mut out_idx, &mut out_dist, &params);
             let (c_idx, c_dist) = oracle.knn(&data[0..dim], 16, 0.0);
-            with_ctx(format!("tombstone_migration<{}> post-readd knn", stringify!($t)), || {
-                $assert_knn((&out_idx[..found], &out_dist[..found]), (&c_idx, &c_dist), false);
-            });
-            assert!(out_idx[..found].contains(&1), "reactivated index 1 must be queryable again (rust)");
-            assert!(out_idx[..found].contains(&3), "reactivated index 3 must be queryable again (rust)");
-            assert!(c_idx.contains(&1), "reactivated index 1 must be queryable again (cpp)");
-            assert!(c_idx.contains(&3), "reactivated index 3 must be queryable again (cpp)");
+            with_ctx(
+                format!("tombstone_migration<{}> post-readd knn", stringify!($t)),
+                || {
+                    $assert_knn(
+                        (&out_idx[..found], &out_dist[..found]),
+                        (&c_idx, &c_dist),
+                        false,
+                    );
+                },
+            );
+            assert!(
+                out_idx[..found].contains(&1),
+                "reactivated index 1 must be queryable again (rust)"
+            );
+            assert!(
+                out_idx[..found].contains(&3),
+                "reactivated index 3 must be queryable again (rust)"
+            );
+            assert!(
+                c_idx.contains(&1),
+                "reactivated index 1 must be queryable again (cpp)"
+            );
+            assert!(
+                c_idx.contains(&3),
+                "reactivated index 3 must be queryable again (cpp)"
+            );
         }
 
         // ---- 2. Drain and refill ---------------------------------------
@@ -409,48 +473,99 @@ macro_rules! dyn_scenario_tests {
             full_ops.extend((0..32usize).map(|idx| DynOp::ReAdd { removed_idx: idx }));
             validate_dyn_ops_legal(&full_ops, capacity);
 
-            $apply_fn(&DynOp::GrowAndAdd { count: 32 }, &growable, &mut rust_tree, &mut oracle);
-            with_ctx(format!("drain_and_refill<{}> after add 32", stringify!($t)), || {
-                $assert_struct_fn(&rust_tree, &oracle);
-            });
+            $apply_fn(
+                &DynOp::GrowAndAdd { count: 32 },
+                &growable,
+                &mut rust_tree,
+                &mut oracle,
+            );
+            with_ctx(
+                format!("drain_and_refill<{}> after add 32", stringify!($t)),
+                || {
+                    $assert_struct_fn(&rust_tree, &oracle);
+                },
+            );
 
             for idx in 0..32usize {
-                $apply_fn(&DynOp::Remove { live_idx: idx }, &growable, &mut rust_tree, &mut oracle);
+                $apply_fn(
+                    &DynOp::Remove { live_idx: idx },
+                    &growable,
+                    &mut rust_tree,
+                    &mut oracle,
+                );
             }
-            with_ctx(format!("drain_and_refill<{}> after removing all 32", stringify!($t)), || {
-                $assert_struct_fn(&rust_tree, &oracle);
-            });
+            with_ctx(
+                format!("drain_and_refill<{}> after removing all 32", stringify!($t)),
+                || {
+                    $assert_struct_fn(&rust_tree, &oracle);
+                },
+            );
             assert_eq!(rust_tree.removed_len(), 32);
             assert_eq!(oracle.removed_count(), 32);
 
             let mut out_idx = [0u32; 5];
             let mut out_dist = [<$t as Default>::default(); 5];
             let params = SearchParams::default();
-            let found = rust_tree.knn_search_with(&data[0..dim], &mut out_idx, &mut out_dist, &params);
+            let found =
+                rust_tree.knn_search_with(&data[0..dim], &mut out_idx, &mut out_dist, &params);
             let (c_idx, _c_dist) = oracle.knn(&data[0..dim], 5, 0.0);
-            assert_eq!(found, 0, "rust knn must find 0 points on a fully-drained forest");
-            assert_eq!(c_idx.len(), 0, "cpp knn must find 0 points on a fully-drained forest");
+            assert_eq!(
+                found, 0,
+                "rust knn must find 0 points on a fully-drained forest"
+            );
+            assert_eq!(
+                c_idx.len(),
+                0,
+                "cpp knn must find 0 points on a fully-drained forest"
+            );
 
             // Reactivation is exempt from the contiguous-append contract --
             // one call covering the whole range reactivates every index.
-            $apply_fn(&DynOp::ReAdd { removed_idx: 0 }, &growable, &mut rust_tree, &mut oracle);
+            $apply_fn(
+                &DynOp::ReAdd { removed_idx: 0 },
+                &growable,
+                &mut rust_tree,
+                &mut oracle,
+            );
             for idx in 1..32usize {
-                $apply_fn(&DynOp::ReAdd { removed_idx: idx }, &growable, &mut rust_tree, &mut oracle);
+                $apply_fn(
+                    &DynOp::ReAdd { removed_idx: idx },
+                    &growable,
+                    &mut rust_tree,
+                    &mut oracle,
+                );
             }
-            with_ctx(format!("drain_and_refill<{}> after re-adding all 32", stringify!($t)), || {
-                $assert_struct_fn(&rust_tree, &oracle);
-            });
+            with_ctx(
+                format!(
+                    "drain_and_refill<{}> after re-adding all 32",
+                    stringify!($t)
+                ),
+                || {
+                    $assert_struct_fn(&rust_tree, &oracle);
+                },
+            );
             assert_eq!(rust_tree.removed_len(), 0);
             assert_eq!(oracle.removed_count(), 0);
 
             let mut out_idx2 = [0u32; 32];
             let mut out_dist2 = [<$t as Default>::default(); 32];
-            let found2 = rust_tree.knn_search_with(&data[0..dim], &mut out_idx2, &mut out_dist2, &params);
+            let found2 =
+                rust_tree.knn_search_with(&data[0..dim], &mut out_idx2, &mut out_dist2, &params);
             let (c_idx2, c_dist2) = oracle.knn(&data[0..dim], 32, 0.0);
-            with_ctx(format!("drain_and_refill<{}> post-refill knn", stringify!($t)), || {
-                $assert_knn((&out_idx2[..found2], &out_dist2[..found2]), (&c_idx2, &c_dist2), false);
-            });
-            assert_eq!(found2, 32, "all 32 points must be queryable again after full refill");
+            with_ctx(
+                format!("drain_and_refill<{}> post-refill knn", stringify!($t)),
+                || {
+                    $assert_knn(
+                        (&out_idx2[..found2], &out_dist2[..found2]),
+                        (&c_idx2, &c_dist2),
+                        false,
+                    );
+                },
+            );
+            assert_eq!(
+                found2, 32,
+                "all 32 points must be queryable again after full refill"
+            );
         }
 
         // ---- 3. Empty-forest parity -------------------------------------
@@ -468,23 +583,39 @@ macro_rules! dyn_scenario_tests {
                 .build();
             let oracle = $RefDyn::build(&data, dim, 10, capacity);
 
-            with_ctx(format!("empty_forest_parity<{}> structure", stringify!($t)), || {
-                $assert_struct_fn(&rust_tree, &oracle);
-            });
+            with_ctx(
+                format!("empty_forest_parity<{}> structure", stringify!($t)),
+                || {
+                    $assert_struct_fn(&rust_tree, &oracle);
+                },
+            );
 
             let mut out_idx = [0u32; 3];
             let mut out_dist = [<$t as Default>::default(); 3];
             let params = SearchParams::default();
-            let found = rust_tree.knn_search_with(&data[0..dim], &mut out_idx, &mut out_dist, &params);
+            let found =
+                rust_tree.knn_search_with(&data[0..dim], &mut out_idx, &mut out_dist, &params);
             let (c_idx, _) = oracle.knn(&data[0..dim], 3, 0.0);
             assert_eq!(found, 0, "rust knn on an empty forest must find 0");
             assert_eq!(c_idx.len(), 0, "cpp knn on an empty forest must find 0");
 
             let mut r_out: Vec<ResultItem<u32, $t>> = Vec::new();
-            let r_count = rust_tree.radius_search_with(&data[0..dim], <$t>::from(100.0f32), &mut r_out, &params);
+            let r_count = rust_tree.radius_search_with(
+                &data[0..dim],
+                <$t>::from(100.0f32),
+                &mut r_out,
+                &params,
+            );
             let c_pairs = oracle.radius(&data[0..dim], <$t>::from(100.0f32), true, 0.0);
-            assert_eq!(r_count, 0, "rust radius on an empty forest must find 0 items");
-            assert_eq!(c_pairs.len(), 0, "cpp radius on an empty forest must find 0 items");
+            assert_eq!(
+                r_count, 0,
+                "rust radius on an empty forest must find 0 items"
+            );
+            assert_eq!(
+                c_pairs.len(),
+                0,
+                "cpp radius on an empty forest must find 0 items"
+            );
         }
 
         // ---- 4. eps parity -----------------------------------------------
@@ -540,14 +671,18 @@ macro_rules! dyn_scenario_tests {
             validate_dyn_ops_legal(&ops, capacity);
             $apply_fn(&ops[0], &growable, &mut rust_tree, &mut oracle);
             with_ctx(
-                format!("eps_parity_many_points_k_small<{}> structure after add {live}", stringify!($t)),
+                format!(
+                    "eps_parity_many_points_k_small<{}> structure after add {live}",
+                    stringify!($t)
+                ),
                 || {
                     $assert_struct_fn(&rust_tree, &oracle);
                 },
             );
 
-            let occupied_slots =
-                (0..rust_tree.tree_count()).filter(|&s| !rust_tree.point_indices_of_slot(s).is_empty()).count();
+            let occupied_slots = (0..rust_tree.tree_count())
+                .filter(|&s| !rust_tree.point_indices_of_slot(s).is_empty())
+                .count();
             assert!(
                 occupied_slots >= 2,
                 "expected >=2 non-empty slots after adding {live} points, got {occupied_slots} -- \
@@ -561,12 +696,20 @@ macro_rules! dyn_scenario_tests {
                     let mut out_idx = [0u32; 2];
                     let mut out_dist = [<$t as Default>::default(); 2];
                     let params = SearchParams { eps, sorted: true };
-                    let found = rust_tree.knn_search_with(query, &mut out_idx, &mut out_dist, &params);
+                    let found =
+                        rust_tree.knn_search_with(query, &mut out_idx, &mut out_dist, &params);
                     let (c_idx, c_dist) = oracle.knn(query, k, eps);
                     with_ctx(
-                        format!("eps_parity_many_points_k_small<{}> eps={eps} qi={qi}", stringify!($t)),
+                        format!(
+                            "eps_parity_many_points_k_small<{}> eps={eps} qi={qi}",
+                            stringify!($t)
+                        ),
                         || {
-                            $assert_knn((&out_idx[..found], &out_dist[..found]), (&c_idx, &c_dist), false);
+                            $assert_knn(
+                                (&out_idx[..found], &out_dist[..found]),
+                                (&c_idx, &c_dist),
+                                false,
+                            );
                         },
                     );
                 }
@@ -659,7 +802,10 @@ fn mutation_canary_skipped_remove_breaks_structure_parity() {
             }
             apply_dyn_op_f64(op, &growable, &mut rust_tree, &mut oracle);
         }
-        assert!(skipped, "op sequence never produced a Remove -- canary setup failed, not a real result");
+        assert!(
+            skipped,
+            "op sequence never produced a Remove -- canary setup failed, not a real result"
+        );
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             assert_dyn_structure_equal_f64(&rust_tree, &oracle);
@@ -677,9 +823,11 @@ fn mutation_canary_skipped_remove_breaks_structure_parity() {
                 println!("mutation_canary (f64): structure-parity check correctly PANICKED (named tree_index):\n{msg}");
                 Ok(())
             }
-            Ok(()) => Err("mutation_canary (f64): structure-parity check did NOT panic -- \
+            Ok(()) => Err(
+                "mutation_canary (f64): structure-parity check did NOT panic -- \
                            the comparator failed to detect a deliberately-introduced divergence!"
-                .to_string()),
+                    .to_string(),
+            ),
         }
     }
 
@@ -709,7 +857,10 @@ fn mutation_canary_skipped_remove_breaks_structure_parity() {
             }
             apply_dyn_op_f32(op, &growable, &mut rust_tree, &mut oracle);
         }
-        assert!(skipped, "op sequence never produced a Remove -- canary setup failed, not a real result");
+        assert!(
+            skipped,
+            "op sequence never produced a Remove -- canary setup failed, not a real result"
+        );
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             assert_dyn_structure_equal_f32(&rust_tree, &oracle);
@@ -727,9 +878,11 @@ fn mutation_canary_skipped_remove_breaks_structure_parity() {
                 println!("mutation_canary (f32): structure-parity check correctly PANICKED (named tree_index):\n{msg}");
                 Ok(())
             }
-            Ok(()) => Err("mutation_canary (f32): structure-parity check did NOT panic -- \
+            Ok(()) => Err(
+                "mutation_canary (f32): structure-parity check did NOT panic -- \
                            the comparator failed to detect a deliberately-introduced divergence!"
-                .to_string()),
+                    .to_string(),
+            ),
         }
     }
 
@@ -756,7 +909,11 @@ fn mutation_canary_doctored_slot_order_breaks_per_slot_comparison() {
     fn run_f64() -> Result<(), String> {
         let dim = 3usize;
         let capacity = 16usize;
-        let data64 = uniform(cfg_seed("mutation_canary_slot_order_f64", &[0]), capacity, dim);
+        let data64 = uniform(
+            cfg_seed("mutation_canary_slot_order_f64", &[0]),
+            capacity,
+            dim,
+        );
         let growable = GrowableFlat::new(&data64, dim);
         let mut rust_tree = DynamicKdTreeBuilder::new(DynDim(dim), &growable)
             .leaf_max_size(10)
@@ -775,9 +932,16 @@ fn mutation_canary_doctored_slot_order_breaks_per_slot_comparison() {
         let slot = 3usize;
         let rust_vind: Vec<u32> = rust_tree.point_indices_of_slot(slot).to_vec();
         let mut doctored: Vec<u32> = oracle.slot_vacc(slot);
-        assert!(doctored.len() >= 2, "need >= 2 entries in slot {slot} to perturb order, got {}", doctored.len());
+        assert!(
+            doctored.len() >= 2,
+            "need >= 2 entries in slot {slot} to perturb order, got {}",
+            doctored.len()
+        );
         doctored.swap(0, 1);
-        assert_ne!(rust_vind, doctored, "doctoring must actually change the vector for this canary to mean anything");
+        assert_ne!(
+            rust_vind, doctored,
+            "doctoring must actually change the vector for this canary to mean anything"
+        );
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             // Same format string as assert_dyn_structure_equal_f64's
@@ -806,16 +970,22 @@ fn mutation_canary_doctored_slot_order_breaks_per_slot_comparison() {
                 );
                 Ok(())
             }
-            Ok(()) => Err("mutation_canary_slot_order (f64): comparison did NOT panic on a \
+            Ok(()) => Err(
+                "mutation_canary_slot_order (f64): comparison did NOT panic on a \
                            swapped-order slot vector!"
-                .to_string()),
+                    .to_string(),
+            ),
         }
     }
 
     fn run_f32() -> Result<(), String> {
         let dim = 3usize;
         let capacity = 16usize;
-        let data64 = uniform(cfg_seed("mutation_canary_slot_order_f32", &[0]), capacity, dim);
+        let data64 = uniform(
+            cfg_seed("mutation_canary_slot_order_f32", &[0]),
+            capacity,
+            dim,
+        );
         let data: Vec<f32> = to_f32(&data64);
         let growable = GrowableFlat::new(&data, dim);
         let mut rust_tree = DynamicKdTreeBuilder::new(DynDim(dim), &growable)
@@ -832,9 +1002,16 @@ fn mutation_canary_doctored_slot_order_breaks_per_slot_comparison() {
         let slot = 3usize;
         let rust_vind: Vec<u32> = rust_tree.point_indices_of_slot(slot).to_vec();
         let mut doctored: Vec<u32> = oracle.slot_vacc(slot);
-        assert!(doctored.len() >= 2, "need >= 2 entries in slot {slot} to perturb order, got {}", doctored.len());
+        assert!(
+            doctored.len() >= 2,
+            "need >= 2 entries in slot {slot} to perturb order, got {}",
+            doctored.len()
+        );
         doctored.swap(0, 1);
-        assert_ne!(rust_vind, doctored, "doctoring must actually change the vector for this canary to mean anything");
+        assert_ne!(
+            rust_vind, doctored,
+            "doctoring must actually change the vector for this canary to mean anything"
+        );
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             assert_eq!(
@@ -860,9 +1037,11 @@ fn mutation_canary_doctored_slot_order_breaks_per_slot_comparison() {
                 );
                 Ok(())
             }
-            Ok(()) => Err("mutation_canary_slot_order (f32): comparison did NOT panic on a \
+            Ok(()) => Err(
+                "mutation_canary_slot_order (f32): comparison did NOT panic on a \
                            swapped-order slot vector!"
-                .to_string()),
+                    .to_string(),
+            ),
         }
     }
 

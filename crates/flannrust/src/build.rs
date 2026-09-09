@@ -387,7 +387,8 @@ where
                         let node_idx = self.arena.len() as u32;
                         // Bounds are patched by the matching Finalize once
                         // both children are known.
-                        self.arena.push(Node::split(cutfeat as u32, T::default(), T::default()));
+                        self.arena
+                            .push(Node::split(cutfeat as u32, T::default(), T::default()));
 
                         // Take a pooled buffer for `left_bbox` when one is
                         // available (overwriting its stale contents with
@@ -486,7 +487,13 @@ mod tests {
         let dim = N;
         let n = points.len();
         let mut vind: Vec<u32> = init_vind(n);
-        let mut bbox = vec![Interval { low: 0.0, high: 0.0 }; dim];
+        let mut bbox = vec![
+            Interval {
+                low: 0.0,
+                high: 0.0
+            };
+            dim
+        ];
         compute_bounding_box(&points, dim, &mut bbox);
         let mut arena = Vec::new();
         let root = {
@@ -554,7 +561,13 @@ mod tests {
                             "leaf [{l},{r}) has {} points > leaf_max_size {leaf_max_size}",
                             r - l
                         );
-                        let mut leaf_bbox = vec![Interval { low: 0.0, high: 0.0 }; dim];
+                        let mut leaf_bbox = vec![
+                            Interval {
+                                low: 0.0,
+                                high: 0.0
+                            };
+                            dim
+                        ];
                         for (i, k) in (l..r).enumerate() {
                             let pt = vind[k] as usize;
                             assert!(!seen[pt], "point {pt} appears in more than one leaf");
@@ -598,7 +611,13 @@ mod tests {
                         "node {idx}: div_high != min of right subtree's coord[{cutfeat}]"
                     );
 
-                    let mut combined = vec![Interval { low: 0.0, high: 0.0 }; dim];
+                    let mut combined = vec![
+                        Interval {
+                            low: 0.0,
+                            high: 0.0
+                        };
+                        dim
+                    ];
                     for d in 0..dim {
                         combined[d] = Interval {
                             low: cpp_min(left_bbox[d].low, right_bbox[d].low),
@@ -733,8 +752,14 @@ mod tests {
         let points: &[[f64; 2]] = &[[2.0, 1.0], [8.0, 1.0], [2.0, 9.0], [8.0, 9.0]];
         let mut ind: Vec<u32> = (0..4).collect();
         let bbox = [
-            Interval { low: 0.0, high: 10.0 },
-            Interval { low: 0.0, high: 10.0 },
+            Interval {
+                low: 0.0,
+                high: 10.0,
+            },
+            Interval {
+                low: 0.0,
+                high: 10.0,
+            },
         ];
 
         let (index, cutfeat, cutval) = middle_split(&points, 2, &mut ind, &bbox);
@@ -750,7 +775,10 @@ mod tests {
         // split_val = 50 < min_elem(80) -> clamped to 80.
         let points: &[[f64; 1]] = &[[80.0], [81.0], [82.0]];
         let mut ind: Vec<u32> = (0..3).collect();
-        let bbox = [Interval { low: 0.0, high: 100.0 }];
+        let bbox = [Interval {
+            low: 0.0,
+            high: 100.0,
+        }];
 
         let (index, cutfeat, cutval) = middle_split(&points, 1, &mut ind, &bbox);
 
@@ -766,7 +794,10 @@ mod tests {
         // lim1(4) > half(3) -> index = lim1 = 4.
         let points: &[[f64; 1]] = &[[1.0], [1.0], [1.0], [1.0], [5.0], [9.0]];
         let mut ind: Vec<u32> = (0..6).collect();
-        let bbox = [Interval { low: 1.0, high: 9.0 }];
+        let bbox = [Interval {
+            low: 1.0,
+            high: 9.0,
+        }];
 
         let (index, cutfeat, cutval) = middle_split(&points, 1, &mut ind, &bbox);
 
@@ -782,7 +813,10 @@ mod tests {
         // lim1(1) > half(3)? no. lim2(1) < half(3)? yes -> index = lim2 = 1.
         let points: &[[f64; 1]] = &[[1.0], [9.0], [9.0], [9.0], [9.0], [9.0]];
         let mut ind: Vec<u32> = (0..6).collect();
-        let bbox = [Interval { low: 1.0, high: 9.0 }];
+        let bbox = [Interval {
+            low: 1.0,
+            high: 9.0,
+        }];
 
         let (index, cutfeat, cutval) = middle_split(&points, 1, &mut ind, &bbox);
 
@@ -815,7 +849,10 @@ mod tests {
     struct Lcg(u64);
     impl Lcg {
         fn next_f64(&mut self) -> f64 {
-            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             // Take the top 53 bits for a uniform-ish [0, 1) double.
             ((self.0 >> 11) as f64) / ((1u64 << 53) as f64)
         }
@@ -825,7 +862,13 @@ mod tests {
     fn invariant_holds_on_100_uniform_random_points_dim3() {
         let mut rng = Lcg(0xC0FFEE_u64);
         let points: Vec<[f64; 3]> = (0..100)
-            .map(|_| [rng.next_f64() * 100.0, rng.next_f64() * 100.0, rng.next_f64() * 100.0])
+            .map(|_| {
+                [
+                    rng.next_f64() * 100.0,
+                    rng.next_f64() * 100.0,
+                    rng.next_f64() * 100.0,
+                ]
+            })
             .collect();
 
         let (arena, vind, root, _bbox) = build_full_tree(&points, 10);
@@ -898,9 +941,27 @@ mod tests {
         assert_eq!(arena.len(), 1);
         assert!(arena[root as usize].is_leaf());
         assert_eq!(vind, vec![0]);
-        assert_eq!(bbox[0], Interval { low: 1.5, high: 1.5 });
-        assert_eq!(bbox[1], Interval { low: -2.5, high: -2.5 });
-        assert_eq!(bbox[2], Interval { low: 3.5, high: 3.5 });
+        assert_eq!(
+            bbox[0],
+            Interval {
+                low: 1.5,
+                high: 1.5
+            }
+        );
+        assert_eq!(
+            bbox[1],
+            Interval {
+                low: -2.5,
+                high: -2.5
+            }
+        );
+        assert_eq!(
+            bbox[2],
+            Interval {
+                low: 3.5,
+                high: 3.5
+            }
+        );
     }
 
     // ---------------------------------------------------------------
@@ -914,8 +975,14 @@ mod tests {
         // Deliberately inflated / loose bbox, unlike the tight bbox
         // `compute_bounding_box` would produce.
         let mut bbox = vec![
-            Interval { low: -100.0, high: 100.0 },
-            Interval { low: -100.0, high: 100.0 },
+            Interval {
+                low: -100.0,
+                high: 100.0,
+            },
+            Interval {
+                low: -100.0,
+                high: 100.0,
+            },
         ];
         let mut arena = Vec::new();
         let root = {
@@ -931,8 +998,20 @@ mod tests {
         };
 
         assert!(arena[root as usize].is_leaf());
-        assert_eq!(bbox[0], Interval { low: 1.0, high: 3.0 });
-        assert_eq!(bbox[1], Interval { low: 4.0, high: 6.0 });
+        assert_eq!(
+            bbox[0],
+            Interval {
+                low: 1.0,
+                high: 3.0
+            }
+        );
+        assert_eq!(
+            bbox[1],
+            Interval {
+                low: 4.0,
+                high: 6.0
+            }
+        );
     }
 
     // ---------------------------------------------------------------

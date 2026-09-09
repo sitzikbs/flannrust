@@ -49,7 +49,15 @@ impl Scalar for f64 {
 
 /// Accumulated distance type (nanoflann's `DistanceType`).
 pub trait DistanceValue:
-    Copy + PartialOrd + Default + Add<Output = Self> + Sub<Output = Self> + core::ops::Mul<Output = Self> + Send + Sync + 'static
+    Copy
+    + PartialOrd
+    + Default
+    + Add<Output = Self>
+    + Sub<Output = Self>
+    + core::ops::Mul<Output = Self>
+    + Send
+    + Sync
+    + 'static
 {
     /// Sentinel "worst possible" distance (= `std::numeric_limits<T>::max()`).
     const MAX: Self;
@@ -62,13 +70,17 @@ pub trait DistanceValue:
 impl DistanceValue for f32 {
     const MAX: Self = f32::MAX;
     const ZERO: Self = 0.0;
-    fn from_f32(v: f32) -> Self { v }
+    fn from_f32(v: f32) -> Self {
+        v
+    }
 }
 
 impl DistanceValue for f64 {
     const MAX: Self = f64::MAX;
     const ZERO: Self = 0.0;
-    fn from_f32(v: f32) -> Self { v as f64 }
+    fn from_f32(v: f32) -> Self {
+        v as f64
+    }
 }
 
 /// Public point-index type, so callers can pick `u32`/`u64`/`usize` via

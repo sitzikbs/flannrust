@@ -75,21 +75,33 @@ fn render_produces_html_with_no_placeholder_residue() {
     let html = xval::render(FIXTURE).expect("render should succeed on well-formed JSON");
 
     for token in PLACEHOLDER_TOKENS {
-        assert!(!html.contains(token), "leftover template placeholder residue: {token}\n\n{html}");
+        assert!(
+            !html.contains(token),
+            "leftover template placeholder residue: {token}\n\n{html}"
+        );
     }
 }
 
 #[test]
 fn render_includes_title_and_doctype() {
     let html = xval::render(FIXTURE).expect("render should succeed");
-    assert!(html.contains("<!doctype html>") || html.contains("<!DOCTYPE html>"), "missing doctype");
-    assert!(html.contains("<title>flannrust Scorecard</title>"), "missing/wrong <title>");
+    assert!(
+        html.contains("<!doctype html>") || html.contains("<!DOCTYPE html>"),
+        "missing doctype"
+    );
+    assert!(
+        html.contains("<title>flannrust Scorecard</title>"),
+        "missing/wrong <title>"
+    );
 }
 
 #[test]
 fn render_includes_parity_line_markup() {
     let html = xval::render(FIXTURE).expect("render should succeed");
-    assert!(html.contains("parity-line"), "missing the diverging-bar parity midline markup");
+    assert!(
+        html.contains("parity-line"),
+        "missing the diverging-bar parity midline markup"
+    );
 }
 
 #[test]
@@ -97,8 +109,14 @@ fn render_includes_both_bar_side_classes() {
     let html = xval::render(FIXTURE).expect("render should succeed");
     // Fixture row 1 (ratio 0.5 < 1) is rust-faster; row 2 (ratio 2.0 > 1) is
     // cpp-faster -- both bar-side classes must appear in the rendered bars.
-    assert!(html.contains(r#"class="bar rust""#), "missing rust-faster bar class");
-    assert!(html.contains(r#"class="bar cpp""#), "missing cpp-faster bar class");
+    assert!(
+        html.contains(r#"class="bar rust""#),
+        "missing rust-faster bar class"
+    );
+    assert!(
+        html.contains(r#"class="bar cpp""#),
+        "missing cpp-faster bar class"
+    );
 }
 
 #[test]
@@ -108,7 +126,10 @@ fn render_computes_accuracy_tile_from_data() {
     // tile must read the all-exact success string, not a hardcoded pass/fail,
     // and (fix round 1) must be GOOD_GLYPH-prefixed, not just color-coded.
     let expected = format!("{GOOD_GLYPH}100% exact @ eps=0");
-    assert!(html.contains(&expected), "accuracy tile did not report the glyph-prefixed all-exact verdict");
+    assert!(
+        html.contains(&expected),
+        "accuracy tile did not report the glyph-prefixed all-exact verdict"
+    );
 }
 
 #[test]
@@ -116,9 +137,15 @@ fn render_computes_bitexact_tile_from_data() {
     let html = xval::render(FIXTURE).expect("render should succeed");
     // Fixture has 2 accuracy rows, only 1 bit-exact -- must NOT claim full
     // bit-exactness, and (fix round 1) must be BAD_GLYPH-prefixed.
-    assert!(!html.contains("Bit-exact vs C++ (all rows)"), "bitexact tile wrongly claims full bit-exactness");
+    assert!(
+        !html.contains("Bit-exact vs C++ (all rows)"),
+        "bitexact tile wrongly claims full bit-exactness"
+    );
     let expected = format!("{BAD_GLYPH}1/2 rows bit-exact");
-    assert!(html.contains(&expected), "bitexact tile did not report the glyph-prefixed 1/2 count");
+    assert!(
+        html.contains(&expected),
+        "bitexact tile did not report the glyph-prefixed 1/2 count"
+    );
 }
 
 #[test]
@@ -129,7 +156,10 @@ fn render_computes_best_speed_win_tile_from_data() {
     // a genuine rust win (>= 1.0), so (fix round 1) it must be
     // GOOD_GLYPH-prefixed and use the "good" tile class.
     let expected = format!("{GOOD_GLYPH}2.00\u{d7} faster \u{2014} build_100k_dim3_f32_seq");
-    assert!(html.contains(&expected), "best speed win tile did not report the glyph-prefixed computed factor");
+    assert!(
+        html.contains(&expected),
+        "best speed win tile did not report the glyph-prefixed computed factor"
+    );
     assert!(
         html.contains(r#"<div class="tile good"><div class="tile-label">Best speed win</div>"#),
         "best speed win tile must use the good class for a genuine rust win"
@@ -142,11 +172,15 @@ fn render_pills_are_glyph_prefixed() {
     // Fixture's eps0 row is bit-exact, eps0.1 row is not -- both pills must
     // carry their glyph, not just their color class.
     assert!(
-        html.contains(&format!(r#"<span class="pill good">{GOOD_GLYPH}bit-exact</span>"#)),
+        html.contains(&format!(
+            r#"<span class="pill good">{GOOD_GLYPH}bit-exact</span>"#
+        )),
         "bit-exact pill missing GOOD_GLYPH prefix"
     );
     assert!(
-        html.contains(&format!(r#"<span class="pill fail">{BAD_GLYPH}not bit-exact</span>"#)),
+        html.contains(&format!(
+            r#"<span class="pill fail">{BAD_GLYPH}not bit-exact</span>"#
+        )),
         "not-bit-exact pill missing BAD_GLYPH prefix"
     );
 }
@@ -186,7 +220,10 @@ fn render_flags_best_speed_win_tile_as_failure_when_cpp_wins_everywhere() {
 
     // Must NOT dress up a loss as a win: no "X.XX× faster" claim anywhere,
     // and no "good" class on the best-speed-win tile.
-    assert!(!html.contains("faster \u{2014}"), "tile must not claim a speed win when cpp wins every row");
+    assert!(
+        !html.contains("faster \u{2014}"),
+        "tile must not claim a speed win when cpp wins every row"
+    );
     assert!(
         !html.contains(r#"<div class="tile good"><div class="tile-label">Best speed win</div>"#),
         "best speed win tile must not use the good class when there is no rust win"
@@ -195,7 +232,8 @@ fn render_flags_best_speed_win_tile_as_failure_when_cpp_wins_everywhere() {
     // Least-bad row is build_100k_dim3_f32_seq at ratio 1.20 (the minimum
     // ratio across both rows, i.e. `1 / max(1/ratio)`) -- reported
     // honestly, fail-styled, BAD_GLYPH-prefixed.
-    let expected = format!("{BAD_GLYPH}no speed win \u{2014} best ratio 1.20\u{d7} (build_100k_dim3_f32_seq)");
+    let expected =
+        format!("{BAD_GLYPH}no speed win \u{2014} best ratio 1.20\u{d7} (build_100k_dim3_f32_seq)");
     assert!(
         html.contains(&format!(
             r#"<div class="tile fail"><div class="tile-label">Best speed win</div><div class="tile-value">{expected}</div></div>"#
@@ -207,7 +245,10 @@ fn render_flags_best_speed_win_tile_as_failure_when_cpp_wins_everywhere() {
 #[test]
 fn render_includes_wsl_caveat_when_set() {
     let html = xval::render(FIXTURE).expect("render should succeed");
-    assert!(html.to_lowercase().contains("wsl"), "meta.wsl=true must surface a visible WSL-noise caveat");
+    assert!(
+        html.to_lowercase().contains("wsl"),
+        "meta.wsl=true must surface a visible WSL-noise caveat"
+    );
 }
 
 #[test]
@@ -217,7 +258,10 @@ fn render_omits_wsl_caveat_when_unset() {
     // The caveat PARAGRAPH itself must be gone -- note the stylesheet's
     // `.caveat` CSS rule is always present (static page furniture), so
     // this checks for the actual rendered element, not the class name.
-    assert!(!html.contains(r#"<p class="caveat">"#), "wsl=false must not render the WSL-noise caveat paragraph");
+    assert!(
+        !html.contains(r#"<p class="caveat">"#),
+        "wsl=false must not render the WSL-noise caveat paragraph"
+    );
 }
 
 #[test]
@@ -226,8 +270,14 @@ fn render_html_escapes_methodology_text() {
     // meta.scoring / meta.speed_methodology in the fixture deliberately
     // contain `<`, `>`, `&`, `"` -- these must be escaped, not passed
     // through raw (raw `<u32>` would be swallowed as an unknown tag).
-    assert!(!html.contains("Vec<u32>"), "unescaped `<`/`>` from meta.speed_methodology leaked into HTML");
-    assert!(html.contains("Vec&lt;u32&gt;"), "expected escaped Vec&lt;u32&gt; in methodology text");
+    assert!(
+        !html.contains("Vec<u32>"),
+        "unescaped `<`/`>` from meta.speed_methodology leaked into HTML"
+    );
+    assert!(
+        html.contains("Vec&lt;u32&gt;"),
+        "expected escaped Vec&lt;u32&gt; in methodology text"
+    );
 }
 
 #[test]
@@ -279,9 +329,18 @@ const STATS_FIXTURE: &str = r#"{
 #[test]
 fn render_speed_row_shows_mean_std_n_for_both_sides() {
     let html = xval::render(STATS_FIXTURE).expect("render should succeed");
-    assert!(html.contains("21.000") && html.contains("1.500"), "missing rust mean/std");
-    assert!(html.contains("42.000") && html.contains("2.500"), "missing cpp mean/std");
-    assert!(html.matches("n=100").count() >= 2, "expected n=100 to appear for BOTH sides:\n\n{html}");
+    assert!(
+        html.contains("21.000") && html.contains("1.500"),
+        "missing rust mean/std"
+    );
+    assert!(
+        html.contains("42.000") && html.contains("2.500"),
+        "missing cpp mean/std"
+    );
+    assert!(
+        html.matches("n=100").count() >= 2,
+        "expected n=100 to appear for BOTH sides:\n\n{html}"
+    );
 }
 
 #[test]
@@ -290,8 +349,14 @@ fn render_speed_bar_geometry_uses_ratio_medians_not_legacy_ratio() {
     // used); `ratio_medians` is 0.5 (rust-faster) -- the bar MUST reflect
     // the median ratio, not the legacy field.
     let html = xval::render(STATS_FIXTURE).expect("render should succeed");
-    assert!(html.contains(r#"class="bar rust""#), "bar geometry did not use ratio_medians (0.5, rust-faster)");
-    assert!(!html.contains(r#"class="bar cpp""#), "bar geometry wrongly used the legacy ratio (2.0, cpp-faster)");
+    assert!(
+        html.contains(r#"class="bar rust""#),
+        "bar geometry did not use ratio_medians (0.5, rust-faster)"
+    );
+    assert!(
+        !html.contains(r#"class="bar cpp""#),
+        "bar geometry wrongly used the legacy ratio (2.0, cpp-faster)"
+    );
 }
 
 #[test]
@@ -300,8 +365,12 @@ fn render_speed_row_without_stats_still_renders_legacy_display() {
     // nested stats objects) must still render successfully via the
     // original plain-ratio display -- this is `FIXTURE` (declared above),
     // untouched by this task.
-    let html = xval::render(FIXTURE).expect("render should succeed on a pre-M2.6 (no stats objects) document");
-    assert!(!html.contains("(n="), "pre-M2.6 fixture has no TimingStats -- must not fabricate an n= display");
+    let html = xval::render(FIXTURE)
+        .expect("render should succeed on a pre-M2.6 (no stats objects) document");
+    assert!(
+        !html.contains("(n="),
+        "pre-M2.6 fixture has no TimingStats -- must not fabricate an n= display"
+    );
 }
 
 // ============================================================================
@@ -382,36 +451,72 @@ fn render_python_rejects_old_format_json_without_schema_version() {
         msg.contains("schema_version"),
         "error message must name the actual problem (schema_version mismatch), got: {msg}"
     );
-    assert!(msg.contains('2'), "error message should mention the expected schema_version (2), got: {msg}");
+    assert!(
+        msg.contains('2'),
+        "error message should mention the expected schema_version (2), got: {msg}"
+    );
 }
 
 #[test]
 fn render_python_rejects_wrong_schema_version_number() {
-    let fixture = PY_NEW_FORMAT_FIXTURE.replacen(r#""schema_version": 2"#, r#""schema_version": 1"#, 1);
-    let err = xval::render_python(&fixture).expect_err("schema_version: 1 must be rejected (expected 2)");
+    let fixture =
+        PY_NEW_FORMAT_FIXTURE.replacen(r#""schema_version": 2"#, r#""schema_version": 1"#, 1);
+    let err =
+        xval::render_python(&fixture).expect_err("schema_version: 1 must be rejected (expected 2)");
     assert!(err.to_string().contains("schema_version"), "{}", err);
 }
 
 #[test]
 fn render_python_happy_path_renders_stats_and_median_ratio_pill() {
-    let html = xval::render_python(PY_NEW_FORMAT_FIXTURE).expect("well-formed schema_version:2 JSON must render");
+    let html = xval::render_python(PY_NEW_FORMAT_FIXTURE)
+        .expect("well-formed schema_version:2 JSON must render");
 
-    assert!(html.contains("python-bindings"), "missing the python-bindings section wrapper");
-    assert!(html.contains("build_100k_dim3_f32_threads1"), "missing workload name");
+    assert!(
+        html.contains("python-bindings"),
+        "missing the python-bindings section wrapper"
+    );
+    assert!(
+        html.contains("build_100k_dim3_f32_threads1"),
+        "missing workload name"
+    );
 
     // Cells/tooltip show mean/std/n for every engine, not just the median.
-    assert!(html.contains("9.653") && html.contains("0.086"), "missing flannrust mean/std");
-    assert!(html.contains("12.098") && html.contains("0.943"), "missing cKDTree mean/std");
-    assert!(html.contains("17.739") && html.contains("0.200"), "missing pynanoflann mean/std");
-    assert!(html.matches("n=42").count() >= 3, "expected n=42 to appear for all three engines:\n\n{html}");
+    assert!(
+        html.contains("9.653") && html.contains("0.086"),
+        "missing flannrust mean/std"
+    );
+    assert!(
+        html.contains("12.098") && html.contains("0.943"),
+        "missing cKDTree mean/std"
+    );
+    assert!(
+        html.contains("17.739") && html.contains("0.200"),
+        "missing pynanoflann mean/std"
+    );
+    assert!(
+        html.matches("n=42").count() >= 3,
+        "expected n=42 to appear for all three engines:\n\n{html}"
+    );
 
     // Ratio pill uses the median-based ratio_ckdtree/ratio_pynanoflann
     // fields (0.805 / 0.549), not a mean-derived recomputation.
-    assert!(html.contains("0.805"), "ratio pill must show the median-based ratio_ckdtree value");
-    assert!(html.contains("0.549"), "ratio pill must show the median-based ratio_pynanoflann value");
+    assert!(
+        html.contains("0.805"),
+        "ratio pill must show the median-based ratio_ckdtree value"
+    );
+    assert!(
+        html.contains("0.549"),
+        "ratio pill must show the median-based ratio_pynanoflann value"
+    );
 
     // Sub-millisecond row (single_query_loop) keeps its overhead-bound
     // badge and 6-decimal precision.
-    assert!(html.contains("overhead-bound"), "missing the single-query overhead-bound badge");
-    assert!(html.contains("0.001960"), "sub-ms median should render at 6-decimal precision");
+    assert!(
+        html.contains("overhead-bound"),
+        "missing the single-query overhead-bound badge"
+    );
+    assert!(
+        html.contains("0.001960"),
+        "sub-ms median should render at 6-decimal precision"
+    );
 }

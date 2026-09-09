@@ -26,7 +26,8 @@ use crate::scalar::{DistanceValue, IndexType, Scalar};
 /// letting the metric kernel's dimension loop constant-fold and fully
 /// unroll under monomorphization instead of branching on a runtime value
 /// (task 14's ConstDim-unroll fix; see `metric.rs`'s `Distance::eval` doc).
-pub(crate) struct SearchCtx<'a, T: Scalar, D: Dim, DS: DataSource<T> + ?Sized, M: Distance<T>, Idx> {
+pub(crate) struct SearchCtx<'a, T: Scalar, D: Dim, DS: DataSource<T> + ?Sized, M: Distance<T>, Idx>
+{
     pub ds: &'a DS,
     pub metric: &'a M,
     pub dim: D,
@@ -70,7 +71,11 @@ where
         query.len(),
         ctx.dim.dim()
     );
-    debug_assert_eq!(dists_scratch.len(), ctx.dim.dim(), "dists_scratch.len() != dim");
+    debug_assert_eq!(
+        dists_scratch.len(),
+        ctx.dim.dim(),
+        "dists_scratch.len() != dim"
+    );
 
     // C++ (nanoflann.hpp:1999): `DistanceType epsError = 1 + static_cast<DistanceType>(searchParams.eps);`
     // — widens `eps` (f32) to `DistanceType` FIRST, then adds `1` in
@@ -92,7 +97,16 @@ where
     // C++ discards `searchLevel`'s own return value here — it's only used to
     // propagate an abort UP THROUGH the recursion, not by the top-level
     // driver.
-    let _ = search_level(ctx, result, query, 0, mindist, dists_scratch, eps_error, filter);
+    let _ = search_level(
+        ctx,
+        result,
+        query,
+        0,
+        mindist,
+        dists_scratch,
+        eps_error,
+        filter,
+    );
 
     if params.sorted {
         result.sort();
@@ -662,7 +676,11 @@ where
 // `i` indexes BOTH `bounds` and `ctx.ds.point_component(_, i)` (a trait
 // method, not a slice) in the same per-axis order as nanoflann.hpp:2182-2192.
 #[allow(clippy::needless_range_loop)]
-fn contains_point<T, D, DS, M, Idx>(ctx: &SearchCtx<'_, T, D, DS, M, Idx>, bounds: &[Interval<T>], idx: Idx) -> bool
+fn contains_point<T, D, DS, M, Idx>(
+    ctx: &SearchCtx<'_, T, D, DS, M, Idx>,
+    bounds: &[Interval<T>],
+    idx: Idx,
+) -> bool
 where
     T: Scalar,
     D: Dim,
@@ -683,8 +701,8 @@ where
 mod tests {
     use super::*;
     use crate::bbox::compute_bounding_box;
-    use crate::dim::DynDim;
     use crate::build::{init_vind, SubtreeBuilder};
+    use crate::dim::DynDim;
     use crate::filter::AcceptAll;
     use crate::metric::L2;
     use crate::result_set::KnnResultSet;
@@ -699,7 +717,13 @@ mod tests {
         let dim = N;
         let n = pts.len();
         let mut vind: Vec<u32> = init_vind(n);
-        let mut bbox = vec![Interval { low: 0.0, high: 0.0 }; dim];
+        let mut bbox = vec![
+            Interval {
+                low: 0.0,
+                high: 0.0
+            };
+            dim
+        ];
         compute_bounding_box(&pts, dim, &mut bbox);
         let mut arena = Vec::new();
         {
@@ -726,12 +750,19 @@ mod tests {
     struct Lcg(u64);
     impl Lcg {
         fn next_f64(&mut self) -> f64 {
-            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((self.0 >> 11) as f64) / ((1u64 << 53) as f64)
         }
     }
 
-    fn brute_force_knn<const N: usize>(pts: &[[f64; N]], query: &[f64; N], k: usize) -> (Vec<u32>, Vec<f64>) {
+    fn brute_force_knn<const N: usize>(
+        pts: &[[f64; N]],
+        query: &[f64; N],
+        k: usize,
+    ) -> (Vec<u32>, Vec<f64>) {
         let dim = N;
         let metric = L2;
         let mut indices = vec![0u32; k];
@@ -761,7 +792,14 @@ mod tests {
     ) -> (Vec<u32>, Vec<f64>, bool) {
         let dim = N;
         let metric = L2;
-        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: DynDim(dim), nodes: arena, vind, root_bbox: bbox };
+        let ctx = SearchCtx {
+            ds: &pts,
+            metric: &metric,
+            dim: DynDim(dim),
+            nodes: arena,
+            vind,
+            root_bbox: bbox,
+        };
         let mut indices = vec![0u32; k];
         let mut dists = vec![0.0f64; k];
         let count;
@@ -770,7 +808,14 @@ mod tests {
             let mut rs = KnnResultSet::<f64, u32>::new(&mut indices, &mut dists);
             let mut scratch = vec![0.0f64; dim];
             let params = SearchParams { eps, sorted: true };
-            full = find_neighbors(&ctx, &mut rs, query.as_slice(), &params, &AcceptAll, &mut scratch);
+            full = find_neighbors(
+                &ctx,
+                &mut rs,
+                query.as_slice(),
+                &params,
+                &AcceptAll,
+                &mut scratch,
+            );
             count = rs.size();
         }
         indices.truncate(count);
@@ -778,13 +823,21 @@ mod tests {
         (indices, dists, full)
     }
 
-    fn brute_force_radius<const N: usize>(pts: &[[f64; N]], query: &[f64; N], radius: f64) -> Vec<(u32, f64)> {
+    fn brute_force_radius<const N: usize>(
+        pts: &[[f64; N]],
+        query: &[f64; N],
+        radius: f64,
+    ) -> Vec<(u32, f64)> {
         let dim = N;
         let metric = L2;
         let mut out: Vec<(u32, f64)> = (0..pts.len())
             .filter_map(|i| {
                 let d = metric.eval(query.as_slice(), &pts, i, DynDim(dim));
-                if d < radius { Some((i as u32, d)) } else { None }
+                if d < radius {
+                    Some((i as u32, d))
+                } else {
+                    None
+                }
             })
             .collect();
         out.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap().then(a.0.cmp(&b.0)));
@@ -801,15 +854,35 @@ mod tests {
     ) -> Vec<(u32, f64)> {
         let dim = N;
         let metric = L2;
-        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: DynDim(dim), nodes: arena, vind, root_bbox: bbox };
+        let ctx = SearchCtx {
+            ds: &pts,
+            metric: &metric,
+            dim: DynDim(dim),
+            nodes: arena,
+            vind,
+            root_bbox: bbox,
+        };
         let mut items = Vec::new();
         {
             let mut rs = crate::result_set::RadiusResultSet::new(radius, &mut items);
             let mut scratch = vec![0.0f64; dim];
-            let params = SearchParams { eps: 0.0, sorted: true };
-            find_neighbors(&ctx, &mut rs, query.as_slice(), &params, &AcceptAll, &mut scratch);
+            let params = SearchParams {
+                eps: 0.0,
+                sorted: true,
+            };
+            find_neighbors(
+                &ctx,
+                &mut rs,
+                query.as_slice(),
+                &params,
+                &AcceptAll,
+                &mut scratch,
+            );
         }
-        items.into_iter().map(|it| (it.index, it.distance)).collect()
+        items
+            .into_iter()
+            .map(|it| (it.index, it.distance))
+            .collect()
     }
 
     fn run_brute_force_case<const N: usize>(seed: u64, n: usize, k: usize, leaf_max_size: usize) {
@@ -829,12 +902,23 @@ mod tests {
         }
 
         let (vind, arena, bbox) = build_tree(&pts, leaf_max_size);
-        let (tree_idx, tree_dists, tree_full) = tree_knn(&vind, &arena, &bbox, &pts, &query, k, 0.0);
+        let (tree_idx, tree_dists, tree_full) =
+            tree_knn(&vind, &arena, &bbox, &pts, &query, k, 0.0);
         let (bf_idx, bf_dists) = brute_force_knn(&pts, &query, k);
 
-        assert_eq!(tree_idx, bf_idx, "seed={seed} n={n} dim={N} k={k}: index mismatch");
-        assert_eq!(tree_dists, bf_dists, "seed={seed} n={n} dim={N} k={k}: distance mismatch");
-        assert_eq!(tree_full, bf_idx.len() == k, "seed={seed} n={n} dim={N} k={k}: full() mismatch");
+        assert_eq!(
+            tree_idx, bf_idx,
+            "seed={seed} n={n} dim={N} k={k}: index mismatch"
+        );
+        assert_eq!(
+            tree_dists, bf_dists,
+            "seed={seed} n={n} dim={N} k={k}: distance mismatch"
+        );
+        assert_eq!(
+            tree_full,
+            bf_idx.len() == k,
+            "seed={seed} n={n} dim={N} k={k}: full() mismatch"
+        );
     }
 
     #[test]
@@ -883,7 +967,13 @@ mod tests {
             let mut rng = Lcg(seed);
             let n = 1 + (rng.next_f64() * 50.0) as usize;
             let pts: Vec<[f64; 3]> = (0..n)
-                .map(|_| [rng.next_f64() * 20.0, rng.next_f64() * 20.0, rng.next_f64() * 20.0])
+                .map(|_| {
+                    [
+                        rng.next_f64() * 20.0,
+                        rng.next_f64() * 20.0,
+                        rng.next_f64() * 20.0,
+                    ]
+                })
                 .collect();
             let sign = if case % 2 == 0 { 1.0 } else { -1.0 };
             let query = [
@@ -911,9 +1001,22 @@ mod tests {
         let pts: &[[f64; 2]] = &[];
         let arena: Vec<Node<f64>> = Vec::new();
         let vind: Vec<u32> = Vec::new();
-        let bbox: Vec<Interval<f64>> = vec![Interval { low: 0.0, high: 0.0 }; 2];
+        let bbox: Vec<Interval<f64>> = vec![
+            Interval {
+                low: 0.0,
+                high: 0.0
+            };
+            2
+        ];
         let metric = L2;
-        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: DynDim(2), nodes: &arena, vind: &vind, root_bbox: &bbox };
+        let ctx = SearchCtx {
+            ds: &pts,
+            metric: &metric,
+            dim: DynDim(2),
+            nodes: &arena,
+            vind: &vind,
+            root_bbox: &bbox,
+        };
 
         let mut indices = [99u32; 3];
         let mut dists = [77.0f64; 3];
@@ -921,7 +1024,14 @@ mod tests {
         let mut scratch = [0.0f64; 2];
         let params = SearchParams::default();
 
-        let full = find_neighbors(&ctx, &mut rs, &[0.0, 0.0], &params, &AcceptAll, &mut scratch);
+        let full = find_neighbors(
+            &ctx,
+            &mut rs,
+            &[0.0, 0.0],
+            &params,
+            &AcceptAll,
+            &mut scratch,
+        );
         assert!(!full);
         assert_eq!(indices, [99, 99, 99]);
         assert_eq!(dists, [77.0, 77.0, 77.0]);
@@ -960,15 +1070,30 @@ mod tests {
         let (vind, arena, bbox) = build_tree(&pts, 10);
         let metric = L2;
         let pts: &[[f64; 1]] = &pts;
-        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: DynDim(1), nodes: &arena, vind: &vind, root_bbox: &bbox };
+        let ctx = SearchCtx {
+            ds: &pts,
+            metric: &metric,
+            dim: DynDim(1),
+            nodes: &arena,
+            vind: &vind,
+            root_bbox: &bbox,
+        };
 
         let mut indices = [0u32; 5];
         let mut dists = [0.0f64; 5];
         let full;
         {
-            let mut rs = crate::result_set::RknnResultSet::<f64, u32>::new(&mut indices, &mut dists, 10.0);
+            let mut rs =
+                crate::result_set::RknnResultSet::<f64, u32>::new(&mut indices, &mut dists, 10.0);
             let mut scratch = [0.0f64; 1];
-            full = find_neighbors(&ctx, &mut rs, &[0.0], &SearchParams::default(), &AcceptAll, &mut scratch);
+            full = find_neighbors(
+                &ctx,
+                &mut rs,
+                &[0.0],
+                &SearchParams::default(),
+                &AcceptAll,
+                &mut scratch,
+            );
             assert_eq!(rs.size(), 3);
         }
         assert!(!full);
@@ -977,20 +1102,46 @@ mod tests {
 
     #[test]
     fn rknn_full_coverage_returns_closest_k_and_true() {
-        let pts: Vec<[f64; 1]> = vec![[1.0], [2.0], [3.0], [4.0], [5.0], [6.0], [7.0], [8.0], [9.0], [10.0]];
+        let pts: Vec<[f64; 1]> = vec![
+            [1.0],
+            [2.0],
+            [3.0],
+            [4.0],
+            [5.0],
+            [6.0],
+            [7.0],
+            [8.0],
+            [9.0],
+            [10.0],
+        ];
         let (vind, arena, bbox) = build_tree(&pts, 3);
         let metric = L2;
         let pts: &[[f64; 1]] = &pts;
-        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: DynDim(1), nodes: &arena, vind: &vind, root_bbox: &bbox };
+        let ctx = SearchCtx {
+            ds: &pts,
+            metric: &metric,
+            dim: DynDim(1),
+            nodes: &arena,
+            vind: &vind,
+            root_bbox: &bbox,
+        };
 
         let mut indices = [0u32; 5];
         let mut dists = [0.0f64; 5];
         let full;
         {
             // radius 100.0 (squared) covers all 10 points.
-            let mut rs = crate::result_set::RknnResultSet::<f64, u32>::new(&mut indices, &mut dists, 100.0);
+            let mut rs =
+                crate::result_set::RknnResultSet::<f64, u32>::new(&mut indices, &mut dists, 100.0);
             let mut scratch = [0.0f64; 1];
-            full = find_neighbors(&ctx, &mut rs, &[0.0], &SearchParams::default(), &AcceptAll, &mut scratch);
+            full = find_neighbors(
+                &ctx,
+                &mut rs,
+                &[0.0],
+                &SearchParams::default(),
+                &AcceptAll,
+                &mut scratch,
+            );
             assert_eq!(rs.size(), 5);
         }
         assert!(full);
@@ -1005,15 +1156,34 @@ mod tests {
         let (vind, arena, bbox) = build_tree(&pts, 10);
         let metric = L2;
         let pts: &[[f64; 1]] = &pts;
-        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: DynDim(1), nodes: &arena, vind: &vind, root_bbox: &bbox };
+        let ctx = SearchCtx {
+            ds: &pts,
+            metric: &metric,
+            dim: DynDim(1),
+            nodes: &arena,
+            vind: &vind,
+            root_bbox: &bbox,
+        };
 
         let mut indices = [0u32; 1];
         let mut dists = [0.0f64; 1];
         {
-            let mut rs = crate::result_set::RknnResultSet::<f64, u32>::new(&mut indices, &mut dists, 4.0);
+            let mut rs =
+                crate::result_set::RknnResultSet::<f64, u32>::new(&mut indices, &mut dists, 4.0);
             let mut scratch = [0.0f64; 1];
-            find_neighbors(&ctx, &mut rs, &[0.0], &SearchParams::default(), &AcceptAll, &mut scratch);
-            assert_eq!(rs.size(), 0, "point at exact squared radius must be excluded (dist < worst_dist gate)");
+            find_neighbors(
+                &ctx,
+                &mut rs,
+                &[0.0],
+                &SearchParams::default(),
+                &AcceptAll,
+                &mut scratch,
+            );
+            assert_eq!(
+                rs.size(),
+                0,
+                "point at exact squared radius must be excluded (dist < worst_dist gate)"
+            );
         }
     }
 
@@ -1028,13 +1198,27 @@ mod tests {
         let (vind, arena, bbox) = build_tree(&pts, 10);
         let metric = L2;
         let pts: &[[f64; 2]] = &pts;
-        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: DynDim(2), nodes: &arena, vind: &vind, root_bbox: &bbox };
+        let ctx = SearchCtx {
+            ds: &pts,
+            metric: &metric,
+            dim: DynDim(2),
+            nodes: &arena,
+            vind: &vind,
+            root_bbox: &bbox,
+        };
 
         let mut items = Vec::new();
         {
             let mut rs = crate::result_set::RadiusResultSet::new(4.0f64, &mut items);
             let mut scratch = [0.0f64; 2];
-            find_neighbors(&ctx, &mut rs, &[0.0, 0.0], &SearchParams::default(), &AcceptAll, &mut scratch);
+            find_neighbors(
+                &ctx,
+                &mut rs,
+                &[0.0, 0.0],
+                &SearchParams::default(),
+                &AcceptAll,
+                &mut scratch,
+            );
         }
         assert!(
             !items.iter().any(|it| it.index == 0),
@@ -1046,7 +1230,14 @@ mod tests {
         {
             let mut rs = crate::result_set::RadiusResultSet::new(radius_next_up, &mut items2);
             let mut scratch = [0.0f64; 2];
-            find_neighbors(&ctx, &mut rs, &[0.0, 0.0], &SearchParams::default(), &AcceptAll, &mut scratch);
+            find_neighbors(
+                &ctx,
+                &mut rs,
+                &[0.0, 0.0],
+                &SearchParams::default(),
+                &AcceptAll,
+                &mut scratch,
+            );
         }
         assert!(
             items2.iter().any(|it| it.index == 0),
@@ -1060,14 +1251,31 @@ mod tests {
         let (vind, arena, bbox) = build_tree(&pts, 10);
         let metric = L2;
         let pts: &[[f64; 2]] = &pts;
-        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: DynDim(2), nodes: &arena, vind: &vind, root_bbox: &bbox };
+        let ctx = SearchCtx {
+            ds: &pts,
+            metric: &metric,
+            dim: DynDim(2),
+            nodes: &arena,
+            vind: &vind,
+            root_bbox: &bbox,
+        };
 
         let mut items = Vec::new();
         {
             let mut rs = crate::result_set::RadiusResultSet::new(100.0f64, &mut items);
             let mut scratch = [0.0f64; 2];
-            let params = SearchParams { eps: 0.0, sorted: true };
-            find_neighbors(&ctx, &mut rs, &[0.0, 0.0], &params, &AcceptAll, &mut scratch);
+            let params = SearchParams {
+                eps: 0.0,
+                sorted: true,
+            };
+            find_neighbors(
+                &ctx,
+                &mut rs,
+                &[0.0, 0.0],
+                &params,
+                &AcceptAll,
+                &mut scratch,
+            );
         }
         let ds: Vec<f64> = items.iter().map(|it| it.distance).collect();
         let mut sorted = ds.clone();
@@ -1122,13 +1330,23 @@ mod tests {
         let (vind, arena, bbox) = build_tree(&pts, 2);
         let metric = L2;
         let pts: &[[f64; 1]] = &pts;
-        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: DynDim(1), nodes: &arena, vind: &vind, root_bbox: &bbox };
+        let ctx = SearchCtx {
+            ds: &pts,
+            metric: &metric,
+            dim: DynDim(1),
+            nodes: &arena,
+            vind: &vind,
+            root_bbox: &bbox,
+        };
 
         let mut items = Vec::new();
         {
             let mut rs = crate::result_set::RadiusResultSet::new(200.0f64, &mut items);
             let mut scratch = [0.0f64; 1];
-            let params = SearchParams { eps: 0.0, sorted: false };
+            let params = SearchParams {
+                eps: 0.0,
+                sorted: false,
+            };
             find_neighbors(&ctx, &mut rs, &[0.4], &params, &AcceptAll, &mut scratch);
         }
         let order: Vec<u32> = items.iter().map(|it| it.index).collect();
@@ -1170,13 +1388,30 @@ mod tests {
         let (vind, arena, bbox) = build_tree(&pts, 1);
         let metric = L2;
         let pts: &[[f64; 1]] = &pts;
-        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: DynDim(1), nodes: &arena, vind: &vind, root_bbox: &bbox };
+        let ctx = SearchCtx {
+            ds: &pts,
+            metric: &metric,
+            dim: DynDim(1),
+            nodes: &arena,
+            vind: &vind,
+            root_bbox: &bbox,
+        };
 
         let mut rs = AbortAfterN { limit: 3, adds: 0 };
         let mut scratch = [0.0f64; 1];
-        let full = find_neighbors(&ctx, &mut rs, &[0.0], &SearchParams::default(), &AcceptAll, &mut scratch);
+        let full = find_neighbors(
+            &ctx,
+            &mut rs,
+            &[0.0],
+            &SearchParams::default(),
+            &AcceptAll,
+            &mut scratch,
+        );
 
-        assert_eq!(rs.adds, 3, "exactly 3 adds should have happened before the 4th add_point aborts");
+        assert_eq!(
+            rs.adds, 3,
+            "exactly 3 adds should have happened before the 4th add_point aborts"
+        );
         assert_eq!(full, rs.full());
     }
 
@@ -1196,14 +1431,31 @@ mod tests {
         let mut rng = Lcg(0x0DD_F17E7u64);
         let n = 37;
         let pts: Vec<[f64; 3]> = (0..n)
-            .map(|_| [rng.next_f64() * 50.0, rng.next_f64() * 50.0, rng.next_f64() * 50.0])
+            .map(|_| {
+                [
+                    rng.next_f64() * 50.0,
+                    rng.next_f64() * 50.0,
+                    rng.next_f64() * 50.0,
+                ]
+            })
             .collect();
-        let query = [rng.next_f64() * 50.0, rng.next_f64() * 50.0, rng.next_f64() * 50.0];
+        let query = [
+            rng.next_f64() * 50.0,
+            rng.next_f64() * 50.0,
+            rng.next_f64() * 50.0,
+        ];
 
         let (vind, arena, bbox) = build_tree(&pts, 4);
         let metric = L2;
         let pts: &[[f64; 3]] = &pts;
-        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: DynDim(3), nodes: &arena, vind: &vind, root_bbox: &bbox };
+        let ctx = SearchCtx {
+            ds: &pts,
+            metric: &metric,
+            dim: DynDim(3),
+            nodes: &arena,
+            vind: &vind,
+            root_bbox: &bbox,
+        };
 
         let k = 10;
         let mut indices = vec![0u32; k];
@@ -1212,13 +1464,23 @@ mod tests {
         {
             let mut rs = KnnResultSet::<f64, u32>::new(&mut indices, &mut dists);
             let mut scratch = [0.0f64; 3];
-            find_neighbors(&ctx, &mut rs, &query, &SearchParams::default(), &RejectEven, &mut scratch);
+            find_neighbors(
+                &ctx,
+                &mut rs,
+                &query,
+                &SearchParams::default(),
+                &RejectEven,
+                &mut scratch,
+            );
             count = rs.size();
         }
         indices.truncate(count);
         dists.truncate(count);
 
-        assert!(indices.iter().all(|&i| i % 2 == 1), "even indices leaked through the filter");
+        assert!(
+            indices.iter().all(|&i| i % 2 == 1),
+            "even indices leaked through the filter"
+        );
 
         // Brute force restricted to odd indices only. Uses `metric.eval`
         // (not a hand-rolled sum) so the summation order matches the tree
@@ -1261,20 +1523,41 @@ mod tests {
         let metric = SO2;
         let d0 = metric.accum_dist(query[1], pts[0][1], 1);
         let d1 = metric.accum_dist(query[1], pts[1][1], 1);
-        assert!(d0 < d1, "test setup: expected point 0 to be the wrapped-nearer angle, d0={d0} d1={d1}");
+        assert!(
+            d0 < d1,
+            "test setup: expected point 0 to be the wrapped-nearer angle, d0={d0} d1={d1}"
+        );
 
         let (vind, arena, bbox) = build_tree(&pts, 10);
         let pts: &[[f64; 2]] = &pts;
-        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: DynDim(2), nodes: &arena, vind: &vind, root_bbox: &bbox };
+        let ctx = SearchCtx {
+            ds: &pts,
+            metric: &metric,
+            dim: DynDim(2),
+            nodes: &arena,
+            vind: &vind,
+            root_bbox: &bbox,
+        };
 
         let mut indices = [0u32; 1];
         let mut dists = [0.0f64; 1];
         {
             let mut rs = KnnResultSet::<f64, u32>::new(&mut indices, &mut dists);
             let mut scratch = [0.0f64; 2];
-            find_neighbors(&ctx, &mut rs, &query, &SearchParams::default(), &AcceptAll, &mut scratch);
+            find_neighbors(
+                &ctx,
+                &mut rs,
+                &query,
+                &SearchParams::default(),
+                &AcceptAll,
+                &mut scratch,
+            );
         }
-        assert_eq!(indices, [0], "wrapped-nearer angle should win, first component ignored");
+        assert_eq!(
+            indices,
+            [0],
+            "wrapped-nearer angle should win, first component ignored"
+        );
     }
 
     // ---------------------------------------------------------------
@@ -1319,7 +1602,14 @@ mod tests {
         let (vind, arena, bbox) = build_tree(&pts, 1);
         let metric = L2;
         let pts: &[[f64; 1]] = &pts;
-        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: DynDim(1), nodes: &arena, vind: &vind, root_bbox: &bbox };
+        let ctx = SearchCtx {
+            ds: &pts,
+            metric: &metric,
+            dim: DynDim(1),
+            nodes: &arena,
+            vind: &vind,
+            root_bbox: &bbox,
+        };
 
         let run = |eps: f32| -> (usize, u32) {
             let filter = CountingFilter(core::cell::Cell::new(0));
@@ -1333,12 +1623,21 @@ mod tests {
         };
 
         let (count_exact, nearest_exact) = run(0.0);
-        assert_eq!(count_exact, 2, "eps=0: the root's prune check is an exact tie (<=), both leaves should be visited");
+        assert_eq!(
+            count_exact, 2,
+            "eps=0: the root's prune check is an exact tie (<=), both leaves should be visited"
+        );
         assert_eq!(nearest_exact, 1, "nearest to 0.0 is index 1 (0.1)");
 
         let (count_large, nearest_large) = run(10.0);
-        assert_eq!(count_large, 1, "eps=10: the tie should be broken by the widened eps_error, pruning the other leaf");
-        assert_eq!(nearest_large, 1, "eps=10 should still find the correct nearest point in the one visited leaf");
+        assert_eq!(
+            count_large, 1,
+            "eps=10: the tie should be broken by the widened eps_error, pruning the other leaf"
+        );
+        assert_eq!(
+            nearest_large, 1,
+            "eps=10 should still find the correct nearest point in the one visited leaf"
+        );
     }
 
     // A dim-1 dataset where the pruned branch holds the true nearest (to
@@ -1426,7 +1725,14 @@ mod tests {
         }
 
         let metric = L2;
-        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: DynDim(2), nodes: &arena, vind: &vind, root_bbox: &[] };
+        let ctx = SearchCtx {
+            ds: &pts,
+            metric: &metric,
+            dim: DynDim(2),
+            nodes: &arena,
+            vind: &vind,
+            root_bbox: &[],
+        };
         let query = [0.06f64, 0.0];
 
         // Exact (eps_error = 1.0): bypass find_neighbors/compute_initial_distances
@@ -1439,10 +1745,20 @@ mod tests {
         {
             let mut rs = KnnResultSet::<f64, u32>::new(&mut exact_indices, &mut exact_dists);
             let mut dists = [0.0f64, 0.0];
-            search_level(&ctx, &mut rs, &query, 0, 0.0f64, &mut dists, 1.0f64, &AcceptAll);
+            search_level(
+                &ctx, &mut rs, &query, 0, 0.0f64, &mut dists, 1.0f64, &AcceptAll,
+            );
         }
-        assert_eq!(exact_indices, [1], "exact search should find P1 (the true nearest)");
-        assert!((exact_dists[0] - 0.1321).abs() < 1e-9, "exact_dists[0]={}", exact_dists[0]);
+        assert_eq!(
+            exact_indices,
+            [1],
+            "exact search should find P1 (the true nearest)"
+        );
+        assert!(
+            (exact_dists[0] - 0.1321).abs() < 1e-9,
+            "exact_dists[0]={}",
+            exact_dists[0]
+        );
 
         // Approximate (eps=0.5 -> eps_error = 1.5).
         let mut approx_indices = [0u32; 1];
@@ -1450,15 +1766,28 @@ mod tests {
         {
             let mut rs = KnnResultSet::<f64, u32>::new(&mut approx_indices, &mut approx_dists);
             let mut dists = [0.0f64, 0.0];
-            search_level(&ctx, &mut rs, &query, 0, 0.0f64, &mut dists, 1.5f64, &AcceptAll);
+            search_level(
+                &ctx, &mut rs, &query, 0, 0.0f64, &mut dists, 1.5f64, &AcceptAll,
+            );
         }
-        assert_eq!(approx_indices, [0], "eps=0.5 should have pruned P1 and kept the (suboptimal) P0");
-        assert!((approx_dists[0] - 0.1741).abs() < 1e-9, "approx_dists[0]={}", approx_dists[0]);
+        assert_eq!(
+            approx_indices,
+            [0],
+            "eps=0.5 should have pruned P1 and kept the (suboptimal) P0"
+        );
+        assert!(
+            (approx_dists[0] - 0.1741).abs() < 1e-9,
+            "approx_dists[0]={}",
+            approx_dists[0]
+        );
 
         // The eps-error contract: returned distance <= (1+eps) * true nearest.
         let true_best = exact_dists[0];
         let got = approx_dists[0];
-        assert!(got > true_best, "eps=0.5 result should be strictly worse than exact here (that's the point)");
+        assert!(
+            got > true_best,
+            "eps=0.5 result should be strictly worse than exact here (that's the point)"
+        );
         assert!(
             got <= 1.5 * true_best + 1e-9,
             "approx dist {got} exceeds (1+eps)*true_best {}",
@@ -1530,9 +1859,18 @@ mod tests {
         let eps = 0.1f32;
         let eps_correct = f64::from(1.0f32) + f64::from(eps); // widen-first: matches nanoflann.hpp:1999
         let eps_old_buggy = f64::from(1.0f32 + eps); // add-in-f32-then-widen: the bug this fixes
-        assert!(eps_correct < eps_old_buggy, "sanity: the two constants must actually differ");
-        assert!((eps_correct - 1.1000000014901161).abs() < 1e-16, "eps_correct={eps_correct}");
-        assert!((eps_old_buggy - 1.100000023841858).abs() < 1e-16, "eps_old_buggy={eps_old_buggy}");
+        assert!(
+            eps_correct < eps_old_buggy,
+            "sanity: the two constants must actually differ"
+        );
+        assert!(
+            (eps_correct - 1.1000000014901161).abs() < 1e-16,
+            "eps_correct={eps_correct}"
+        );
+        assert!(
+            (eps_old_buggy - 1.100000023841858).abs() < 1e-16,
+            "eps_old_buggy={eps_old_buggy}"
+        );
 
         // mindist = 1.0 exactly. worst_dist is mocked to the exact midpoint
         // of the two constants, so the gate outcome depends ENTIRELY on
@@ -1558,19 +1896,41 @@ mod tests {
         // other=child1=LEFT(index1). cut_dist (for LEFT)=accum_dist(0,-1.0)=
         // (0-(-1.0))^2=1.0=mindist, exactly as designed.
         let metric = L2;
-        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: DynDim(1), nodes: &arena, vind: &vind, root_bbox: &[] };
+        let ctx = SearchCtx {
+            ds: &pts,
+            metric: &metric,
+            dim: DynDim(1),
+            nodes: &arena,
+            vind: &vind,
+            root_bbox: &[],
+        };
         let query = [0.0f64];
 
         let run_with_eps_error = |eps_error: f64| -> usize {
-            let mut rs = FixedWorstDist { worst: worst_dist_target };
-            let filter = TargetOnlyCounter { target: 1, count: core::cell::Cell::new(0) };
+            let mut rs = FixedWorstDist {
+                worst: worst_dist_target,
+            };
+            let filter = TargetOnlyCounter {
+                target: 1,
+                count: core::cell::Cell::new(0),
+            };
             let mut dists = [0.0f64];
-            search_level(&ctx, &mut rs, &query, 0, 0.0f64, &mut dists, eps_error, &filter);
+            search_level(
+                &ctx, &mut rs, &query, 0, 0.0f64, &mut dists, eps_error, &filter,
+            );
             filter.count.get()
         };
 
-        assert_eq!(run_with_eps_error(eps_correct), 1, "the CORRECT (widen-first) eps_error should visit the other leaf");
-        assert_eq!(run_with_eps_error(eps_old_buggy), 0, "the OLD (add-then-widen, buggy) eps_error would have pruned it");
+        assert_eq!(
+            run_with_eps_error(eps_correct),
+            1,
+            "the CORRECT (widen-first) eps_error should visit the other leaf"
+        );
+        assert_eq!(
+            run_with_eps_error(eps_old_buggy),
+            0,
+            "the OLD (add-then-widen, buggy) eps_error would have pruned it"
+        );
 
         // Confirm the ACTUAL production code path (`find_neighbors`, which
         // computes `eps_error` internally from `params.eps`) matches the
@@ -1584,13 +1944,28 @@ mod tests {
             dim: DynDim(1),
             nodes: &arena,
             vind: &vind,
-            root_bbox: &[Interval { low: -1.0, high: 0.5 }],
+            root_bbox: &[Interval {
+                low: -1.0,
+                high: 0.5,
+            }],
         };
-        let mut rs = FixedWorstDist { worst: worst_dist_target };
-        let filter = TargetOnlyCounter { target: 1, count: core::cell::Cell::new(0) };
+        let mut rs = FixedWorstDist {
+            worst: worst_dist_target,
+        };
+        let filter = TargetOnlyCounter {
+            target: 1,
+            count: core::cell::Cell::new(0),
+        };
         let mut scratch = [0.0f64];
         let params = SearchParams { eps, sorted: true };
-        find_neighbors(&ctx_with_bbox, &mut rs, &query, &params, &filter, &mut scratch);
+        find_neighbors(
+            &ctx_with_bbox,
+            &mut rs,
+            &query,
+            &params,
+            &filter,
+            &mut scratch,
+        );
         assert_eq!(
             filter.count.get(),
             1,
@@ -1698,13 +2073,19 @@ mod tests {
         let (vind1, arena1, bbox1) = build_tree(&pts1, 10);
         let depth1 = max_depth(&arena1, 0);
         eprintln!("dim-1 heavy tree depth = {depth1}");
-        assert!(depth1 > 2_000, "expected the dim-1 heavy tree to stay deep, got {depth1}");
+        assert!(
+            depth1 > 2_000,
+            "expected the dim-1 heavy tree to stay deep, got {depth1}"
+        );
 
         let pts8 = heavy_dim8_points(n);
         let (vind8, arena8, bbox8) = build_tree(&pts8, 10);
         let depth8 = max_depth(&arena8, 0);
         eprintln!("dim-8 heavy tree depth = {depth8}");
-        assert!(depth8 > 10_000, "expected the dim-8 heavy tree to stay deep, got {depth8}");
+        assert!(
+            depth8 > 10_000,
+            "expected the dim-8 heavy tree to stay deep, got {depth8}"
+        );
 
         let handle = std::thread::Builder::new()
             .name("heavy-query-worker".into())
@@ -1747,10 +2128,14 @@ mod tests {
                 // overflow, not a search bug).
                 let queries1: Vec<[f64; 1]> = vec![pts1[600], pts1[700], pts1[1000]];
                 for q in &queries1 {
-                    let (tree_idx, tree_dists, _) = tree_knn(&vind1, &arena1, &bbox1, &pts1, q, 10, 0.0);
+                    let (tree_idx, tree_dists, _) =
+                        tree_knn(&vind1, &arena1, &bbox1, &pts1, q, 10, 0.0);
                     let (bf_idx, bf_dists) = brute_force_knn(&pts1, q, 10);
                     assert_eq!(tree_idx, bf_idx, "dim-1 knn index mismatch for query {q:?}");
-                    assert_eq!(tree_dists, bf_dists, "dim-1 knn dist mismatch for query {q:?}");
+                    assert_eq!(
+                        tree_dists, bf_dists,
+                        "dim-1 knn dist mismatch for query {q:?}"
+                    );
 
                     // Radius strictly between the 1st and 2nd nearest
                     // distances -> exactly one point within radius (the
@@ -1761,26 +2146,39 @@ mod tests {
                     tree_r.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap().then(a.0.cmp(&b.0)));
                     let bf_r = brute_force_radius(&pts1, q, radius);
                     assert_eq!(tree_r, bf_r, "dim-1 radius mismatch for query {q:?}");
-                    assert_eq!(tree_r.len(), 1, "radius was chosen to admit exactly the query's own match");
+                    assert_eq!(
+                        tree_r.len(),
+                        1,
+                        "radius was chosen to admit exactly the query's own match"
+                    );
                 }
 
                 // Same overflow-avoidance as dim-1: indices k=8*m+axis with
                 // m in {600, 700, 5000/8=625} — all comfortably past the
                 // point where squared differences between adjacent ladder
                 // rungs would overflow f64.
-                let queries8: Vec<[f64; 8]> = vec![pts8[8 * 600 + 2], pts8[8 * 700 + 5], pts8[5000]];
+                let queries8: Vec<[f64; 8]> =
+                    vec![pts8[8 * 600 + 2], pts8[8 * 700 + 5], pts8[5000]];
                 for q in &queries8 {
-                    let (tree_idx, tree_dists, _) = tree_knn(&vind8, &arena8, &bbox8, &pts8, q, 10, 0.0);
+                    let (tree_idx, tree_dists, _) =
+                        tree_knn(&vind8, &arena8, &bbox8, &pts8, q, 10, 0.0);
                     let (bf_idx, bf_dists) = brute_force_knn(&pts8, q, 10);
                     assert_eq!(tree_idx, bf_idx, "dim-8 knn index mismatch for query {q:?}");
-                    assert_eq!(tree_dists, bf_dists, "dim-8 knn dist mismatch for query {q:?}");
+                    assert_eq!(
+                        tree_dists, bf_dists,
+                        "dim-8 knn dist mismatch for query {q:?}"
+                    );
 
                     let radius = (bf_dists[0] + bf_dists[1]) / 2.0;
                     let mut tree_r = tree_radius(&vind8, &arena8, &bbox8, &pts8, q, radius);
                     tree_r.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap().then(a.0.cmp(&b.0)));
                     let bf_r = brute_force_radius(&pts8, q, radius);
                     assert_eq!(tree_r, bf_r, "dim-8 radius mismatch for query {q:?}");
-                    assert_eq!(tree_r.len(), 1, "radius was chosen to admit exactly the query's own match");
+                    assert_eq!(
+                        tree_r.len(),
+                        1,
+                        "radius was chosen to admit exactly the query's own match"
+                    );
                 }
             })
             .expect("failed to spawn heavy-query-worker thread");
@@ -1809,10 +2207,21 @@ mod tests {
     ) -> Vec<u32> {
         let dim = N;
         let metric = L2;
-        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: DynDim(dim), nodes: arena, vind, root_bbox: bbox };
+        let ctx = SearchCtx {
+            ds: &pts,
+            metric: &metric,
+            dim: DynDim(dim),
+            nodes: arena,
+            vind,
+            root_bbox: bbox,
+        };
         let mut out = Vec::new();
         let count = find_within_box(&ctx, bounds, &mut out);
-        assert_eq!(count, out.len(), "find_within_box return value must equal out.len()");
+        assert_eq!(
+            count,
+            out.len(),
+            "find_within_box return value must equal out.len()"
+        );
         out
     }
 
@@ -1833,23 +2242,46 @@ mod tests {
         let (vind, arena, bbox) = build_tree(&pts, 4);
 
         let bounds = vec![
-            Interval { low: 1.0, high: 2.0 },
-            Interval { low: 0.0, high: 3.0 },
-            Interval { low: 2.0, high: 2.0 },
+            Interval {
+                low: 1.0,
+                high: 2.0,
+            },
+            Interval {
+                low: 0.0,
+                high: 3.0,
+            },
+            Interval {
+                low: 2.0,
+                high: 2.0,
+            },
         ];
 
         let mut got = tree_box(&vind, &arena, &bbox, &pts, &bounds);
         let mut expected = brute_force_box(&pts, &bounds);
         got.sort_unstable();
         expected.sort_unstable();
-        assert_eq!(got, expected, "find_within_box must equal the brute-force inclusive filter (as a set)");
+        assert_eq!(
+            got, expected,
+            "find_within_box must equal the brute-force inclusive filter (as a set)"
+        );
 
         // Explicit face checks: both faces of dim0 (x=1 low, x=2 high) and
         // both faces of dim1 (y=0 low, y=3 high), all at the degenerate
         // dim2 value z=2 (low == high on that axis).
-        for corner in [[1.0, 0.0, 2.0], [2.0, 0.0, 2.0], [1.0, 3.0, 2.0], [2.0, 3.0, 2.0]] {
-            let idx = pts.iter().position(|p| *p == corner).expect("corner point must exist in the grid") as u32;
-            assert!(got.contains(&idx), "face point {corner:?} (index {idx}) must be included (inclusive boundaries)");
+        for corner in [
+            [1.0, 0.0, 2.0],
+            [2.0, 0.0, 2.0],
+            [1.0, 3.0, 2.0],
+            [2.0, 3.0, 2.0],
+        ] {
+            let idx = pts
+                .iter()
+                .position(|p| *p == corner)
+                .expect("corner point must exist in the grid") as u32;
+            assert!(
+                got.contains(&idx),
+                "face point {corner:?} (index {idx}) must be included (inclusive boundaries)"
+            );
         }
     }
 
@@ -1900,10 +2332,17 @@ mod tests {
         let pts: Vec<[f64; 1]> = (1..=10).map(|v| [v as f64]).collect();
         let (vind, arena, bbox) = build_tree(&pts, 2);
 
-        let bounds = vec![Interval { low: 2.0, high: 9.0 }];
+        let bounds = vec![Interval {
+            low: 2.0,
+            high: 9.0,
+        }];
         let got = tree_box(&vind, &arena, &bbox, &pts, &bounds);
 
-        assert_eq!(got, vec![8u32, 7, 6, 5, 4, 3, 2, 1], "traversal order must match the hand-derived stack walk");
+        assert_eq!(
+            got,
+            vec![8u32, 7, 6, 5, 4, 3, 2, 1],
+            "traversal order must match the hand-derived stack walk"
+        );
     }
 
     // Test 3: prune boundaries — inclusive descent (`<=`/`>=`), not the
@@ -1916,7 +2355,10 @@ mod tests {
         // box.low == Node2's divlow (2.0) exactly. The only matching point
         // (value 2, index 1) lives in Node2's child1 (Node3); a `<` port
         // bug would fail `2.0 < 2.0` and prune Node3, losing it.
-        let bounds = vec![Interval { low: 2.0, high: 2.0 }];
+        let bounds = vec![Interval {
+            low: 2.0,
+            high: 2.0,
+        }];
         let got = tree_box(&vind, &arena, &bbox, &pts, &bounds);
         assert_eq!(got, vec![1u32]);
     }
@@ -1929,7 +2371,10 @@ mod tests {
         // box.high == the root's divhigh (6.0) exactly. The only matching
         // point (value 6, index 5) lives under the root's child2 (Node6); a
         // `>` port bug would fail `6.0 > 6.0` and prune Node6, losing it.
-        let bounds = vec![Interval { low: 6.0, high: 6.0 }];
+        let bounds = vec![Interval {
+            low: 6.0,
+            high: 6.0,
+        }];
         let got = tree_box(&vind, &arena, &bbox, &pts, &bounds);
         assert_eq!(got, vec![5u32]);
     }
@@ -1948,22 +2393,39 @@ mod tests {
             })
             .collect();
 
-        let mut bounds = vec![Interval { low: 0.0, high: 0.0 }; N];
+        let mut bounds = vec![
+            Interval {
+                low: 0.0,
+                high: 0.0
+            };
+            N
+        ];
         for b in bounds.iter_mut() {
             let a = rng.next_f64() * 200.0 - 100.0;
             let b2 = rng.next_f64() * 200.0 - 100.0;
             let (lo, hi) = if a <= b2 { (a, b2) } else { (b2, a) };
             // ~1-in-5 chance of collapsing this axis to a degenerate point.
-            *b = if rng.next_f64() < 0.2 { Interval { low: lo, high: lo } } else { Interval { low: lo, high: hi } };
+            *b = if rng.next_f64() < 0.2 {
+                Interval { low: lo, high: lo }
+            } else {
+                Interval { low: lo, high: hi }
+            };
         }
 
         let (vind, arena, bbox) = build_tree(&pts, leaf_max_size);
         let mut got = tree_box(&vind, &arena, &bbox, &pts, &bounds);
         let mut expected = brute_force_box(&pts, &bounds);
-        assert_eq!(got.len(), expected.len(), "seed={seed} n={n} dim={N} bounds={bounds:?}: count mismatch");
+        assert_eq!(
+            got.len(),
+            expected.len(),
+            "seed={seed} n={n} dim={N} bounds={bounds:?}: count mismatch"
+        );
         got.sort_unstable();
         expected.sort_unstable();
-        assert_eq!(got, expected, "seed={seed} n={n} dim={N} bounds={bounds:?}: set mismatch");
+        assert_eq!(
+            got, expected,
+            "seed={seed} n={n} dim={N} bounds={bounds:?}: set mismatch"
+        );
     }
 
     #[test]
@@ -2000,7 +2462,13 @@ mod tests {
                     p
                 })
                 .collect();
-            let bounds = vec![Interval { low: -100.0, high: 100.0 }; 3];
+            let bounds = vec![
+                Interval {
+                    low: -100.0,
+                    high: 100.0
+                };
+                3
+            ];
             let (vind, arena, bbox) = build_tree(&pts, leaf_max);
             let got = tree_box(&vind, &arena, &bbox, &pts, &bounds);
             if got.len() >= 3 && got.windows(2).any(|w| w[0] > w[1]) {
@@ -2008,7 +2476,10 @@ mod tests {
                 break;
             }
         }
-        assert!(found, "expected at least one seeded case with non-ascending find_within_box output");
+        assert!(
+            found,
+            "expected at least one seeded case with non-ascending find_within_box output"
+        );
     }
 
     // Test 6: empty tree -> 0, `out` cleared (pre-populated to prove it).
@@ -2020,9 +2491,22 @@ mod tests {
         let pts: Vec<[f64; 2]> = Vec::new();
         let pts: &[[f64; 2]] = &pts;
         let metric = L2;
-        let ctx = SearchCtx { ds: &pts, metric: &metric, dim: DynDim(2), nodes: &arena, vind: &vind, root_bbox: &bbox };
+        let ctx = SearchCtx {
+            ds: &pts,
+            metric: &metric,
+            dim: DynDim(2),
+            nodes: &arena,
+            vind: &vind,
+            root_bbox: &bbox,
+        };
 
-        let bounds = vec![Interval { low: -1.0, high: 1.0 }; 2];
+        let bounds = vec![
+            Interval {
+                low: -1.0,
+                high: 1.0
+            };
+            2
+        ];
         let mut out = vec![42u32, 43, 44];
         let count = find_within_box(&ctx, &bounds, &mut out);
 
@@ -2036,7 +2520,10 @@ mod tests {
         let pts: Vec<[f64; 1]> = (1..=10).map(|v| [v as f64]).collect();
         let (vind, arena, bbox) = build_tree(&pts, 2);
 
-        let bounds = vec![Interval { low: 1000.0, high: 2000.0 }];
+        let bounds = vec![Interval {
+            low: 1000.0,
+            high: 2000.0,
+        }];
         let got = tree_box(&vind, &arena, &bbox, &pts, &bounds);
         assert!(got.is_empty());
     }
@@ -2153,8 +2640,14 @@ mod tests {
              discriminating the spill path if the query index above stopped reaching this deep"
         );
         let (bf_idx, bf_dists) = brute_force_knn(&pts, &query, 10);
-        assert_eq!(tree_idx, bf_idx, "knn index mismatch across the spill boundary");
-        assert_eq!(tree_dists, bf_dists, "knn dist mismatch across the spill boundary");
+        assert_eq!(
+            tree_idx, bf_idx,
+            "knn index mismatch across the spill boundary"
+        );
+        assert_eq!(
+            tree_dists, bf_dists,
+            "knn dist mismatch across the spill boundary"
+        );
         assert!(full);
 
         // Radius strictly between the 1st and 2nd nearest distances -> the
@@ -2171,6 +2664,10 @@ mod tests {
         tree_r.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap().then(a.0.cmp(&b.0)));
         let bf_r = brute_force_radius(&pts, &query, radius);
         assert_eq!(tree_r, bf_r, "radius mismatch across the spill boundary");
-        assert_eq!(tree_r.len(), 1, "radius was chosen to admit exactly the query's own match");
+        assert_eq!(
+            tree_r.len(),
+            1,
+            "radius was chosen to admit exactly the query's own match"
+        );
     }
 }

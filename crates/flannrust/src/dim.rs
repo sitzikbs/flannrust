@@ -26,10 +26,14 @@ impl<const N: usize> Dim for ConstDim<N> {
     type Array<T: Copy + Default + Send + Sync + 'static> = [T; N];
 
     #[inline(always)]
-    fn dim(self) -> usize { N }
+    fn dim(self) -> usize {
+        N
+    }
 
     #[inline]
-    fn filled<T: Copy + Default + Send + Sync + 'static>(self, v: T) -> [T; N] { [v; N] }
+    fn filled<T: Copy + Default + Send + Sync + 'static>(self, v: T) -> [T; N] {
+        [v; N]
+    }
 }
 
 /// Runtime dimensionality (C++ `DIM = -1`).
@@ -40,10 +44,14 @@ impl Dim for DynDim {
     type Array<T: Copy + Default + Send + Sync + 'static> = Vec<T>;
 
     #[inline(always)]
-    fn dim(self) -> usize { self.0 }
+    fn dim(self) -> usize {
+        self.0
+    }
 
     #[inline]
-    fn filled<T: Copy + Default + Send + Sync + 'static>(self, v: T) -> Vec<T> { vec![v; self.0] }
+    fn filled<T: Copy + Default + Send + Sync + 'static>(self, v: T) -> Vec<T> {
+        vec![v; self.0]
+    }
 }
 
 #[cfg(test)]

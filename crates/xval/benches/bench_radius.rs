@@ -21,8 +21,8 @@
 //! fight -- see `bench_build.rs`'s module doc / `xval::lib` docs for why.
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use nanoflann_ref::{Metric, RefIndexF32};
 use flannrust::ResultItem;
+use nanoflann_ref::{Metric, RefIndexF32};
 use xval::{build_rust_f32, cfg_seed, queries, to_f32, uniform, BuildThreads, RoundRobin, XMetric};
 
 const N: usize = 100_000;
@@ -33,7 +33,12 @@ const N_QUERIES_POOL: usize = 1000;
 fn bench_radius(c: &mut Criterion) {
     let data64 = uniform(cfg_seed("bench_radius_data", &[]), N, DIM);
     let data32 = to_f32(&data64);
-    let q64 = queries(cfg_seed("bench_radius_q", &[]), &data64, DIM, N_QUERIES_POOL);
+    let q64 = queries(
+        cfg_seed("bench_radius_q", &[]),
+        &data64,
+        DIM,
+        N_QUERIES_POOL,
+    );
     let q32 = to_f32(&q64);
 
     let rust_idx = build_rust_f32(&data32, DIM, XMetric::L2, LEAF, BuildThreads::Sequential);
@@ -44,8 +49,12 @@ fn bench_radius(c: &mut Criterion) {
     let probe = &q32[0..DIM];
     let (_idx10, dist10) = cpp_idx.knn(probe, 10, 0.0);
     let (_idx1000, dist1000) = cpp_idx.knn(probe, 1000, 0.0);
-    let sel10 = *dist10.last().expect("cpp knn(k=10) must return at least one neighbor");
-    let sel1000 = *dist1000.last().expect("cpp knn(k=1000) must return at least one neighbor");
+    let sel10 = *dist10
+        .last()
+        .expect("cpp knn(k=10) must return at least one neighbor");
+    let sel1000 = *dist1000
+        .last()
+        .expect("cpp knn(k=1000) must return at least one neighbor");
 
     let mut group = c.benchmark_group("radius");
     for (sel_name, radius) in [("sel10", sel10), ("sel1000", sel1000)] {
@@ -64,7 +73,8 @@ fn bench_radius(c: &mut Criterion) {
             let mut out_dist: Vec<f32> = Vec::new();
             b.iter(|| {
                 let query = black_box(rr.next());
-                let found = cpp_idx.radius_into(query, radius, true, 0.0, &mut out_idx, &mut out_dist);
+                let found =
+                    cpp_idx.radius_into(query, radius, true, 0.0, &mut out_idx, &mut out_dist);
                 black_box(found);
             })
         });

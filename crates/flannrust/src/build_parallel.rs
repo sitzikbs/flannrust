@@ -125,8 +125,28 @@ where
     let right_base = base + split_index as u32;
 
     let ((left_root, mut left_arena), (right_root, mut right_arena)) = rayon::join(
-        || build_subtree_parallel(ds, dim, leaf_max_size, base, lv, &mut left_bbox, depth_budget - 1),
-        || build_subtree_parallel(ds, dim, leaf_max_size, right_base, rv, &mut right_bbox, depth_budget - 1),
+        || {
+            build_subtree_parallel(
+                ds,
+                dim,
+                leaf_max_size,
+                base,
+                lv,
+                &mut left_bbox,
+                depth_budget - 1,
+            )
+        },
+        || {
+            build_subtree_parallel(
+                ds,
+                dim,
+                leaf_max_size,
+                right_base,
+                rv,
+                &mut right_bbox,
+                depth_budget - 1,
+            )
+        },
     );
     // `left_bbox`/`right_bbox` are now each child's TIGHT bbox (mutated by
     // the recursive call, exactly like `SubtreeBuilder::build`'s contract).
@@ -213,7 +233,10 @@ mod tests {
     struct Lcg(u64);
     impl Lcg {
         fn next_f64(&mut self) -> f64 {
-            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((self.0 >> 11) as f64) / ((1u64 << 53) as f64)
         }
     }
@@ -239,7 +262,13 @@ mod tests {
         let dim = N;
         let n = points.len();
         let mut vind: Vec<u32> = init_vind(n);
-        let mut bbox = vec![Interval { low: 0.0, high: 0.0 }; dim];
+        let mut bbox = vec![
+            Interval {
+                low: 0.0,
+                high: 0.0
+            };
+            dim
+        ];
         crate::bbox::compute_bounding_box(&points, dim, &mut bbox);
         let mut arena = Vec::new();
         let root = {
@@ -264,7 +293,13 @@ mod tests {
         let dim = N;
         let n = points.len();
         let mut vind: Vec<u32> = init_vind(n);
-        let mut bbox = vec![Interval { low: 0.0, high: 0.0 }; dim];
+        let mut bbox = vec![
+            Interval {
+                low: 0.0,
+                high: 0.0
+            };
+            dim
+        ];
         crate::bbox::compute_bounding_box(&points, dim, &mut bbox);
         let arena = build_tree_parallel(&points, dim, leaf_max_size, &mut vind, &mut bbox);
         (arena, vind, 0, bbox)
@@ -293,7 +328,8 @@ mod tests {
         assert_eq!(seq_arena, auto_arena, "arena mismatch (Auto)");
         assert_eq!(seq_bbox, auto_bbox, "root_bbox mismatch (Auto)");
 
-        let (t2_arena, t2_vind, t2_root, t2_bbox) = build_parallel_with_pool(points, leaf_max_size, 2);
+        let (t2_arena, t2_vind, t2_root, t2_bbox) =
+            build_parallel_with_pool(points, leaf_max_size, 2);
         assert_eq!(seq_vind, t2_vind, "vind mismatch (Threads(2))");
         assert_eq!(seq_root, t2_root, "root mismatch (Threads(2))");
         assert_eq!(seq_arena, t2_arena, "arena mismatch (Threads(2))");
@@ -360,21 +396,39 @@ mod tests {
         let mut rng = Lcg(0xA5A5_u64);
         let params = crate::params::SearchParams::default();
         for _ in 0..200 {
-            let query = [rng.next_f64() * 1000.0, rng.next_f64() * 1000.0, rng.next_f64() * 1000.0];
+            let query = [
+                rng.next_f64() * 1000.0,
+                rng.next_f64() * 1000.0,
+                rng.next_f64() * 1000.0,
+            ];
             let k = 10;
 
             let mut seq_idx = vec![0u32; k];
             let mut seq_dist = vec![0.0f64; k];
             let mut seq_rs = KnnResultSet::<f64, u32>::new(&mut seq_idx, &mut seq_dist);
             let mut scratch = vec![0.0f64; 3];
-            find_neighbors(&seq_ctx, &mut seq_rs, &query, &params, &crate::filter::AcceptAll, &mut scratch);
+            find_neighbors(
+                &seq_ctx,
+                &mut seq_rs,
+                &query,
+                &params,
+                &crate::filter::AcceptAll,
+                &mut scratch,
+            );
             let seq_found = seq_rs.size();
 
             let mut auto_idx = vec![0u32; k];
             let mut auto_dist = vec![0.0f64; k];
             let mut auto_rs = KnnResultSet::<f64, u32>::new(&mut auto_idx, &mut auto_dist);
             let mut scratch2 = vec![0.0f64; 3];
-            find_neighbors(&auto_ctx, &mut auto_rs, &query, &params, &crate::filter::AcceptAll, &mut scratch2);
+            find_neighbors(
+                &auto_ctx,
+                &mut auto_rs,
+                &query,
+                &params,
+                &crate::filter::AcceptAll,
+                &mut scratch2,
+            );
             let auto_found = auto_rs.size();
 
             assert_eq!(seq_found, auto_found);
@@ -392,7 +446,13 @@ mod tests {
         let mut rng = Lcg(0xDEADBEEF_u64);
         let unique_n = 2500usize;
         let mut points: Vec<[f64; 3]> = (0..unique_n)
-            .map(|_| [rng.next_f64() * 500.0, rng.next_f64() * 500.0, rng.next_f64() * 500.0])
+            .map(|_| {
+                [
+                    rng.next_f64() * 500.0,
+                    rng.next_f64() * 500.0,
+                    rng.next_f64() * 500.0,
+                ]
+            })
             .collect();
         for i in 0..(5000 - unique_n) {
             points.push(points[i % unique_n]);
@@ -438,10 +498,21 @@ mod tests {
     /// `check_tree`: every point appears in exactly one leaf, node count <=
     /// 2n, and every interior node's div bounds exactly match its children's
     /// tight bboxes on the split axis.
-    fn check_tree(points: &[[f64; 1]], arena: &[Node<f64>], vind: &[u32], root: u32, leaf_max_size: usize) {
+    fn check_tree(
+        points: &[[f64; 1]],
+        arena: &[Node<f64>],
+        vind: &[u32],
+        root: u32,
+        leaf_max_size: usize,
+    ) {
         let dim = 1usize;
         let n = points.len();
-        assert!(arena.len() <= 2 * n, "node count {} exceeds 2n ({})", arena.len(), 2 * n);
+        assert!(
+            arena.len() <= 2 * n,
+            "node count {} exceeds 2n ({})",
+            arena.len(),
+            2 * n
+        );
 
         enum St {
             Visit(u32),
@@ -458,8 +529,18 @@ mod tests {
                     let node = &arena[idx as usize];
                     if node.is_leaf() {
                         let (l, r) = node.leaf_range();
-                        assert!(r - l <= leaf_max_size, "leaf [{l},{r}) has {} points > leaf_max_size {leaf_max_size}", r - l);
-                        let mut leaf_bbox = vec![Interval { low: 0.0, high: 0.0 }; dim];
+                        assert!(
+                            r - l <= leaf_max_size,
+                            "leaf [{l},{r}) has {} points > leaf_max_size {leaf_max_size}",
+                            r - l
+                        );
+                        let mut leaf_bbox = vec![
+                            Interval {
+                                low: 0.0,
+                                high: 0.0
+                            };
+                            dim
+                        ];
                         for (i, k) in (l..r).enumerate() {
                             let pt = vind[k] as usize;
                             assert!(!seen[pt], "point {pt} appears in more than one leaf");
@@ -492,10 +573,24 @@ mod tests {
                     let right_bbox = results.pop().expect("missing right subtree bbox");
                     let left_bbox = results.pop().expect("missing left subtree bbox");
 
-                    assert_eq!(left_bbox[cutfeat].high, node.div_low(), "node {idx}: div_low mismatch");
-                    assert_eq!(right_bbox[cutfeat].low, node.div_high(), "node {idx}: div_high mismatch");
+                    assert_eq!(
+                        left_bbox[cutfeat].high,
+                        node.div_low(),
+                        "node {idx}: div_low mismatch"
+                    );
+                    assert_eq!(
+                        right_bbox[cutfeat].low,
+                        node.div_high(),
+                        "node {idx}: div_high mismatch"
+                    );
 
-                    let mut combined = vec![Interval { low: 0.0, high: 0.0 }; dim];
+                    let mut combined = vec![
+                        Interval {
+                            low: 0.0,
+                            high: 0.0
+                        };
+                        dim
+                    ];
                     for d in 0..dim {
                         combined[d] = Interval {
                             low: cpp_min(left_bbox[d].low, right_bbox[d].low),
@@ -507,7 +602,10 @@ mod tests {
             }
         }
 
-        assert!(seen.iter().all(|&b| b), "not every point index appears in a leaf");
+        assert!(
+            seen.iter().all(|&b| b),
+            "not every point index appears in a leaf"
+        );
         assert_eq!(results.len(), 1);
     }
 
@@ -531,7 +629,10 @@ mod tests {
         let (arena, vind, root, _bbox) = build_parallel(&points, 10);
 
         let depth = max_depth(&arena, root);
-        assert!(depth > 2_000, "expected a deeply degenerate tree, got depth {depth}");
+        assert!(
+            depth > 2_000,
+            "expected a deeply degenerate tree, got depth {depth}"
+        );
 
         check_tree(&points, &arena, &vind, root, 10);
     }

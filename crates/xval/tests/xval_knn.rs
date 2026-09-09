@@ -114,8 +114,22 @@ macro_rules! knn_matrix_test {
     };
 }
 
-knn_matrix_test!(knn_matrix_f64, f64, build_rust_f64, RefIndexF64, assert_knn_equal_f64, |v: &Vec<f64>| v.clone());
-knn_matrix_test!(knn_matrix_f32, f32, build_rust_f32, RefIndexF32, assert_knn_equal_f32, |v: &Vec<f64>| to_f32(v));
+knn_matrix_test!(
+    knn_matrix_f64,
+    f64,
+    build_rust_f64,
+    RefIndexF64,
+    assert_knn_equal_f64,
+    |v: &Vec<f64>| v.clone()
+);
+knn_matrix_test!(
+    knn_matrix_f32,
+    f32,
+    build_rust_f32,
+    RefIndexF32,
+    assert_knn_equal_f32,
+    |v: &Vec<f64>| to_f32(v)
+);
 
 // ---------------------------------------------------------------------
 // k > n
@@ -222,8 +236,22 @@ macro_rules! knn_eps_test {
     };
 }
 
-knn_eps_test!(knn_eps_f64, f64, build_rust_f64, RefIndexF64, assert_knn_equal_f64, |v: &Vec<f64>| v.clone());
-knn_eps_test!(knn_eps_f32, f32, build_rust_f32, RefIndexF32, assert_knn_equal_f32, |v: &Vec<f64>| to_f32(v));
+knn_eps_test!(
+    knn_eps_f64,
+    f64,
+    build_rust_f64,
+    RefIndexF64,
+    assert_knn_equal_f64,
+    |v: &Vec<f64>| v.clone()
+);
+knn_eps_test!(
+    knn_eps_f32,
+    f32,
+    build_rust_f32,
+    RefIndexF32,
+    assert_knn_equal_f32,
+    |v: &Vec<f64>| to_f32(v)
+);
 
 // ---------------------------------------------------------------------
 // SO2: wrap-around parity lock.
@@ -268,8 +296,22 @@ macro_rules! knn_so2_test {
     };
 }
 
-knn_so2_test!(knn_so2_f64, f64, build_rust_f64, RefIndexF64, assert_knn_equal_f64, |v: &Vec<f64>| v.clone());
-knn_so2_test!(knn_so2_f32, f32, build_rust_f32, RefIndexF32, assert_knn_equal_f32, |v: &Vec<f64>| to_f32(v));
+knn_so2_test!(
+    knn_so2_f64,
+    f64,
+    build_rust_f64,
+    RefIndexF64,
+    assert_knn_equal_f64,
+    |v: &Vec<f64>| v.clone()
+);
+knn_so2_test!(
+    knn_so2_f32,
+    f32,
+    build_rust_f32,
+    RefIndexF32,
+    assert_knn_equal_f32,
+    |v: &Vec<f64>| to_f32(v)
+);
 
 // ---------------------------------------------------------------------
 // rknn: tiny radius (covers < k) and huge radius (covers all), per query.
@@ -320,8 +362,22 @@ macro_rules! rknn_test {
     };
 }
 
-rknn_test!(rknn_f64, f64, build_rust_f64, RefIndexF64, assert_knn_equal_f64, |v: &Vec<f64>| v.clone());
-rknn_test!(rknn_f32, f32, build_rust_f32, RefIndexF32, assert_knn_equal_f32, |v: &Vec<f64>| to_f32(v));
+rknn_test!(
+    rknn_f64,
+    f64,
+    build_rust_f64,
+    RefIndexF64,
+    assert_knn_equal_f64,
+    |v: &Vec<f64>| v.clone()
+);
+rknn_test!(
+    rknn_f32,
+    f32,
+    build_rust_f32,
+    RefIndexF32,
+    assert_knn_equal_f32,
+    |v: &Vec<f64>| to_f32(v)
+);
 
 // ---------------------------------------------------------------------
 // ConstDim spot check: direct KdTreeBuilder (not the DynDim helper) vs
@@ -350,7 +406,8 @@ fn const_dim_3_spot_check_f64() {
         r_idx.truncate(found);
         r_dist.truncate(found);
         let (c_idx, c_dist) = cpp_idx.knn(&query, k, 0.0);
-        let ctx = format!("const_dim_3_spot_check_f64: qi={qi} data_seed={seed} query_seed={qseed}");
+        let ctx =
+            format!("const_dim_3_spot_check_f64: qi={qi} data_seed={seed} query_seed={qseed}");
         with_ctx(ctx, || {
             xval::assert_knn_equal_f64((&r_idx, &r_dist), (&c_idx, &c_dist), false);
         });

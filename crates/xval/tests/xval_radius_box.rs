@@ -250,7 +250,11 @@ fn radius_exact_boundary_excludes_on_both_sides_f64() {
     for qi in 0..n_queries {
         let query = &q[qi * dim..(qi + 1) * dim];
         let (c5_idx, c5_dist) = cpp_idx.knn(query, 5, 0.0);
-        assert_eq!(c5_idx.len(), 5, "expected 5 neighbors to exist (n=300 >> 5)");
+        assert_eq!(
+            c5_idx.len(),
+            5,
+            "expected 5 neighbors to exist (n=300 >> 5)"
+        );
         let boundary_idx = c5_idx[4];
         let boundary_radius = c5_dist[4];
 
@@ -296,7 +300,11 @@ fn radius_exact_boundary_excludes_on_both_sides_f32() {
     for qi in 0..n_queries {
         let query = &q[qi * dim..(qi + 1) * dim];
         let (c5_idx, c5_dist) = cpp_idx.knn(query, 5, 0.0);
-        assert_eq!(c5_idx.len(), 5, "expected 5 neighbors to exist (n=300 >> 5)");
+        assert_eq!(
+            c5_idx.len(),
+            5,
+            "expected 5 neighbors to exist (n=300 >> 5)"
+        );
         let boundary_idx = c5_idx[4];
         let boundary_radius = c5_dist[4];
 
@@ -355,7 +363,10 @@ fn box_integer_grid_exact_sequences_match_f64() {
     let hi = [3.0, 3.0, 3.0];
     let r = rust_idx.find_within_box(&lo, &hi);
     let c = cpp_idx.find_within_box(&lo, &hi);
-    assert_eq!(r, c, "box EXACT SEQUENCE (traversal order) must match on the integer grid");
+    assert_eq!(
+        r, c,
+        "box EXACT SEQUENCE (traversal order) must match on the integer grid"
+    );
     assert_eq!(r.len(), 27, "expected the full 3x3x3=27-point subgrid");
 
     // Degenerate box: lo == hi exactly on a grid point -> that point present
@@ -366,7 +377,11 @@ fn box_integer_grid_exact_sequences_match_f64() {
     let r2 = rust_idx.find_within_box(&lo2, &hi2);
     let c2 = cpp_idx.find_within_box(&lo2, &hi2);
     assert_eq!(r2, c2, "degenerate box exact sequence must match");
-    assert_eq!(r2, vec![point_idx as u32], "degenerate box must return exactly the one point");
+    assert_eq!(
+        r2,
+        vec![point_idx as u32],
+        "degenerate box must return exactly the one point"
+    );
 }
 
 #[test]
@@ -458,7 +473,8 @@ fn radius_metric_breadth_l1_f64() {
         let query = &q[qi * dim..(qi + 1) * dim];
         let r = rust_idx.radius(query, radius, true, 0.0);
         let c = cpp_idx.radius(query, radius, true, 0.0);
-        let ctx = format!("radius_metric_breadth_l1_f64: qi={qi} data_seed={seed} query_seed={qseed}");
+        let ctx =
+            format!("radius_metric_breadth_l1_f64: qi={qi} data_seed={seed} query_seed={qseed}");
         with_ctx(ctx, || {
             xval::assert_radius_equal_f64(&r, &c, true, false);
         });
@@ -524,10 +540,7 @@ fn radius_metric_breadth_all_identical_f64() {
     let data = all_identical(n, dim);
     // Every point is at squared distance 0 from every other -- any positive
     // radius includes everything; a zero radius includes nothing (strict <).
-    let queries = [
-        ([1.25, 1.25, 1.25], 1.0f64),
-        ([1.25, 1.25, 1.25], 0.0f64),
-    ];
+    let queries = [([1.25, 1.25, 1.25], 1.0f64), ([1.25, 1.25, 1.25], 0.0f64)];
 
     let rust_idx = build_rust_f64(&data, dim, XMetric::L2, leaf, BuildThreads::Sequential);
     let cpp_idx = RefIndexF64::build(&data, dim, XMetric::L2.to_ref(), leaf, 1);
@@ -549,7 +562,11 @@ fn radius_metric_breadth_all_identical_f64() {
     // Sanity: the positive-radius query really does hit everything, so this
     // test isn't vacuously comparing two empty lists.
     let (all_r, _) = &(rust_idx.radius(&queries[0].0, queries[0].1, true, 0.0), ());
-    assert_eq!(all_r.len(), n, "expected the positive-radius query to include every point");
+    assert_eq!(
+        all_r.len(),
+        n,
+        "expected the positive-radius query to include every point"
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -579,8 +596,16 @@ fn mutation_canary_distance_perturbation() {
 
     let r = rust_idx.radius(&query, radius, true, 0.0);
     let mut c = cpp_idx.radius(&query, radius, true, 0.0);
-    assert_eq!(r.len(), n, "expected every point to be included (sanity, not the canary itself)");
-    assert_eq!(c.len(), n, "expected every point to be included (sanity, not the canary itself)");
+    assert_eq!(
+        r.len(),
+        n,
+        "expected every point to be included (sanity, not the canary itself)"
+    );
+    assert_eq!(
+        c.len(),
+        n,
+        "expected every point to be included (sanity, not the canary itself)"
+    );
 
     // Sanity: BEFORE perturbation, this must PASS (it's real cross-validated
     // data) -- otherwise the canary below would be meaningless (it could

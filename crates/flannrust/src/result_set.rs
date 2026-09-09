@@ -41,7 +41,12 @@ pub trait ResultSet<D: DistanceValue, Idx: Copy> {
 pub trait TieBreak: Send + Sync + 'static {
     /// Should the existing entry `(prev_d, prev_i)` shift right to make room
     /// for the incoming `(d, i)`?
-    fn shift<D: DistanceValue, Idx: Copy + PartialOrd>(prev_d: D, prev_i: Idx, d: D, i: Idx) -> bool;
+    fn shift<D: DistanceValue, Idx: Copy + PartialOrd>(
+        prev_d: D,
+        prev_i: Idx,
+        d: D,
+        i: Idx,
+    ) -> bool;
 }
 
 /// C++ default: equal distances keep insertion (traversal) order.
@@ -50,7 +55,12 @@ pub struct KeepInsertionOrder;
 
 impl TieBreak for KeepInsertionOrder {
     #[inline(always)]
-    fn shift<D: DistanceValue, Idx: Copy + PartialOrd>(prev_d: D, _prev_i: Idx, d: D, _i: Idx) -> bool {
+    fn shift<D: DistanceValue, Idx: Copy + PartialOrd>(
+        prev_d: D,
+        _prev_i: Idx,
+        d: D,
+        _i: Idx,
+    ) -> bool {
         prev_d > d
     }
 }
@@ -61,7 +71,12 @@ pub struct SmallestIndexWins;
 
 impl TieBreak for SmallestIndexWins {
     #[inline(always)]
-    fn shift<D: DistanceValue, Idx: Copy + PartialOrd>(prev_d: D, prev_i: Idx, d: D, i: Idx) -> bool {
+    fn shift<D: DistanceValue, Idx: Copy + PartialOrd>(
+        prev_d: D,
+        prev_i: Idx,
+        d: D,
+        i: Idx,
+    ) -> bool {
         prev_d > d || (d == prev_d && prev_i > i)
     }
 }
@@ -93,7 +108,11 @@ fn add_point_to_sorted<D: DistanceValue, Idx: Copy + PartialOrd, TB: TieBreak>(
         dists[i] = dist;
         indices[i] = index;
     }
-    if count < capacity { count + 1 } else { count }
+    if count < capacity {
+        count + 1
+    } else {
+        count
+    }
 }
 
 /// K-nearest-neighbors result set (= `KNNResultSet`). Sorted ascending by
@@ -109,7 +128,12 @@ impl<'a, D: DistanceValue, Idx: Copy + PartialOrd, TB: TieBreak> KnnResultSet<'a
     /// Panics if the two buffers differ in length.
     pub fn new(indices: &'a mut [Idx], dists: &'a mut [D]) -> Self {
         assert_eq!(indices.len(), dists.len(), "indices/dists length mismatch");
-        Self { indices, dists, count: 0, _tb: PhantomData }
+        Self {
+            indices,
+            dists,
+            count: 0,
+            _tb: PhantomData,
+        }
     }
 }
 
@@ -119,20 +143,29 @@ impl<'a, D: DistanceValue, Idx: Copy + PartialOrd, TB: TieBreak> ResultSet<D, Id
     #[inline]
     fn worst_dist(&self) -> D {
         // C++ (nanoflann.hpp:334-336): max() while not yet full.
-        if self.count < self.dists.len() || self.count == 0 { D::MAX } else { self.dists[self.count - 1] }
+        if self.count < self.dists.len() || self.count == 0 {
+            D::MAX
+        } else {
+            self.dists[self.count - 1]
+        }
     }
 
     #[inline]
     fn add_point(&mut self, dist: D, index: Idx) -> bool {
-        self.count = add_point_to_sorted::<D, Idx, TB>(self.indices, self.dists, self.count, dist, index);
+        self.count =
+            add_point_to_sorted::<D, Idx, TB>(self.indices, self.dists, self.count, dist, index);
         true
     }
 
     #[inline]
-    fn full(&self) -> bool { self.count == self.dists.len() }
+    fn full(&self) -> bool {
+        self.count == self.dists.len()
+    }
 
     #[inline]
-    fn size(&self) -> usize { self.count }
+    fn size(&self) -> usize {
+        self.count
+    }
 }
 
 /// Radius-capped KNN (= `RKNNResultSet`). `max_radius` uses the metric's scale:
@@ -150,7 +183,13 @@ impl<'a, D: DistanceValue, Idx: Copy + PartialOrd, TB: TieBreak> RknnResultSet<'
     /// Panics if the two buffers differ in length.
     pub fn new(indices: &'a mut [Idx], dists: &'a mut [D], max_radius: D) -> Self {
         assert_eq!(indices.len(), dists.len(), "indices/dists length mismatch");
-        Self { indices, dists, count: 0, max_radius, _tb: PhantomData }
+        Self {
+            indices,
+            dists,
+            count: 0,
+            max_radius,
+            _tb: PhantomData,
+        }
     }
 }
 
@@ -163,20 +202,29 @@ impl<'a, D: DistanceValue, Idx: Copy + PartialOrd, TB: TieBreak> ResultSet<D, Id
         // implements the radius cap; candidates beyond it fail `dist < worstDist()`.
         // (C++ also seeds dists[capacity-1] in init(); that seeding is vestigial
         // in 1.12.1 and deliberately not ported.)
-        if self.count < self.dists.len() || self.count == 0 { self.max_radius } else { self.dists[self.count - 1] }
+        if self.count < self.dists.len() || self.count == 0 {
+            self.max_radius
+        } else {
+            self.dists[self.count - 1]
+        }
     }
 
     #[inline]
     fn add_point(&mut self, dist: D, index: Idx) -> bool {
-        self.count = add_point_to_sorted::<D, Idx, TB>(self.indices, self.dists, self.count, dist, index);
+        self.count =
+            add_point_to_sorted::<D, Idx, TB>(self.indices, self.dists, self.count, dist, index);
         true
     }
 
     #[inline]
-    fn full(&self) -> bool { self.count == self.dists.len() }
+    fn full(&self) -> bool {
+        self.count == self.dists.len()
+    }
 
     #[inline]
-    fn size(&self) -> usize { self.count }
+    fn size(&self) -> usize {
+        self.count
+    }
 }
 
 /// All points within a radius (= `RadiusResultSet`). STRICTLY `dist < radius`:
@@ -196,28 +244,41 @@ impl<'a, D: DistanceValue, Idx: Copy> RadiusResultSet<'a, D, Idx> {
 
 impl<'a, D: DistanceValue, Idx: Copy> ResultSet<D, Idx> for RadiusResultSet<'a, D, Idx> {
     #[inline]
-    fn worst_dist(&self) -> D { self.radius }
+    fn worst_dist(&self) -> D {
+        self.radius
+    }
 
     #[inline]
     fn add_point(&mut self, dist: D, index: Idx) -> bool {
         if dist < self.radius {
-            self.items.push(ResultItem { index, distance: dist });
+            self.items.push(ResultItem {
+                index,
+                distance: dist,
+            });
         }
         true
     }
 
     /// Hardwired true (C++ nanoflann.hpp:433) — makes `find_neighbors` return true.
     #[inline]
-    fn full(&self) -> bool { true }
+    fn full(&self) -> bool {
+        true
+    }
 
     #[inline]
-    fn size(&self) -> usize { self.items.len() }
+    fn size(&self) -> usize {
+        self.items.len()
+    }
 
     /// Sort by distance (= `IndexDist_Sorter`). C++ uses unstable `std::sort`,
     /// leaving equal-distance order unspecified; we use a stable sort, which is
     /// one deterministic choice within that latitude.
     fn sort(&mut self) {
-        self.items.sort_by(|a, b| a.distance.partial_cmp(&b.distance).expect("NaN distance in radius results"));
+        self.items.sort_by(|a, b| {
+            a.distance
+                .partial_cmp(&b.distance)
+                .expect("NaN distance in radius results")
+        });
     }
 }
 
@@ -240,7 +301,9 @@ impl<'a, Idx: Copy> BoxResultSet<'a, Idx> {
         self.indices.push(index);
     }
 
-    pub(crate) fn size(&self) -> usize { self.indices.len() }
+    pub(crate) fn size(&self) -> usize {
+        self.indices.len()
+    }
 }
 
 #[cfg(test)]
@@ -429,14 +492,22 @@ mod tests {
         assert_eq!(sorted_dists, [1.0, 1.0, 2.0, 3.0]);
 
         // Check stable sort preserves insertion order for equal distances
-        let indices_for_1: Vec<_> = rs.items.iter().filter(|r| r.distance == 1.0).map(|r| r.index).collect();
+        let indices_for_1: Vec<_> = rs
+            .items
+            .iter()
+            .filter(|r| r.distance == 1.0)
+            .map(|r| r.index)
+            .collect();
         assert_eq!(indices_for_1, [1, 3]); // Insertion order preserved
     }
 
     // Test 11: RadiusResultSet::new clears
     #[test]
     fn test_radius_new_clears() {
-        let mut items = vec![ResultItem { index: 1u32, distance: 5.0f64 }];
+        let mut items = vec![ResultItem {
+            index: 1u32,
+            distance: 5.0f64,
+        }];
         let rs = RadiusResultSet::new(10.0, &mut items);
 
         assert_eq!(rs.size(), 0);
@@ -455,7 +526,10 @@ mod tests {
         assert_eq!(size_of::<ResultItem<u32, f64>>(), 16);
 
         // Field offset
-        let item = ResultItem { index: 42u32, distance: 3.5f64 };
+        let item = ResultItem {
+            index: 42u32,
+            distance: 3.5f64,
+        };
         let item_ptr = &item as *const ResultItem<u32, f64> as usize;
         let index_ptr = addr_of!(item.index) as usize;
 

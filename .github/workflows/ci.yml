@@ -23,16 +23,15 @@ jobs:
       # (installing it on demand if it isn't already cached).
       - uses: dtolnay/rust-toolchain@stable
 
-      # Explicitly ensure clippy is present on the pinned 1.98.0 toolchain --
-      # the dtolnay action above only installs components onto "stable",
-      # not onto whatever the rust-toolchain.toml override resolves to.
-      - name: Install clippy on the pinned toolchain
-        run: rustup component add clippy
+      # Explicitly ensure clippy/rustfmt are present on the pinned 1.98.0
+      # toolchain -- the dtolnay action above only installs components onto
+      # "stable", not onto whatever the rust-toolchain.toml override
+      # resolves to.
+      - name: Install clippy and rustfmt on the pinned toolchain
+        run: rustup component add clippy rustfmt
 
-      # NOTE: `cargo fmt --check` is intentionally not run here. The
-      # repository is not fmt-clean yet (verified locally on 2026-08-30),
-      # and reformatting the tree is out of scope for this CI setup task.
-      # Add this step back once a formatting pass has landed.
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
 
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings

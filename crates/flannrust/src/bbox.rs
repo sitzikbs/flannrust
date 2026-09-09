@@ -91,7 +91,10 @@ pub(crate) fn compute_bounding_box_over_indices<T, DS, Idx>(
     if ds.fill_bbox(bbox) {
         return;
     }
-    debug_assert!(!ind.is_empty(), "compute_bounding_box_over_indices on empty ind");
+    debug_assert!(
+        !ind.is_empty(),
+        "compute_bounding_box_over_indices on empty ind"
+    );
     for i in 0..dim {
         let v = ds.point_component(ind[0].to_usize(), i);
         bbox[i] = Interval { low: v, high: v };
@@ -115,31 +118,46 @@ mod tests {
 
     #[test]
     fn test_interval_contains_below_low() {
-        let interval = Interval { low: 1.0, high: 2.0 };
+        let interval = Interval {
+            low: 1.0,
+            high: 2.0,
+        };
         assert!(!interval.contains(0.9));
     }
 
     #[test]
     fn test_interval_contains_at_low_boundary() {
-        let interval = Interval { low: 1.0, high: 2.0 };
+        let interval = Interval {
+            low: 1.0,
+            high: 2.0,
+        };
         assert!(interval.contains(1.0));
     }
 
     #[test]
     fn test_interval_contains_inside() {
-        let interval = Interval { low: 1.0, high: 2.0 };
+        let interval = Interval {
+            low: 1.0,
+            high: 2.0,
+        };
         assert!(interval.contains(1.5));
     }
 
     #[test]
     fn test_interval_contains_at_high_boundary() {
-        let interval = Interval { low: 1.0, high: 2.0 };
+        let interval = Interval {
+            low: 1.0,
+            high: 2.0,
+        };
         assert!(interval.contains(2.0));
     }
 
     #[test]
     fn test_interval_contains_above_high() {
-        let interval = Interval { low: 1.0, high: 2.0 };
+        let interval = Interval {
+            low: 1.0,
+            high: 2.0,
+        };
         assert!(!interval.contains(2.1));
     }
 
@@ -149,14 +167,20 @@ mod tests {
         // when point is NaN (IEEE 754 semantics), so the double negation
         // `!(nan < low || nan > high)` evaluates to `!(false || false)` = true.
         // This documents parity with nanoflann's NaN handling.
-        let interval = Interval { low: 1.0, high: 2.0 };
+        let interval = Interval {
+            low: 1.0,
+            high: 2.0,
+        };
         assert!(interval.contains(f64::NAN));
     }
 
     #[test]
     fn test_compute_bounding_box_scan() {
         let points: &[[f32; 2]] = &[[1.0, 5.0], [-2.0, 7.0], [0.5, 6.0]];
-        let mut bbox = [Interval { low: 0.0, high: 0.0 }; 2];
+        let mut bbox = [Interval {
+            low: 0.0,
+            high: 0.0,
+        }; 2];
         compute_bounding_box(&points, 2, &mut bbox);
         assert_eq!(bbox[0].low, -2.0);
         assert_eq!(bbox[0].high, 1.0);
@@ -167,7 +191,10 @@ mod tests {
     #[test]
     fn test_compute_bounding_box_single_point() {
         let points: &[[f64; 3]] = &[[2.5, 3.5, 4.5]];
-        let mut bbox = [Interval { low: 0.0, high: 0.0 }; 3];
+        let mut bbox = [Interval {
+            low: 0.0,
+            high: 0.0,
+        }; 3];
         compute_bounding_box(&points, 3, &mut bbox);
         assert_eq!(bbox[0].low, 2.5);
         assert_eq!(bbox[0].high, 2.5);
@@ -191,13 +218,19 @@ mod tests {
             }
 
             fn fill_bbox(&self, bbox: &mut [Interval<f32>]) -> bool {
-                bbox[0] = Interval { low: 0.0, high: 100.0 };
+                bbox[0] = Interval {
+                    low: 0.0,
+                    high: 100.0,
+                };
                 true
             }
         }
 
         let ds = CustomDataSource;
-        let mut bbox = [Interval { low: 0.0, high: 0.0 }; 1];
+        let mut bbox = [Interval {
+            low: 0.0,
+            high: 0.0,
+        }; 1];
         compute_bounding_box(&ds, 1, &mut bbox);
         // Should use fill_bbox result, not scan
         assert_eq!(bbox[0].low, 0.0);
@@ -211,9 +244,24 @@ mod tests {
         // (unlike `compute_bounding_box`, which always scans everything).
         let points: &[[f64; 2]] = &[[100.0, 100.0], [1.0, 5.0], [-100.0, -100.0], [3.0, 1.0]];
         let ind: Vec<u32> = vec![1, 3];
-        let mut bbox = [Interval { low: 0.0, high: 0.0 }; 2];
+        let mut bbox = [Interval {
+            low: 0.0,
+            high: 0.0,
+        }; 2];
         compute_bounding_box_over_indices(&points, 2, &ind, &mut bbox);
-        assert_eq!(bbox[0], Interval { low: 1.0, high: 3.0 });
-        assert_eq!(bbox[1], Interval { low: 1.0, high: 5.0 });
+        assert_eq!(
+            bbox[0],
+            Interval {
+                low: 1.0,
+                high: 3.0
+            }
+        );
+        assert_eq!(
+            bbox[1],
+            Interval {
+                low: 1.0,
+                high: 5.0
+            }
+        );
     }
 }

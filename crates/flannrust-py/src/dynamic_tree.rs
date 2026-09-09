@@ -4,7 +4,10 @@
 //! [`crate::static_tree::KDTree`] via the [`DynTree`] enum and the
 //! [`for_each_dyn_variant`] macro.
 
-use flannrust::{ConstDim, Dim, Distance, DynDim, DynamicKdTree, DynamicKdTreeBuilder, L1, L2, L2Simple, OwnedRows, ResultItem, Scalar, SearchParams};
+use flannrust::{
+    ConstDim, Dim, Distance, DynDim, DynamicKdTree, DynamicKdTreeBuilder, L2Simple, OwnedRows,
+    ResultItem, Scalar, SearchParams, L1, L2,
+};
 use numpy::{Element, IntoPyArray, PyArrayMethods};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -79,21 +82,31 @@ fn parse_dtype(dtype: &str) -> PyResult<&'static str> {
     match dtype {
         "float32" => Ok("float32"),
         "float64" => Ok("float64"),
-        other => Err(PyValueError::new_err(format!("dtype must be \"float32\" or \"float64\" (got {other:?})"))),
+        other => Err(PyValueError::new_err(format!(
+            "dtype must be \"float32\" or \"float64\" (got {other:?})"
+        ))),
     }
 }
 
 /// Builds one monomorphized, initially-empty `DynamicKdTree` variant's
 /// worth of state -- shared by every dtype x dim x metric combination in
 /// [`build_f32`]/[`build_f64`].
-fn build_dyn<T, D, M>(dim: D, dataset: OwnedRows<T>, leaf_size: usize, metric: M, capacity: Option<usize>) -> DynamicKdTree<T, D, OwnedRows<T>, M>
+fn build_dyn<T, D, M>(
+    dim: D,
+    dataset: OwnedRows<T>,
+    leaf_size: usize,
+    metric: M,
+    capacity: Option<usize>,
+) -> DynamicKdTree<T, D, OwnedRows<T>, M>
 where
     T: Scalar,
     D: Dim,
     M: Distance<T>,
     L2: Distance<T>,
 {
-    let mut builder = DynamicKdTreeBuilder::new(dim, dataset).with_metric(metric).leaf_max_size(leaf_size);
+    let mut builder = DynamicKdTreeBuilder::new(dim, dataset)
+        .with_metric(metric)
+        .leaf_max_size(leaf_size);
     if let Some(cap) = capacity {
         builder = builder.maximum_point_count(cap);
     }
@@ -107,7 +120,9 @@ fn build_f32(metric: &str, d: usize, leaf_size: usize, capacity: Option<usize>) 
         ("l2", 3) => DynTree::F32D3(build_dyn(ConstDim::<3>, ds, leaf_size, L2, capacity)),
         ("l2", _) => DynTree::F32Dyn(build_dyn(DynDim(d), ds, leaf_size, L2, capacity)),
         ("l1", _) => DynTree::F32DynL1(build_dyn(DynDim(d), ds, leaf_size, L1, capacity)),
-        ("l2_simple", _) => DynTree::F32DynL2s(build_dyn(DynDim(d), ds, leaf_size, L2Simple, capacity)),
+        ("l2_simple", _) => {
+            DynTree::F32DynL2s(build_dyn(DynDim(d), ds, leaf_size, L2Simple, capacity))
+        }
         _ => unreachable!("parse_metric only returns l2/l1/l2_simple"),
     }
 }
@@ -119,7 +134,9 @@ fn build_f64(metric: &str, d: usize, leaf_size: usize, capacity: Option<usize>) 
         ("l2", 3) => DynTree::F64D3(build_dyn(ConstDim::<3>, ds, leaf_size, L2, capacity)),
         ("l2", _) => DynTree::F64Dyn(build_dyn(DynDim(d), ds, leaf_size, L2, capacity)),
         ("l1", _) => DynTree::F64DynL1(build_dyn(DynDim(d), ds, leaf_size, L1, capacity)),
-        ("l2_simple", _) => DynTree::F64DynL2s(build_dyn(DynDim(d), ds, leaf_size, L2Simple, capacity)),
+        ("l2_simple", _) => {
+            DynTree::F64DynL2s(build_dyn(DynDim(d), ds, leaf_size, L2Simple, capacity))
+        }
         _ => unreachable!("parse_metric only returns l2/l1/l2_simple"),
     }
 }
@@ -128,7 +145,13 @@ fn build_f64(metric: &str, d: usize, leaf_size: usize, capacity: Option<usize>) 
 impl DynamicKDTree {
     #[new]
     #[pyo3(signature = (dim, dtype="float32", leaf_size=10, metric="l2", capacity=None))]
-    fn new(dim: usize, dtype: &str, leaf_size: usize, metric: &str, capacity: Option<usize>) -> PyResult<Self> {
+    fn new(
+        dim: usize,
+        dtype: &str,
+        leaf_size: usize,
+        metric: &str,
+        capacity: Option<usize>,
+    ) -> PyResult<Self> {
         if dim == 0 {
             return Err(PyValueError::new_err("dim must be >= 1"));
         }
@@ -147,7 +170,14 @@ impl DynamicKDTree {
             _ => unreachable!("parse_dtype only returns float32/float64"),
         };
 
-        Ok(DynamicKDTree { tree, dim, leaf_size, metric: metric_norm.to_string(), dtype: dtype_norm, capacity })
+        Ok(DynamicKDTree {
+            tree,
+            dim,
+            leaf_size,
+            metric: metric_norm.to_string(),
+            dtype: dtype_norm,
+            capacity,
+        })
     }
 
     #[getter]
@@ -199,7 +229,11 @@ impl DynamicKDTree {
     /// range `(start, end)` (`points[i]` landed at dataset index
     /// `start + i`). An empty `(0, d)` batch is a no-op returning
     /// `(n_total, n_total)`.
-    fn add_points<'py>(&mut self, py: Python<'py>, points: &Bound<'py, PyAny>) -> PyResult<(usize, usize)> {
+    fn add_points<'py>(
+        &mut self,
+        py: Python<'py>,
+        points: &Bound<'py, PyAny>,
+    ) -> PyResult<(usize, usize)> {
         let arr = to_ndarray(py, points)?;
         let expected_dim = self.dim;
         let capacity = self.capacity;
@@ -213,12 +247,22 @@ impl DynamicKDTree {
     }
 
     #[pyo3(signature = (x, k=1, r=None, eps=0.0, workers=1))]
-    fn query<'py>(&self, py: Python<'py>, x: &Bound<'py, PyAny>, k: usize, r: Option<f64>, eps: f32, workers: i64) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
+    fn query<'py>(
+        &self,
+        py: Python<'py>,
+        x: &Bound<'py, PyAny>,
+        k: usize,
+        r: Option<f64>,
+        eps: f32,
+        workers: i64,
+    ) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
         if k == 0 {
             return Err(PyValueError::new_err("k must be >= 1"));
         }
         if !(workers == -1 || workers >= 1) {
-            return Err(PyValueError::new_err(format!("workers must be -1 or >= 1 (got {workers})")));
+            return Err(PyValueError::new_err(format!(
+                "workers must be -1 or >= 1 (got {workers})"
+            )));
         }
 
         let arr = to_ndarray(py, x)?;
@@ -232,9 +276,19 @@ impl DynamicKDTree {
     /// (length `m`, or `1` for a `(d,)` query) of ragged 1-D arrays:
     /// `(idxs, dists)`. `sorted=False` returns traversal order.
     #[pyo3(signature = (x, r, sorted=true, eps=0.0, workers=1))]
-    fn query_radius<'py>(&self, py: Python<'py>, x: &Bound<'py, PyAny>, r: f64, sorted: bool, eps: f32, workers: i64) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
+    fn query_radius<'py>(
+        &self,
+        py: Python<'py>,
+        x: &Bound<'py, PyAny>,
+        r: f64,
+        sorted: bool,
+        eps: f32,
+        workers: i64,
+    ) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
         if !(workers == -1 || workers >= 1) {
-            return Err(PyValueError::new_err(format!("workers must be -1 or >= 1 (got {workers})")));
+            return Err(PyValueError::new_err(format!(
+                "workers must be -1 or >= 1 (got {workers})"
+            )));
         }
 
         let arr = to_ndarray(py, x)?;
@@ -247,7 +301,12 @@ impl DynamicKDTree {
 /// convention. An empty batch is short-circuited BEFORE touching the core
 /// (`push_rows`/`add_points` are never called). A `capacity` overflow is
 /// also rejected before touching the core.
-fn do_add_points<T, D, M>(tree: &mut DynamicKdTree<T, D, OwnedRows<T>, M>, arr: &Bound<'_, PyAny>, expected_dim: usize, capacity: Option<usize>) -> PyResult<(usize, usize)>
+fn do_add_points<T, D, M>(
+    tree: &mut DynamicKdTree<T, D, OwnedRows<T>, M>,
+    arr: &Bound<'_, PyAny>,
+    expected_dim: usize,
+    capacity: Option<usize>,
+) -> PyResult<(usize, usize)>
 where
     T: Scalar + Element,
     D: Dim,
@@ -255,7 +314,9 @@ where
 {
     let (data, m, d) = as_rows_2d::<T>(arr)?;
     if d != expected_dim {
-        return Err(PyValueError::new_err(format!("points has dim {d}, tree has dim {expected_dim}")));
+        return Err(PyValueError::new_err(format!(
+            "points has dim {d}, tree has dim {expected_dim}"
+        )));
     }
 
     let start = tree.dataset().len();
@@ -300,7 +361,9 @@ where
     let (query_data, m, d) = as_rows_2d::<T>(x)?;
     let expected_dim = tree.dataset().dim();
     if d != expected_dim {
-        return Err(PyValueError::new_err(format!("x has dim {d}, tree has dim {expected_dim}")));
+        return Err(PyValueError::new_err(format!(
+            "x has dim {d}, tree has dim {expected_dim}"
+        )));
     }
 
     let n = tree.dataset().len();
@@ -321,7 +384,11 @@ where
 
     py.detach(|| {
         if workers == 1 {
-            for ((oi, od), q) in out_idx.chunks_mut(k).zip(out_dist.chunks_mut(k)).zip(query_data.chunks(d)) {
+            for ((oi, od), q) in out_idx
+                .chunks_mut(k)
+                .zip(out_dist.chunks_mut(k))
+                .zip(query_data.chunks(d))
+            {
                 search_one(q, oi, od);
             }
         } else {
@@ -333,7 +400,10 @@ where
                     .for_each(|((oi, od), q)| search_one(q, oi, od));
             };
             if workers > 1 {
-                let pool = rayon::ThreadPoolBuilder::new().num_threads(capped_workers(workers)).build().expect("thread pool build");
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(capped_workers(workers))
+                    .build()
+                    .expect("thread pool build");
                 pool.install(run);
             } else {
                 run();
@@ -371,7 +441,9 @@ where
     let (query_data, m, d) = as_rows_2d::<T>(x)?;
     let expected_dim = tree.dataset().dim();
     if d != expected_dim {
-        return Err(PyValueError::new_err(format!("x has dim {d}, tree has dim {expected_dim}")));
+        return Err(PyValueError::new_err(format!(
+            "x has dim {d}, tree has dim {expected_dim}"
+        )));
     }
 
     let radius = T::from_f64(r);
@@ -388,10 +460,16 @@ where
             }
         } else {
             let mut run = || {
-                results.par_iter_mut().zip(query_data.par_chunks(d)).for_each(|(out, q)| search_one(q, out));
+                results
+                    .par_iter_mut()
+                    .zip(query_data.par_chunks(d))
+                    .for_each(|(out, q)| search_one(q, out));
             };
             if workers > 1 {
-                let pool = rayon::ThreadPoolBuilder::new().num_threads(capped_workers(workers)).build().expect("thread pool build");
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(capped_workers(workers))
+                    .build()
+                    .expect("thread pool build");
                 pool.install(run);
             } else {
                 run();

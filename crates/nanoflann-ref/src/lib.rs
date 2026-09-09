@@ -224,7 +224,12 @@ mod raw {
             cap: usize,
         ) -> usize;
         pub fn nfrd_tree_count_f(h: *const nfrd_index_f) -> usize;
-        pub fn nfrd_slot_vacc_f(h: *const nfrd_index_f, slot: usize, out: *mut u32, cap: usize) -> usize;
+        pub fn nfrd_slot_vacc_f(
+            h: *const nfrd_index_f,
+            slot: usize,
+            out: *mut u32,
+            cap: usize,
+        ) -> usize;
         pub fn nfrd_tree_index_f(h: *const nfrd_index_f, out: *mut i32, cap: usize) -> usize;
         pub fn nfrd_removed_count_f(h: *const nfrd_index_f) -> usize;
 
@@ -264,7 +269,12 @@ mod raw {
             cap: usize,
         ) -> usize;
         pub fn nfrd_tree_count_d(h: *const nfrd_index_d) -> usize;
-        pub fn nfrd_slot_vacc_d(h: *const nfrd_index_d, slot: usize, out: *mut u32, cap: usize) -> usize;
+        pub fn nfrd_slot_vacc_d(
+            h: *const nfrd_index_d,
+            slot: usize,
+            out: *mut u32,
+            cap: usize,
+        ) -> usize;
         pub fn nfrd_tree_index_d(h: *const nfrd_index_d, out: *mut i32, cap: usize) -> usize;
         pub fn nfrd_removed_count_d(h: *const nfrd_index_d) -> usize;
     }
@@ -351,7 +361,11 @@ macro_rules! define_ref_index {
                     !handle.is_null(),
                     "nanoflann-ref: C++ index construction failed (exception caught in wrapper)"
                 );
-                Self { handle, dim, _borrow: PhantomData }
+                Self {
+                    handle,
+                    dim,
+                    _borrow: PhantomData,
+                }
             }
 
             /// Number of points in the tree (`Base::size_`).
@@ -395,7 +409,14 @@ macro_rules! define_ref_index {
                 // entries and returns the number actually written, which we
                 // use to truncate immediately below.
                 let found = unsafe {
-                    $knn(self.handle, q.as_ptr(), k, eps, idx.as_mut_ptr(), dist.as_mut_ptr())
+                    $knn(
+                        self.handle,
+                        q.as_ptr(),
+                        k,
+                        eps,
+                        idx.as_mut_ptr(),
+                        dist.as_mut_ptr(),
+                    )
                 };
                 idx.truncate(found);
                 dist.truncate(found);
@@ -410,7 +431,14 @@ macro_rules! define_ref_index {
             /// `out_idx[..found]`/`out_dist[..found]`; anything beyond
             /// `found` is leftover from the buffer's previous contents, NOT
             /// meaningful). Same semantics as `knn` otherwise.
-            pub fn knn_into(&self, q: &[$t], k: usize, eps: f32, out_idx: &mut [u32], out_dist: &mut [$t]) -> usize {
+            pub fn knn_into(
+                &self,
+                q: &[$t],
+                k: usize,
+                eps: f32,
+                out_idx: &mut [u32],
+                out_dist: &mut [$t],
+            ) -> usize {
                 assert_eq!(q.len(), self.dim, "query dim mismatch");
                 assert_eq!(out_idx.len(), k, "knn_into: out_idx.len() must equal k");
                 assert_eq!(out_dist.len(), k, "knn_into: out_dist.len() must equal k");
@@ -418,7 +446,16 @@ macro_rules! define_ref_index {
                 // above); the C++ side (KNNResultSet capacity == k) writes
                 // at most `k` entries and returns the number actually
                 // written.
-                unsafe { $knn(self.handle, q.as_ptr(), k, eps, out_idx.as_mut_ptr(), out_dist.as_mut_ptr()) }
+                unsafe {
+                    $knn(
+                        self.handle,
+                        q.as_ptr(),
+                        k,
+                        eps,
+                        out_idx.as_mut_ptr(),
+                        out_dist.as_mut_ptr(),
+                    )
+                }
             }
 
             /// `k`-nearest-neighbor search bounded by a maximum radius
@@ -456,9 +493,8 @@ macro_rules! define_ref_index {
                 // on the same handle, only from within this method -- the
                 // two-call contract is never exposed as separate public API
                 // so callers cannot violate the pairing.
-                let count = unsafe {
-                    $radius_count(self.handle, q.as_ptr(), radius, sorted as c_int, eps)
-                };
+                let count =
+                    unsafe { $radius_count(self.handle, q.as_ptr(), radius, sorted as c_int, eps) };
                 let mut idx = vec![0u32; count];
                 let mut dist = vec![<$t as Default>::default(); count];
                 // SAFETY: `idx`/`dist` sized to `count`, obtained from the
@@ -493,16 +529,20 @@ macro_rules! define_ref_index {
                 assert_eq!(q.len(), self.dim, "query dim mismatch");
                 // SAFETY: see `radius` above -- same two-call pairing
                 // discipline, encapsulated entirely within this method.
-                let count = unsafe {
-                    $radius_count(self.handle, q.as_ptr(), radius, sorted as c_int, eps)
-                };
+                let count =
+                    unsafe { $radius_count(self.handle, q.as_ptr(), radius, sorted as c_int, eps) };
                 out_idx.resize(count, 0);
                 out_dist.resize(count, <$t as Default>::default());
                 // SAFETY: `out_idx`/`out_dist` sized to `count`, obtained
                 // from the immediately-preceding `_count` call on this same
                 // handle.
                 let returned = unsafe {
-                    $radius_fetch(self.handle, out_idx.as_mut_ptr(), out_dist.as_mut_ptr(), count)
+                    $radius_fetch(
+                        self.handle,
+                        out_idx.as_mut_ptr(),
+                        out_dist.as_mut_ptr(),
+                        count,
+                    )
                 };
                 debug_assert_eq!(returned, count);
                 count
@@ -589,14 +629,16 @@ macro_rules! define_ref_index3 {
                 assert_eq!(pts.len() % 3, 0, "pts.len() must be a multiple of 3");
                 let n = pts.len() / 3;
                 // SAFETY: same argument as `RefIndex*::build` above.
-                let handle = unsafe {
-                    $build(pts.as_ptr(), n, leaf_max_size, n_thread_build as c_uint)
-                };
+                let handle =
+                    unsafe { $build(pts.as_ptr(), n, leaf_max_size, n_thread_build as c_uint) };
                 assert!(
                     !handle.is_null(),
                     "nanoflann-ref: C++ index construction failed (exception caught in wrapper)"
                 );
-                Self { handle, _borrow: PhantomData }
+                Self {
+                    handle,
+                    _borrow: PhantomData,
+                }
             }
 
             /// `k`-nearest-neighbor search via nanoflann's plain
@@ -609,8 +651,15 @@ macro_rules! define_ref_index3 {
                 let mut dist = vec![<$t as Default>::default(); k];
                 // SAFETY: see `RefIndex*::knn` above -- identical
                 // capacity/return-count contract.
-                let found =
-                    unsafe { $knn(self.handle, q.as_ptr(), k, idx.as_mut_ptr(), dist.as_mut_ptr()) };
+                let found = unsafe {
+                    $knn(
+                        self.handle,
+                        q.as_ptr(),
+                        k,
+                        idx.as_mut_ptr(),
+                        dist.as_mut_ptr(),
+                    )
+                };
                 idx.truncate(found);
                 dist.truncate(found);
                 (idx, dist)
@@ -621,13 +670,27 @@ macro_rules! define_ref_index3 {
             /// instead of allocating fresh `Vec`s. Returns the found count
             /// (`<= k`); see `RefIndexF32::knn_into`'s doc comment for the
             /// exact valid-entries contract.
-            pub fn knn_into(&self, q: &[$t], k: usize, out_idx: &mut [u32], out_dist: &mut [$t]) -> usize {
+            pub fn knn_into(
+                &self,
+                q: &[$t],
+                k: usize,
+                out_idx: &mut [u32],
+                out_dist: &mut [$t],
+            ) -> usize {
                 assert_eq!(q.len(), 3, "query dim mismatch (fixed DIM=3)");
                 assert_eq!(out_idx.len(), k, "knn_into: out_idx.len() must equal k");
                 assert_eq!(out_dist.len(), k, "knn_into: out_dist.len() must equal k");
                 // SAFETY: see `RefIndex*::knn_into` above -- identical
                 // capacity/return-count contract.
-                unsafe { $knn(self.handle, q.as_ptr(), k, out_idx.as_mut_ptr(), out_dist.as_mut_ptr()) }
+                unsafe {
+                    $knn(
+                        self.handle,
+                        q.as_ptr(),
+                        k,
+                        out_idx.as_mut_ptr(),
+                        out_dist.as_mut_ptr(),
+                    )
+                }
             }
         }
 
@@ -640,8 +703,22 @@ macro_rules! define_ref_index3 {
     };
 }
 
-define_ref_index3!(RefIndex3F32, f32, raw::nfr3_index_f, raw::nfr3_build_f, raw::nfr3_free_f, raw::nfr3_knn_f);
-define_ref_index3!(RefIndex3F64, f64, raw::nfr3_index_d, raw::nfr3_build_d, raw::nfr3_free_d, raw::nfr3_knn_d);
+define_ref_index3!(
+    RefIndex3F32,
+    f32,
+    raw::nfr3_index_f,
+    raw::nfr3_build_f,
+    raw::nfr3_free_f,
+    raw::nfr3_knn_f
+);
+define_ref_index3!(
+    RefIndex3F64,
+    f64,
+    raw::nfr3_index_d,
+    raw::nfr3_build_d,
+    raw::nfr3_free_d,
+    raw::nfr3_knn_d
+);
 
 /// Defines the dynamic-forest (`KDTreeSingleIndexDynamicAdaptor`) safe
 /// wrapper `$Name<'a>` around the raw `nfrd_*_$suf` entry points for scalar

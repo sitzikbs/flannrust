@@ -157,7 +157,10 @@ impl<T: Scalar> OwnedRows<T> {
     /// `dim == 0`.
     pub fn with_capacity(dim: usize, n_points: usize) -> Self {
         assert!(dim > 0, "OwnedRows dimension must be > 0");
-        Self { data: Vec::with_capacity(dim * n_points), dim }
+        Self {
+            data: Vec::with_capacity(dim * n_points),
+            dim,
+        }
     }
 
     /// Appends whole rows. Panics if `rows.len()` is not a multiple of
@@ -280,7 +283,9 @@ mod tests {
     #[test]
     fn test_array_slice_point_row_length_and_values() {
         let points: &[[f32; 3]] = &[[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]];
-        let row0 = points.point_row(0).expect("array-slice point_row must be Some");
+        let row0 = points
+            .point_row(0)
+            .expect("array-slice point_row must be Some");
         assert_eq!(row0.len(), 3);
         for (d, &v) in row0.iter().enumerate() {
             assert_eq!(v, points.point_component(0, d), "d={d}");
@@ -291,7 +296,9 @@ mod tests {
     fn test_array_slice_point_row_boundary_idx() {
         let points: &[[f64; 4]] = &[[0.0; 4], [1.0, 2.0, 3.0, 4.0], [9.0, 8.0, 7.0, 6.0]];
         let last = points.len() - 1;
-        let row = points.point_row(last).expect("boundary idx must return Some");
+        let row = points
+            .point_row(last)
+            .expect("boundary idx must return Some");
         assert_eq!(row, &[9.0, 8.0, 7.0, 6.0]);
     }
 
@@ -299,7 +306,9 @@ mod tests {
     fn test_flat_slice_point_row_length_and_values() {
         let data = &[1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
         let flat = FlatSlice::new(data, 3);
-        let row1 = flat.point_row(1).expect("flat-slice point_row must be Some");
+        let row1 = flat
+            .point_row(1)
+            .expect("flat-slice point_row must be Some");
         assert_eq!(row1.len(), 3);
         for (d, &v) in row1.iter().enumerate() {
             assert_eq!(v, flat.point_component(1, d), "d={d}");
@@ -326,7 +335,10 @@ mod tests {
     #[test]
     fn test_default_fill_bbox_returns_false() {
         let points: &[[f32; 2]] = &[[1.0, 2.0], [3.0, 4.0]];
-        let mut bbox = [Interval { low: 0.0, high: 0.0 }; 2];
+        let mut bbox = [Interval {
+            low: 0.0,
+            high: 0.0,
+        }; 2];
         let result = points.fill_bbox(&mut bbox);
         assert!(!result);
     }
@@ -345,14 +357,23 @@ mod tests {
             }
 
             fn fill_bbox(&self, bbox: &mut [Interval<f32>]) -> bool {
-                bbox[0] = Interval { low: 1.0, high: 2.0 };
-                bbox[1] = Interval { low: 3.0, high: 4.0 };
+                bbox[0] = Interval {
+                    low: 1.0,
+                    high: 2.0,
+                };
+                bbox[1] = Interval {
+                    low: 3.0,
+                    high: 4.0,
+                };
                 true
             }
         }
 
         let ds = CustomDataSource;
-        let mut bbox = [Interval { low: 0.0, high: 0.0 }; 2];
+        let mut bbox = [Interval {
+            low: 0.0,
+            high: 0.0,
+        }; 2];
         let result = ds.fill_bbox(&mut bbox);
         assert!(result);
         assert_eq!(bbox[0].low, 1.0);
@@ -419,7 +440,9 @@ mod tests {
         let rows = OwnedRows::new(vec![1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0], 3);
         // "`None` never returned for valid idx": exercise every valid idx.
         for idx in 0..rows.len() {
-            let row = rows.point_row(idx).expect("OwnedRows point_row must be Some for valid idx");
+            let row = rows
+                .point_row(idx)
+                .expect("OwnedRows point_row must be Some for valid idx");
             assert!(row.len() >= 3);
             for (d, &v) in row.iter().enumerate().take(3) {
                 assert_eq!(v, rows.point_component(idx, d), "idx={idx} d={d}");

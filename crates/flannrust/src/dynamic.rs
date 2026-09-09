@@ -48,7 +48,8 @@ use crate::metric::{Distance, L2};
 use crate::node::Node;
 use crate::params::SearchParams;
 use crate::result_set::{
-    KeepInsertionOrder, KnnResultSet, RadiusResultSet, ResultItem, ResultSet, RknnResultSet, TieBreak,
+    KeepInsertionOrder, KnnResultSet, RadiusResultSet, ResultItem, ResultSet, RknnResultSet,
+    TieBreak,
 };
 use crate::scalar::{DistanceValue, IndexType, Scalar};
 use crate::search::{find_neighbors as search_find_neighbors, SearchCtx};
@@ -100,7 +101,11 @@ struct Slot<T: Scalar, D: Dim, Idx: IndexType> {
 
 impl<T: Scalar, D: Dim, Idx: IndexType> Slot<T, D, Idx> {
     fn empty(dim: D) -> Self {
-        Slot { vind: Vec::new(), nodes: Vec::new(), root_bbox: dim.filled(Interval::default()) }
+        Slot {
+            vind: Vec::new(),
+            nodes: Vec::new(),
+            root_bbox: dim.filled(Interval::default()),
+        }
     }
 }
 
@@ -195,7 +200,10 @@ where
     TB: TieBreak,
 {
     /// Takes a metric INSTANCE, same as [`crate::tree::KdTreeBuilder::with_metric`].
-    pub fn with_metric<M2: Distance<T>>(self, metric: M2) -> DynamicKdTreeBuilder<T, D, DS, M2, Idx, TB> {
+    pub fn with_metric<M2: Distance<T>>(
+        self,
+        metric: M2,
+    ) -> DynamicKdTreeBuilder<T, D, DS, M2, Idx, TB> {
         DynamicKdTreeBuilder {
             dim: self.dim,
             dataset: self.dataset,
@@ -264,7 +272,14 @@ where
     /// with zero occupied slots; `add_points` can be called later once the
     /// dataset (if it uses interior mutability) actually grows.
     pub fn build(self) -> DynamicKdTree<T, D, DS, M, Idx, TB> {
-        let DynamicKdTreeBuilder { dim, dataset, metric, leaf_max_size, maximum_point_count, .. } = self;
+        let DynamicKdTreeBuilder {
+            dim,
+            dataset,
+            metric,
+            leaf_max_size,
+            maximum_point_count,
+            ..
+        } = self;
 
         // nanoflann.hpp:2610: `static_cast<size_t>(std::log2(maximumPointCount)) + 1`.
         // Rust's `as usize` on f64 saturates (0 for negative/NaN/-inf) rather
@@ -539,8 +554,7 @@ where
             }
 
             assert_eq!(
-                idx,
-                self.point_count,
+                idx, self.point_count,
                 "add_points: index {idx} is a genuinely-new point but does not equal \
                  point_count ({}) -- nanoflann's addPoints contract requires brand-new \
                  indices to be a contiguous append starting exactly at point_count \
@@ -599,7 +613,12 @@ where
             }
 
             let mut bbox = self.dim.filled(Interval::default());
-            compute_bounding_box_over_indices(&self.dataset, dim_n, &self.slots[i].vind, bbox.as_mut());
+            compute_bounding_box_over_indices(
+                &self.dataset,
+                dim_n,
+                &self.slots[i].vind,
+                bbox.as_mut(),
+            );
 
             let slot = &mut self.slots[i];
             {
@@ -694,7 +713,9 @@ where
         query: &[T],
         params: &SearchParams,
     ) -> bool {
-        let filter = TombstoneFilter { tree_index: &self.tree_index };
+        let filter = TombstoneFilter {
+            tree_index: &self.tree_index,
+        };
         let mut scratch = self.dim.filled(M::DistanceType::ZERO);
 
         for slot in &self.slots {
@@ -717,7 +738,12 @@ where
     /// ADDITIVE over C++ (the dynamic forest adaptor exposes only
     /// `findNeighbors`; this wraps it with M1's naming/ergonomics, tombstone
     /// filtering included automatically via [`Self::find_neighbors`]).
-    pub fn knn_search(&self, query: &[T], out_indices: &mut [Idx], out_dists: &mut [M::DistanceType]) -> usize {
+    pub fn knn_search(
+        &self,
+        query: &[T],
+        out_indices: &mut [Idx],
+        out_dists: &mut [M::DistanceType],
+    ) -> usize {
         self.knn_search_with(query, out_indices, out_dists, &SearchParams::default())
     }
 
@@ -748,7 +774,13 @@ where
         out_indices: &mut [Idx],
         out_dists: &mut [M::DistanceType],
     ) -> usize {
-        self.rknn_search_with(query, radius, out_indices, out_dists, &SearchParams::default())
+        self.rknn_search_with(
+            query,
+            radius,
+            out_indices,
+            out_dists,
+            &SearchParams::default(),
+        )
     }
 
     /// Same as [`Self::rknn_search`] with explicit params.
@@ -892,8 +924,14 @@ mod tests {
 
         tree.add_points(0, 3);
 
-        assert!(tree.point_indices_of_slot(0).is_empty(), "slot 0 must be empty");
-        assert!(tree.point_indices_of_slot(1).is_empty(), "slot 1 must be empty");
+        assert!(
+            tree.point_indices_of_slot(0).is_empty(),
+            "slot 0 must be empty"
+        );
+        assert!(
+            tree.point_indices_of_slot(1).is_empty(),
+            "slot 1 must be empty"
+        );
 
         // EXACT append order (not just membership) -- this is the signal
         // T4's per-slot cross-validation against the C++ oracle's vAcc_
@@ -955,7 +993,11 @@ mod tests {
 
         // tree_index[0] must STILL read -1 (removal semantics preserved
         // across the merge -- the point never became "live" again).
-        assert_eq!(tree.tree_index()[0], -1, "removed point must stay -1 through a merge");
+        assert_eq!(
+            tree.tree_index()[0],
+            -1,
+            "removed point must stay -1 through a merge"
+        );
         assert_eq!(tree.removed_len(), 1);
 
         // Point 1 (live) must have migrated to slot 2 along with everyone else.
@@ -1144,8 +1186,9 @@ mod tests {
         assert_eq!(tree.tree_index()[1], -1);
         assert_eq!(tree.removed_len(), 1);
 
-        let physical_count_before: usize =
-            (0..tree.tree_count()).map(|s| tree.point_indices_of_slot(s).len()).sum();
+        let physical_count_before: usize = (0..tree.tree_count())
+            .map(|s| tree.point_indices_of_slot(s).len())
+            .sum();
 
         tree.add_points(1, 1); // reactivation, not a duplicate insert
 
@@ -1154,10 +1197,15 @@ mod tests {
             slot_before_removal,
             "reactivation must restore the ORIGINAL (removed-from) slot value"
         );
-        assert_eq!(tree.removed_len(), 0, "removed map must be empty after reactivation");
+        assert_eq!(
+            tree.removed_len(),
+            0,
+            "removed map must be empty after reactivation"
+        );
 
-        let physical_count_after: usize =
-            (0..tree.tree_count()).map(|s| tree.point_indices_of_slot(s).len()).sum();
+        let physical_count_after: usize = (0..tree.tree_count())
+            .map(|s| tree.point_indices_of_slot(s).len())
+            .sum();
         assert_eq!(
             physical_count_before, physical_count_after,
             "reactivation must not grow any slot's physical point list (no duplicate)"
@@ -1182,8 +1230,14 @@ mod tests {
         assert!(!tree.remove_point(1), "repeat removal must return false");
         assert_eq!(tree.active_count(), 2, "active_count must not drop again");
 
-        assert!(!tree.remove_point(999), "out-of-range removal must return false");
-        assert!(!tree.remove_point(2usize.wrapping_add(1_000_000)), "wildly out-of-range must return false too");
+        assert!(
+            !tree.remove_point(999),
+            "out-of-range removal must return false"
+        );
+        assert!(
+            !tree.remove_point(2usize.wrapping_add(1_000_000)),
+            "wildly out-of-range must return false too"
+        );
     }
 
     // ---------------------------------------------------------------
@@ -1213,12 +1267,19 @@ mod tests {
         // Must land in slot 2 (the MIGRATED slot), never slot 1 (its
         // original, now-stale slot) -- the bug this test guards against is
         // reactivating into the wrong (no-longer-holding-the-point) tree.
-        assert_eq!(tree.tree_index()[0], 2, "must reactivate into the MIGRATED slot, not the original one");
+        assert_eq!(
+            tree.tree_index()[0],
+            2,
+            "must reactivate into the MIGRATED slot, not the original one"
+        );
         assert_eq!(tree.removed_len(), 0);
 
         // No duplicate insert: slot 2's physical list did not grow.
         assert_eq!(tree.point_indices_of_slot(2).len(), slot2_len_before);
-        assert!(tree.point_indices_of_slot(1).is_empty(), "slot 1 (the stale original) must stay empty");
+        assert!(
+            tree.point_indices_of_slot(1).is_empty(),
+            "slot 1 (the stale original) must stay empty"
+        );
     }
 
     // ---------------------------------------------------------------
@@ -1227,25 +1288,34 @@ mod tests {
 
     #[test]
     fn identical_op_sequences_produce_identical_bookkeeping() {
-        let pts: Vec<[f64; 2]> = (0..20).map(|i| [i as f64 * 1.3, (i * i) as f64 * 0.7]).collect();
+        let pts: Vec<[f64; 2]> = (0..20)
+            .map(|i| [i as f64 * 1.3, (i * i) as f64 * 0.7])
+            .collect();
 
         let run = |pts: &[[f64; 2]]| -> (Vec<Vec<u32>>, Vec<i32>, usize) {
             let ds = Ungated(pts.to_vec());
-            let mut tree = DynamicKdTreeBuilder::new(ConstDim::<2>, ds).maximum_point_count(1000).build();
+            let mut tree = DynamicKdTreeBuilder::new(ConstDim::<2>, ds)
+                .maximum_point_count(1000)
+                .build();
             tree.add_points(0, 7);
             assert!(tree.remove_point(2));
             assert!(tree.remove_point(5));
             tree.add_points(8, 13);
             tree.add_points(2, 2); // reactivate
             tree.add_points(14, 19);
-            let slots: Vec<Vec<u32>> = (0..tree.tree_count()).map(|s| tree.point_indices_of_slot(s).to_vec()).collect();
+            let slots: Vec<Vec<u32>> = (0..tree.tree_count())
+                .map(|s| tree.point_indices_of_slot(s).to_vec())
+                .collect();
             (slots, tree.tree_index().to_vec(), tree.removed_len())
         };
 
         let (slots_a, ti_a, removed_a) = run(&pts);
         let (slots_b, ti_b, removed_b) = run(&pts);
 
-        assert_eq!(slots_a, slots_b, "slot vind must be element-wise identical across identical runs");
+        assert_eq!(
+            slots_a, slots_b,
+            "slot vind must be element-wise identical across identical runs"
+        );
         assert_eq!(ti_a, ti_b);
         assert_eq!(removed_a, removed_b);
     }
@@ -1257,10 +1327,18 @@ mod tests {
     #[test]
     fn ctor_auto_adds_existing_points_immediately_queryable_state() {
         let pts: Vec<[f64; 2]> = (0..5).map(|i| [i as f64, i as f64 * 2.0]).collect();
-        let tree = DynamicKdTreeBuilder::new(ConstDim::<2>, pts.as_slice()).maximum_point_count(1000).build();
+        let tree = DynamicKdTreeBuilder::new(ConstDim::<2>, pts.as_slice())
+            .maximum_point_count(1000)
+            .build();
 
-        assert_eq!(tree.active_count(), 5, "ctor must auto-add every point already in the dataset");
-        let mut union: Vec<u32> = (0..tree.tree_count()).flat_map(|s| tree.point_indices_of_slot(s).iter().copied()).collect();
+        assert_eq!(
+            tree.active_count(),
+            5,
+            "ctor must auto-add every point already in the dataset"
+        );
+        let mut union: Vec<u32> = (0..tree.tree_count())
+            .flat_map(|s| tree.point_indices_of_slot(s).iter().copied())
+            .collect();
         union.sort_unstable();
         assert_eq!(union, vec![0, 1, 2, 3, 4]);
         for &v in tree.tree_index() {
@@ -1296,9 +1374,15 @@ mod tests {
             count: count.clone(),
         };
 
-        let mut tree = DynamicKdTreeBuilder::new(ConstDim::<2>, ds).maximum_point_count(1000).build();
+        let mut tree = DynamicKdTreeBuilder::new(ConstDim::<2>, ds)
+            .maximum_point_count(1000)
+            .build();
 
-        assert_eq!(tree.active_count(), 0, "empty dataset at build time must yield an empty forest");
+        assert_eq!(
+            tree.active_count(),
+            0,
+            "empty dataset at build time must yield an empty forest"
+        );
         for s in 0..tree.tree_count() {
             assert!(tree.point_indices_of_slot(s).is_empty());
         }
@@ -1307,7 +1391,9 @@ mod tests {
         tree.add_points(0, 3);
 
         assert_eq!(tree.active_count(), 4);
-        let mut union: Vec<u32> = (0..tree.tree_count()).flat_map(|s| tree.point_indices_of_slot(s).iter().copied()).collect();
+        let mut union: Vec<u32> = (0..tree.tree_count())
+            .flat_map(|s| tree.point_indices_of_slot(s).iter().copied())
+            .collect();
         union.sort_unstable();
         assert_eq!(union, vec![0, 1, 2, 3]);
     }
@@ -1320,7 +1406,9 @@ mod tests {
     fn drain_and_refill_all_live_and_bookkeeping_consistent() {
         let pts: Vec<[f64; 1]> = (0..8).map(|i| [i as f64 * 3.3]).collect();
         let ds = Ungated(pts);
-        let mut tree = DynamicKdTreeBuilder::new(ConstDim::<1>, ds).maximum_point_count(1000).build();
+        let mut tree = DynamicKdTreeBuilder::new(ConstDim::<1>, ds)
+            .maximum_point_count(1000)
+            .build();
 
         tree.add_points(0, 7);
         assert_eq!(tree.active_count(), 8);
@@ -1338,7 +1426,9 @@ mod tests {
         for &v in tree.tree_index() {
             assert_ne!(v, -1);
         }
-        let mut union: Vec<u32> = (0..tree.tree_count()).flat_map(|s| tree.point_indices_of_slot(s).iter().copied()).collect();
+        let mut union: Vec<u32> = (0..tree.tree_count())
+            .flat_map(|s| tree.point_indices_of_slot(s).iter().copied())
+            .collect();
         union.sort_unstable();
         assert_eq!(union, (0u32..8).collect::<Vec<u32>>());
     }
@@ -1351,7 +1441,9 @@ mod tests {
     #[should_panic(expected = "does not equal point_count")]
     fn add_points_panics_on_misaligned_genuinely_new_index() {
         let ds = Ungated(vec![[10.0], [20.0], [30.0]]);
-        let mut tree = DynamicKdTreeBuilder::new(ConstDim::<1>, ds).maximum_point_count(1000).build();
+        let mut tree = DynamicKdTreeBuilder::new(ConstDim::<1>, ds)
+            .maximum_point_count(1000)
+            .build();
         // First-ever call, but starts at 1 instead of 0 -- point_count is 0.
         tree.add_points(1, 1);
     }
@@ -1365,7 +1457,9 @@ mod tests {
         // exist -- must panic naming the capacity, not silently
         // index-out-of-bounds panic on `self.slots[pos]`.
         let ds = Ungated(vec![[10.0], [20.0]]);
-        let mut tree = DynamicKdTreeBuilder::new(ConstDim::<1>, ds).maximum_point_count(1).build();
+        let mut tree = DynamicKdTreeBuilder::new(ConstDim::<1>, ds)
+            .maximum_point_count(1)
+            .build();
         assert_eq!(tree.tree_count(), 1);
         tree.add_points(0, 1);
     }
@@ -1375,7 +1469,10 @@ mod tests {
         let result = std::panic::catch_unwind(|| {
             DynamicKdTreeBuilder::new(ConstDim::<1>, Ungated::<1>(vec![])).maximum_point_count(0)
         });
-        assert!(result.is_err(), "maximum_point_count(0) must panic, not silently accept an unusable capacity");
+        assert!(
+            result.is_err(),
+            "maximum_point_count(0) must panic, not silently accept an unusable capacity"
+        );
     }
 
     #[test]
@@ -1384,7 +1481,9 @@ mod tests {
         // even though `start` (1) != `point_count` (4) at call time, because
         // every index in the range is a reactivation.
         let ds = Ungated(vec![[10.0], [20.0], [30.0], [40.0]]);
-        let mut tree = DynamicKdTreeBuilder::new(ConstDim::<1>, ds).maximum_point_count(1000).build();
+        let mut tree = DynamicKdTreeBuilder::new(ConstDim::<1>, ds)
+            .maximum_point_count(1000)
+            .build();
         tree.add_points(0, 3);
         assert!(tree.remove_point(1));
         tree.add_points(1, 1); // must NOT panic
@@ -1398,7 +1497,10 @@ mod tests {
     struct Lcg(u64);
     impl Lcg {
         fn next_f64(&mut self) -> f64 {
-            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((self.0 >> 11) as f64) / ((1u64 << 53) as f64)
         }
     }
@@ -1446,7 +1548,12 @@ mod tests {
         let metric = L2;
         let mut scored: Vec<(f64, u32)> = (0..pts.len())
             .filter(|&i| live[i])
-            .map(|i| (metric.eval(query.as_slice(), &pts, i, ConstDim::<N>), i as u32))
+            .map(|i| {
+                (
+                    metric.eval(query.as_slice(), &pts, i, ConstDim::<N>),
+                    i as u32,
+                )
+            })
             .filter(|&(d, _)| d < radius)
             .collect();
         scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap().then(a.1.cmp(&b.1)));
@@ -1470,7 +1577,11 @@ mod tests {
             .filter(|&i| live[i])
             .filter_map(|i| {
                 let d = metric.eval(query.as_slice(), &pts, i, ConstDim::<N>);
-                if d < radius { Some((i as u32, d)) } else { None }
+                if d < radius {
+                    Some((i as u32, d))
+                } else {
+                    None
+                }
             })
             .collect();
         out.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap().then(a.0.cmp(&b.0)));
@@ -1498,14 +1609,23 @@ mod tests {
         let mut idx = [0u32; 20];
         let mut dist = [0.0f64; 20];
         let found = tree.knn_search(&[0.0, 0.0], &mut idx, &mut dist);
-        assert_eq!(found, 13, "knn(k=20) over 13 live points must return exactly 13");
+        assert_eq!(
+            found, 13,
+            "knn(k=20) over 13 live points must return exactly 13"
+        );
         for &i in &idx[..found] {
-            assert!(!removed_indices.contains(&(i as usize)), "removed point {i} leaked into knn results");
+            assert!(
+                !removed_indices.contains(&(i as usize)),
+                "removed point {i} leaked into knn results"
+            );
         }
 
         let mut radius_out = Vec::new();
         let radius_found = tree.radius_search(&[0.0, 0.0], 1_000_000.0, &mut radius_out);
-        assert_eq!(radius_found, 13, "radius over everything must return exactly the 13 live points");
+        assert_eq!(
+            radius_found, 13,
+            "radius over everything must return exactly the 13 live points"
+        );
         for item in &radius_out {
             assert!(
                 !removed_indices.contains(&(item.index as usize)),
@@ -1574,7 +1694,8 @@ mod tests {
             let mut ridx = vec![0u32; k];
             let mut rdist = vec![0.0f64; k];
             let rfound = tree.rknn_search(&query, radius, &mut ridx, &mut rdist);
-            let (want_ridx, want_rdist) = brute_force_rknn_live(pts_slice, &live, &query, radius, k);
+            let (want_ridx, want_rdist) =
+                brute_force_rknn_live(pts_slice, &live, &query, radius, k);
             assert_eq!(rfound, want_ridx.len());
             assert_eq!(&ridx[..rfound], want_ridx.as_slice());
             assert_eq!(&rdist[..rfound], want_rdist.as_slice());
@@ -1582,7 +1703,10 @@ mod tests {
             let mut radius_out = Vec::new();
             tree.radius_search(&query, radius, &mut radius_out);
             let want_radius = brute_force_radius_live(pts_slice, &live, &query, radius);
-            let got_radius: Vec<(u32, f64)> = radius_out.iter().map(|it| (it.index, it.distance)).collect();
+            let got_radius: Vec<(u32, f64)> = radius_out
+                .iter()
+                .map(|it| (it.index, it.distance))
+                .collect();
             assert_eq!(got_radius, want_radius);
         }
     }
@@ -1607,7 +1731,10 @@ mod tests {
         let mut idx = [0u32; 4];
         let mut dist = [0.0f64; 4];
         let found = tree.knn_search(&query, &mut idx, &mut dist);
-        assert!(!idx[..found].contains(&1), "removed point must not be found by query");
+        assert!(
+            !idx[..found].contains(&1),
+            "removed point must not be found by query"
+        );
 
         // Reactivation: `start == 1` is not `point_count` (4) at call time,
         // but every index in `1..=1` is a reactivation, so this is
@@ -1644,7 +1771,10 @@ mod tests {
         let mut dist = [0.0f64; 3];
         let mut knn_rs = KnnResultSet::<f64, u32>::new(&mut idx, &mut dist);
         let full = tree.find_neighbors(&mut knn_rs, &[0.0, 0.0], &SearchParams::default());
-        assert!(!full, "KNN find_neighbors on an empty forest must return false");
+        assert!(
+            !full,
+            "KNN find_neighbors on an empty forest must return false"
+        );
         assert_eq!(knn_rs.size(), 0);
 
         // Inherited nanoflann quirk (M1 Corrections #4):
@@ -1657,13 +1787,20 @@ mod tests {
         // returns the found COUNT and hides the quirk).
         let mut items = Vec::new();
         let mut radius_rs = RadiusResultSet::new(100.0, &mut items);
-        let radius_full = tree.find_neighbors(&mut radius_rs, &[0.0, 0.0], &SearchParams::default());
-        assert!(radius_full, "RadiusResultSet::full() is hardwired true -- the quirk");
+        let radius_full =
+            tree.find_neighbors(&mut radius_rs, &[0.0, 0.0], &SearchParams::default());
+        assert!(
+            radius_full,
+            "RadiusResultSet::full() is hardwired true -- the quirk"
+        );
         assert_eq!(items.len(), 0);
 
         let mut out = Vec::new();
         let count = tree.radius_search(&[0.0, 0.0], 100.0, &mut out);
-        assert_eq!(count, 0, "the additive radius_search wrapper returns the COUNT, hiding the quirk");
+        assert_eq!(
+            count, 0,
+            "the additive radius_search wrapper returns the COUNT, hiding the quirk"
+        );
     }
 
     // ---------------------------------------------------------------
@@ -1686,8 +1823,14 @@ mod tests {
         // for the same derivation one step further).
         tree.add_points(0, 2);
 
-        assert!(!tree.point_indices_of_slot(0).is_empty(), "slot 0 must be occupied");
-        assert!(!tree.point_indices_of_slot(1).is_empty(), "slot 1 must be occupied");
+        assert!(
+            !tree.point_indices_of_slot(0).is_empty(),
+            "slot 0 must be occupied"
+        );
+        assert!(
+            !tree.point_indices_of_slot(1).is_empty(),
+            "slot 1 must be occupied"
+        );
         assert!(tree.point_indices_of_slot(2).is_empty());
 
         let query = [1.0, 1.0];
@@ -1695,7 +1838,8 @@ mod tests {
         let mut idx = vec![0u32; k];
         let mut dist = vec![0.0f64; k];
         let found = tree.knn_search(&query, &mut idx, &mut dist);
-        let (want_idx, want_dist) = brute_force_knn_live(pts_slice, &[true, true, true, false], &query, k);
+        let (want_idx, want_dist) =
+            brute_force_knn_live(pts_slice, &[true, true, true, false], &query, k);
         assert_eq!(found, 3);
         assert_eq!(idx, want_idx.as_slice());
         assert_eq!(dist, want_dist.as_slice());
@@ -1706,7 +1850,10 @@ mod tests {
 
         assert!(tree.point_indices_of_slot(0).is_empty());
         assert!(tree.point_indices_of_slot(1).is_empty());
-        assert!(!tree.point_indices_of_slot(2).is_empty(), "everything merged into slot 2");
+        assert!(
+            !tree.point_indices_of_slot(2).is_empty(),
+            "everything merged into slot 2"
+        );
 
         let k2 = 4;
         let mut idx2 = vec![0u32; k2];
@@ -1737,15 +1884,25 @@ mod tests {
         let query = [1.0, 1.0];
         let k = 1;
 
-        let params_zero = SearchParams { eps: 0.0, sorted: true };
+        let params_zero = SearchParams {
+            eps: 0.0,
+            sorted: true,
+        };
         let mut idx0 = [0u32; 1];
         let mut dist0 = [0.0f64; 1];
         tree.knn_search_with(&query, &mut idx0, &mut dist0, &params_zero);
         let (want_idx, want_dist) = brute_force_knn_live(pts_slice, &[true; 3], &query, k);
-        assert_eq!(idx0.as_slice(), want_idx.as_slice(), "eps=0 must match brute force exactly");
+        assert_eq!(
+            idx0.as_slice(),
+            want_idx.as_slice(),
+            "eps=0 must match brute force exactly"
+        );
         assert_eq!(dist0.as_slice(), want_dist.as_slice());
 
-        let params_eps = SearchParams { eps: 10.0, sorted: true };
+        let params_eps = SearchParams {
+            eps: 10.0,
+            sorted: true,
+        };
         let mut idx_eps = [0u32; 1];
         let mut dist_eps = [0.0f64; 1];
         let found = tree.knn_search_with(&query, &mut idx_eps, &mut dist_eps, &params_eps);
@@ -1772,13 +1929,22 @@ mod tests {
         assert!(!tree.point_indices_of_slot(1).is_empty());
 
         let mut out = Vec::new();
-        let params = SearchParams { eps: 0.0, sorted: true };
+        let params = SearchParams {
+            eps: 0.0,
+            sorted: true,
+        };
         tree.radius_search_with(&[1.0, 1.0], 1000.0, &mut out, &params);
         let dists: Vec<f64> = out.iter().map(|it| it.distance).collect();
         let mut sorted = dists.clone();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        assert_eq!(dists, sorted, "sorted=true must yield ascending distances across multiple slot passes");
-        assert!(out.len() >= 2, "test must actually exercise multiple slots' worth of results");
+        assert_eq!(
+            dists, sorted,
+            "sorted=true must yield ascending distances across multiple slot passes"
+        );
+        assert!(
+            out.len() >= 2,
+            "test must actually exercise multiple slots' worth of results"
+        );
     }
 
     // ---------------------------------------------------------------
@@ -1799,9 +1965,10 @@ mod tests {
         let batch2: [f64; 4] = [5.0, 5.0, -5.0, 3.0];
         let batch3: [f64; 4] = [2.0, -7.0, 9.0, 9.0];
 
-        let mut tree = DynamicKdTreeBuilder::new(ConstDim::<DIM>, OwnedRows::<f64>::with_capacity(DIM, 0))
-            .maximum_point_count(1000)
-            .build();
+        let mut tree =
+            DynamicKdTreeBuilder::new(ConstDim::<DIM>, OwnedRows::<f64>::with_capacity(DIM, 0))
+                .maximum_point_count(1000)
+                .build();
 
         tree.dataset_mut().push_rows(&batch1);
         tree.add_points(0, 2);
@@ -1836,9 +2003,16 @@ mod tests {
 
         // Compare as index sets (order-independent) paired with distances.
         let mut got: Vec<(u32, f64)> = idx.iter().copied().zip(dist.iter().copied()).collect();
-        let mut want: Vec<(u32, f64)> = want_idx.iter().copied().zip(want_dist.iter().copied()).collect();
+        let mut want: Vec<(u32, f64)> = want_idx
+            .iter()
+            .copied()
+            .zip(want_dist.iter().copied())
+            .collect();
         got.sort_by_key(|&(i, _)| i);
         want.sort_by_key(|&(i, _)| i);
-        assert_eq!(got, want, "dynamic-over-OwnedRows knn must match a fresh static tree over the same live rows");
+        assert_eq!(
+            got, want,
+            "dynamic-over-OwnedRows knn must match a fresh static tree over the same live rows"
+        );
     }
 }

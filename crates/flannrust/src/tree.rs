@@ -334,7 +334,9 @@ where
         compute_bounding_box(&dataset, dim_n, root_bbox.as_mut());
 
         let nodes: Vec<Node<T>> = match threads {
-            BuildThreads::Sequential => unreachable!("Sequential is handled above, before this point"),
+            BuildThreads::Sequential => {
+                unreachable!("Sequential is handled above, before this point")
+            }
             BuildThreads::Auto => crate::build_parallel::build_tree_parallel(
                 &dataset,
                 dim_n,
@@ -517,7 +519,12 @@ where
     /// `k` = out slices' length (must be equal; panics otherwise). Returns
     /// the found count (`< k` iff `size() < k`). `eps = 0`, sorted — like
     /// C++'s static `knnSearch`.
-    pub fn knn_search(&self, query: &[T], out_indices: &mut [Idx], out_dists: &mut [M::DistanceType]) -> usize {
+    pub fn knn_search(
+        &self,
+        query: &[T],
+        out_indices: &mut [Idx],
+        out_dists: &mut [M::DistanceType],
+    ) -> usize {
         self.knn_search_with(query, out_indices, out_dists, &SearchParams::default())
     }
 
@@ -555,7 +562,13 @@ where
         out_indices: &mut [Idx],
         out_dists: &mut [M::DistanceType],
     ) -> usize {
-        self.rknn_search_with(query, radius, out_indices, out_dists, &SearchParams::default())
+        self.rknn_search_with(
+            query,
+            radius,
+            out_indices,
+            out_dists,
+            &SearchParams::default(),
+        )
     }
 
     /// Same as [`Self::rknn_search`] with explicit params.
@@ -638,8 +651,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dim::{ConstDim, DynDim};
     use crate::data_source::FlatSlice;
+    use crate::dim::{ConstDim, DynDim};
     use crate::metric::L1;
     use crate::result_set::SmallestIndexWins;
 
@@ -650,7 +663,10 @@ mod tests {
     struct Lcg(u64);
     impl Lcg {
         fn next_f64(&mut self) -> f64 {
-            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((self.0 >> 11) as f64) / ((1u64 << 53) as f64)
         }
     }
@@ -742,7 +758,10 @@ mod tests {
 
         assert_eq!(c_found, d_found);
         assert_eq!(c_idx, d_idx);
-        assert_eq!(c_dist, d_dist, "DynDim/ConstDim distances must be bit-equal");
+        assert_eq!(
+            c_dist, d_dist,
+            "DynDim/ConstDim distances must be bit-equal"
+        );
     }
 
     // ---------------------------------------------------------------
@@ -755,12 +774,18 @@ mod tests {
         let pts: Vec<[f64; 2]> = vec![[0.0, 0.0], [1.0, 0.0]];
         let tree = KdTreeBuilder::new(ConstDim::<2>, pts.as_slice()).build();
 
-        let mut out = vec![ResultItem { index: 999u32, distance: 12345.0f64 }];
+        let mut out = vec![ResultItem {
+            index: 999u32,
+            distance: 12345.0f64,
+        }];
         let params = SearchParams::default();
         let found = tree.radius_search_with(&[0.0, 0.0], 100.0, &mut out, &params);
 
         assert_eq!(found, 2);
-        assert!(!out.iter().any(|r| r.index == 999), "pre-populated junk must be cleared");
+        assert!(
+            !out.iter().any(|r| r.index == 999),
+            "pre-populated junk must be cleared"
+        );
     }
 
     #[test]
@@ -777,18 +802,31 @@ mod tests {
             .build();
 
         let mut unsorted = Vec::new();
-        let unsorted_params = SearchParams { eps: 0.0, sorted: false };
+        let unsorted_params = SearchParams {
+            eps: 0.0,
+            sorted: false,
+        };
         tree.radius_search_with(&[0.4], 200.0, &mut unsorted, &unsorted_params);
         let order: Vec<u32> = unsorted.iter().map(|r| r.index).collect();
-        assert_eq!(order, vec![0, 1, 3, 2], "sorted=false must yield raw traversal order");
+        assert_eq!(
+            order,
+            vec![0, 1, 3, 2],
+            "sorted=false must yield raw traversal order"
+        );
 
         let mut sorted = Vec::new();
-        let sorted_params = SearchParams { eps: 0.0, sorted: true };
+        let sorted_params = SearchParams {
+            eps: 0.0,
+            sorted: true,
+        };
         tree.radius_search_with(&[0.4], 200.0, &mut sorted, &sorted_params);
         let dists: Vec<f64> = sorted.iter().map(|r| r.distance).collect();
         let mut ascending = dists.clone();
         ascending.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        assert_eq!(dists, ascending, "sorted=true must yield ascending distances");
+        assert_eq!(
+            dists, ascending,
+            "sorted=true must yield ascending distances"
+        );
     }
 
     #[test]
@@ -800,12 +838,18 @@ mod tests {
 
         let mut out = Vec::new();
         tree.radius_search_with(&[0.0, 0.0], 4.0, &mut out, &params);
-        assert!(!out.iter().any(|r| r.index == 0), "exact-boundary point must be excluded");
+        assert!(
+            !out.iter().any(|r| r.index == 0),
+            "exact-boundary point must be excluded"
+        );
 
         let radius_next_up = f64::from_bits(4.0f64.to_bits() + 1);
         let mut out2 = Vec::new();
         tree.radius_search_with(&[0.0, 0.0], radius_next_up, &mut out2, &params);
-        assert!(out2.iter().any(|r| r.index == 0), "next_up(4.0) must include the boundary point");
+        assert!(
+            out2.iter().any(|r| r.index == 0),
+            "next_up(4.0) must include the boundary point"
+        );
     }
 
     // ---------------------------------------------------------------
@@ -823,7 +867,10 @@ mod tests {
         let mut idx = [0u32; 5];
         let mut dist = [0.0f64; 5];
         let found = tree.rknn_search(&[0.0], 10.0, &mut idx, &mut dist);
-        assert_eq!(found, 3, "expected exactly 3 points within radius 10.0 (squared)");
+        assert_eq!(
+            found, 3,
+            "expected exactly 3 points within radius 10.0 (squared)"
+        );
         assert_eq!(&idx[..3], &[0, 1, 2]);
 
         // radius 1000.0 covers all 10 -> closest 5 returned.
@@ -845,7 +892,10 @@ mod tests {
         let pts: Vec<[f64; 2]> = vec![[0.0, 0.0], [1.0, 1.0]];
         let tree = KdTreeBuilder::new(ConstDim::<2>, pts.as_slice()).build();
         let mut out = Vec::new();
-        let bad_bounds = [Interval { low: 0.0, high: 1.0 }]; // len 1, dim is 2
+        let bad_bounds = [Interval {
+            low: 0.0,
+            high: 1.0,
+        }]; // len 1, dim is 2
         tree.find_within_box(&bad_bounds, &mut out);
     }
 
@@ -857,8 +907,14 @@ mod tests {
         let tree = KdTreeBuilder::new(ConstDim::<2>, pts.as_slice()).build();
 
         let bounds = [
-            Interval { low: 1.0, high: 3.0 },
-            Interval { low: 1.0, high: 3.0 },
+            Interval {
+                low: 1.0,
+                high: 3.0,
+            },
+            Interval {
+                low: 1.0,
+                high: 3.0,
+            },
         ];
         let mut out = Vec::new();
         let found = tree.find_within_box(&bounds, &mut out);
@@ -907,20 +963,37 @@ mod tests {
         let mut idx = [0u32; 3];
         let mut dist = [0.0f64; 3];
         assert_eq!(tree.knn_search(&[0.0, 0.0, 0.0], &mut idx, &mut dist), 0);
-        assert_eq!(tree.rknn_search(&[0.0, 0.0, 0.0], 100.0, &mut idx, &mut dist), 0);
+        assert_eq!(
+            tree.rknn_search(&[0.0, 0.0, 0.0], 100.0, &mut idx, &mut dist),
+            0
+        );
 
         let mut radius_out = Vec::new();
         assert_eq!(
-            tree.radius_search_with(&[0.0, 0.0, 0.0], 100.0, &mut radius_out, &SearchParams::default()),
+            tree.radius_search_with(
+                &[0.0, 0.0, 0.0],
+                100.0,
+                &mut radius_out,
+                &SearchParams::default()
+            ),
             0
         );
         assert!(radius_out.is_empty());
 
         let mut box_out = Vec::new();
         let bounds = [
-            Interval { low: -1.0, high: 1.0 },
-            Interval { low: -1.0, high: 1.0 },
-            Interval { low: -1.0, high: 1.0 },
+            Interval {
+                low: -1.0,
+                high: 1.0,
+            },
+            Interval {
+                low: -1.0,
+                high: 1.0,
+            },
+            Interval {
+                low: -1.0,
+                high: 1.0,
+            },
         ];
         assert_eq!(tree.find_within_box(&bounds, &mut box_out), 0);
         assert!(box_out.is_empty());
@@ -992,7 +1065,11 @@ mod tests {
         let mut keep_dist = [0.0f64; 4];
         let keep_found = keep_tree.knn_search(&[5.0], &mut keep_idx, &mut keep_dist);
         assert_eq!(keep_found, 4);
-        assert_eq!(keep_idx, [2, 3, 0, 1], "default KeepInsertionOrder must be raw traversal order");
+        assert_eq!(
+            keep_idx,
+            [2, 3, 0, 1],
+            "default KeepInsertionOrder must be raw traversal order"
+        );
 
         let smallest_tree = KdTreeBuilder::new(ConstDim::<1>, pts.as_slice())
             .leaf_max_size(2)
@@ -1000,9 +1077,14 @@ mod tests {
             .build();
         let mut smallest_idx = [0u32; 4];
         let mut smallest_dist = [0.0f64; 4];
-        let smallest_found = smallest_tree.knn_search(&[5.0], &mut smallest_idx, &mut smallest_dist);
+        let smallest_found =
+            smallest_tree.knn_search(&[5.0], &mut smallest_idx, &mut smallest_dist);
         assert_eq!(smallest_found, 4);
-        assert_eq!(smallest_idx, [0, 1, 2, 3], "SmallestIndexWins must fully re-sort by index on ties");
+        assert_eq!(
+            smallest_idx,
+            [0, 1, 2, 3],
+            "SmallestIndexWins must fully re-sort by index on ties"
+        );
     }
 
     // ---------------------------------------------------------------
@@ -1020,7 +1102,13 @@ mod tests {
         // `DataSource` trait method, and `self.weights`) — no single
         // iterator adaptor covers all three cleanly.
         #[allow(clippy::needless_range_loop)]
-        fn eval<Ds: DataSource<f64> + ?Sized, D: Dim>(&self, query: &[f64], ds: &Ds, idx: usize, dim: D) -> f64 {
+        fn eval<Ds: DataSource<f64> + ?Sized, D: Dim>(
+            &self,
+            query: &[f64],
+            ds: &Ds,
+            idx: usize,
+            dim: D,
+        ) -> f64 {
             let dim = dim.dim();
             let mut result = 0.0;
             for d in 0..dim {
@@ -1046,9 +1134,15 @@ mod tests {
 
         // Sanity: unweighted L2 would pick PB (index 1).
         let (unweighted_idx, _) = brute_force_knn(&L2, &pts, &query, 1);
-        assert_eq!(unweighted_idx, vec![1], "test setup: unweighted nearest should be PB");
+        assert_eq!(
+            unweighted_idx,
+            vec![1],
+            "test setup: unweighted nearest should be PB"
+        );
 
-        let metric = WeightedL2 { weights: vec![1.0, 100.0] };
+        let metric = WeightedL2 {
+            weights: vec![1.0, 100.0],
+        };
         let tree = KdTreeBuilder::new(ConstDim::<2>, pts.as_slice())
             .with_metric(metric)
             .build();
@@ -1057,7 +1151,11 @@ mod tests {
         let mut dist = [0.0f64; 1];
         let found = tree.knn_search(&query, &mut idx, &mut dist);
         assert_eq!(found, 1);
-        assert_eq!(idx, [0], "weighted nearest must be PA (index 0), not the unweighted winner");
+        assert_eq!(
+            idx,
+            [0],
+            "weighted nearest must be PA (index 0), not the unweighted winner"
+        );
     }
 
     // ---------------------------------------------------------------
@@ -1211,7 +1309,9 @@ mod tests {
             .build();
         let threads2_tree = KdTreeBuilder::new(ConstDim::<3>, pts.as_slice())
             .leaf_max_size(10)
-            .threads(BuildThreads::Threads(core::num::NonZeroU32::new(2).unwrap()))
+            .threads(BuildThreads::Threads(
+                core::num::NonZeroU32::new(2).unwrap(),
+            ))
             .build();
 
         assert_eq!(seq_tree.point_indices(), auto_tree.point_indices());
@@ -1219,7 +1319,11 @@ mod tests {
 
         let mut rng = Lcg(0x51DE);
         for _ in 0..50 {
-            let q = [rng.next_f64() * 200.0, rng.next_f64() * 200.0, rng.next_f64() * 200.0];
+            let q = [
+                rng.next_f64() * 200.0,
+                rng.next_f64() * 200.0,
+                rng.next_f64() * 200.0,
+            ];
             let k = 8;
 
             let mut si = vec![0u32; k];
@@ -1275,9 +1379,13 @@ mod tests {
         let pts = seeded_points::<3>(0x5EA1, 300, 40.0);
 
         let via_build = KdTreeBuilder::new(ConstDim::<3>, pts.as_slice()).build();
-        let via_build_sequential = KdTreeBuilder::new(ConstDim::<3>, pts.as_slice()).build_sequential();
+        let via_build_sequential =
+            KdTreeBuilder::new(ConstDim::<3>, pts.as_slice()).build_sequential();
 
-        assert_eq!(via_build.point_indices(), via_build_sequential.point_indices());
+        assert_eq!(
+            via_build.point_indices(),
+            via_build_sequential.point_indices()
+        );
         assert_eq!(via_build.size(), via_build_sequential.size());
     }
 
@@ -1292,12 +1400,20 @@ mod tests {
         let pts = seeded_points::<3>(0x1D57E, 250, 60.0);
 
         let u32_tree = KdTreeBuilder::new(ConstDim::<3>, pts.as_slice()).build();
-        let u64_tree = KdTreeBuilder::new(ConstDim::<3>, pts.as_slice()).index_type::<u64>().build();
-        let usize_tree = KdTreeBuilder::new(ConstDim::<3>, pts.as_slice()).index_type::<usize>().build();
+        let u64_tree = KdTreeBuilder::new(ConstDim::<3>, pts.as_slice())
+            .index_type::<u64>()
+            .build();
+        let usize_tree = KdTreeBuilder::new(ConstDim::<3>, pts.as_slice())
+            .index_type::<usize>()
+            .build();
 
         let mut rng = Lcg(0xC0DE_1D5E);
         for _ in 0..30 {
-            let query = [rng.next_f64() * 60.0, rng.next_f64() * 60.0, rng.next_f64() * 60.0];
+            let query = [
+                rng.next_f64() * 60.0,
+                rng.next_f64() * 60.0,
+                rng.next_f64() * 60.0,
+            ];
             let k = 6;
 
             let mut u32_idx = vec![0u32; k];
@@ -1317,11 +1433,23 @@ mod tests {
 
             let u32_idx_as_usize: Vec<usize> = u32_idx.iter().map(|&i| i as usize).collect();
             let u64_idx_as_usize: Vec<usize> = u64_idx.iter().map(|&i| i as usize).collect();
-            assert_eq!(u32_idx_as_usize, u64_idx_as_usize, "u64 indices must match u32 tree's (as usize)");
-            assert_eq!(u32_idx_as_usize, usize_idx, "usize indices must match u32 tree's (as usize)");
+            assert_eq!(
+                u32_idx_as_usize, u64_idx_as_usize,
+                "u64 indices must match u32 tree's (as usize)"
+            );
+            assert_eq!(
+                u32_idx_as_usize, usize_idx,
+                "usize indices must match u32 tree's (as usize)"
+            );
 
-            assert_eq!(u32_dist, u64_dist, "u64 tree distances must be bit-equal to u32 tree's");
-            assert_eq!(u32_dist, usize_dist, "usize tree distances must be bit-equal to u32 tree's");
+            assert_eq!(
+                u32_dist, u64_dist,
+                "u64 tree distances must be bit-equal to u32 tree's"
+            );
+            assert_eq!(
+                u32_dist, usize_dist,
+                "usize tree distances must be bit-equal to u32 tree's"
+            );
         }
     }
 }

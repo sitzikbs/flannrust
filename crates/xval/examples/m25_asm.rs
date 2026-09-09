@@ -17,7 +17,7 @@
 // `as_chunks::<4>()` form clippy prefers (both measured, both bit-identical).
 #![allow(clippy::chunks_exact_to_as_chunks)]
 
-use flannrust::{ConstDim, DynDim, FlatSlice, L2, Distance};
+use flannrust::{ConstDim, Distance, DynDim, FlatSlice, L2};
 
 #[inline(never)]
 #[no_mangle]
@@ -50,7 +50,10 @@ pub fn probe_lib_constdim3_f32(q: &[f32], ds: &&[[f32; 3]], idx: usize) -> f32 {
 pub fn probe_row_chunks_f32(q: &[f32], row: &[f32], dim: usize) -> f32 {
     let mut result = 0.0f32;
     let multof4 = (dim >> 2) << 2;
-    for (a, b) in q[..multof4].chunks_exact(4).zip(row[..multof4].chunks_exact(4)) {
+    for (a, b) in q[..multof4]
+        .chunks_exact(4)
+        .zip(row[..multof4].chunks_exact(4))
+    {
         let diff0 = a[0] - b[0];
         let diff1 = a[1] - b[1];
         let diff2 = a[2] - b[2];
@@ -97,19 +100,33 @@ fn main() {
     let data = vec![1.0f32; 32 * 4];
     let ds = FlatSlice::new(&data, 32);
     let q = vec![0.5f32; 32];
-    println!("{}", probe_lib_dyndim32_f32(&q, &ds, 1, std::hint::black_box(32)));
+    println!(
+        "{}",
+        probe_lib_dyndim32_f32(&q, &ds, 1, std::hint::black_box(32))
+    );
     println!("{}", probe_lib_constdim32_f32(&q, &ds, 1));
-    println!("{}", probe_row_chunks_f32(&q, &data[32..64], std::hint::black_box(32)));
+    println!(
+        "{}",
+        probe_row_chunks_f32(&q, &data[32..64], std::hint::black_box(32))
+    );
     let d64 = vec![1.0f64; 32 * 4];
     let ds64 = FlatSlice::new(&d64, 32);
     let q64 = vec![0.5f64; 32];
-    println!("{}", probe_lib_dyndim32_f64(&q64, &ds64, 1, std::hint::black_box(32)));
+    println!(
+        "{}",
+        probe_lib_dyndim32_f64(&q64, &ds64, 1, std::hint::black_box(32))
+    );
     let a3: &[[f32; 3]] = &[[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]];
     println!("{}", probe_lib_constdim3_f32(&q, &a3, 1));
 
-    let pts3: Vec<[f32; 3]> = (0..1000).map(|i| [i as f32, (i * 7 % 13) as f32, (i * 3 % 5) as f32]).collect();
+    let pts3: Vec<[f32; 3]> = (0..1000)
+        .map(|i| [i as f32, (i * 7 % 13) as f32, (i * 3 % 5) as f32])
+        .collect();
     let sl: &[[f32; 3]] = &pts3;
-    let t3 = flannrust::KdTreeBuilder::new(ConstDim::<3>, sl).with_metric(L2).leaf_max_size(10).build();
+    let t3 = flannrust::KdTreeBuilder::new(ConstDim::<3>, sl)
+        .with_metric(L2)
+        .leaf_max_size(10)
+        .build();
     let mut oi = vec![0u32; 10];
     let mut od = vec![0.0f32; 10];
     println!("{}", probe_knn3(&t3, &[1.0, 2.0, 3.0], &mut oi, &mut od));

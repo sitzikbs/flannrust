@@ -126,7 +126,10 @@ pub enum RenderError {
     /// field flannrust_stats" serde error would otherwise fire first --
     /// see `render_python`'s explicit version check, done before the full
     /// document is parsed.
-    SchemaVersion { expected: u64, found: u64 },
+    SchemaVersion {
+        expected: u64,
+        found: u64,
+    },
 }
 
 impl fmt::Display for RenderError {
@@ -516,7 +519,9 @@ const BAD_GLYPH: &str = "\u{2715} "; // "✕ "
 /// `report_data.rs`'s `EPS_VALUES`/`DYN_ACC_EPS_VALUES` naming convention
 /// (`_eps0`, `_eps0.1`, `_eps1`). `None` if no such suffix is present.
 fn parse_eps(workload: &str) -> Option<String> {
-    workload.rfind("_eps").map(|i| format!("\u{3b5}={}", &workload[i + "_eps".len()..]))
+    workload
+        .rfind("_eps")
+        .map(|i| format!("\u{3b5}={}", &workload[i + "_eps".len()..]))
 }
 
 /// Verdict tiles: (a) accuracy at eps=0 -- "100% exact @ eps=0" only if
@@ -530,13 +535,21 @@ fn parse_eps(workload: &str) -> Option<String> {
 /// glyph-prefixed (`GOOD_GLYPH`/`BAD_GLYPH`) in addition to its
 /// good/fail CSS class, so the verdict reads without relying on color.
 fn render_tiles(accuracy: &[AccuracyRow], speed: &[SpeedRow]) -> String {
-    let eps0_rows: Vec<&AccuracyRow> = accuracy.iter().filter(|r| r.workload.ends_with("_eps0")).collect();
+    let eps0_rows: Vec<&AccuracyRow> = accuracy
+        .iter()
+        .filter(|r| r.workload.ends_with("_eps0"))
+        .collect();
     let (acc_ok, acc_value) = if eps0_rows.is_empty() {
         (false, "no eps=0 rows in report".to_string())
     } else {
         let min = eps0_rows
             .iter()
-            .flat_map(|r| [r.rust_exact_tie_aware_vs_bruteforce, r.cpp_exact_tie_aware_vs_bruteforce])
+            .flat_map(|r| {
+                [
+                    r.rust_exact_tie_aware_vs_bruteforce,
+                    r.cpp_exact_tie_aware_vs_bruteforce,
+                ]
+            })
             .fold(f64::INFINITY, f64::min);
         if min >= 1.0 {
             (true, "100% exact @ eps=0".to_string())
@@ -553,21 +566,42 @@ fn render_tiles(accuracy: &[AccuracyRow], speed: &[SpeedRow]) -> String {
         (false, format!("{exact_count}/{total} rows bit-exact"))
     };
 
-    let best = speed.iter().filter(|r| r.ratio > 0.0).map(|r| (1.0 / r.ratio, r.workload.as_str())).fold(
-        (f64::NEG_INFINITY, ""),
-        |acc, cur| if cur.0 > acc.0 { cur } else { acc },
-    );
+    let best = speed
+        .iter()
+        .filter(|r| r.ratio > 0.0)
+        .map(|r| (1.0 / r.ratio, r.workload.as_str()))
+        .fold((f64::NEG_INFINITY, ""), |acc, cur| {
+            if cur.0 > acc.0 {
+                cur
+            } else {
+                acc
+            }
+        });
     let (speed_ok, speed_value) = if speed.is_empty() {
         (false, "no speed rows in report".to_string())
     } else if best.0 >= 1.0 {
-        (true, format!("{:.2}\u{d7} faster \u{2014} {}", best.0, html_escape(best.1)))
+        (
+            true,
+            format!(
+                "{:.2}\u{d7} faster \u{2014} {}",
+                best.0,
+                html_escape(best.1)
+            ),
+        )
     } else {
         // Every row was cpp-faster (`1/ratio < 1.0` everywhere) -- report
         // the least-bad row's actual ratio (`1/best.0`, since `best.0` is
         // `max(1/ratio)` == `1/min(ratio)`) honestly rather than dressing
         // up a loss as a "win".
         let min_ratio = 1.0 / best.0;
-        (false, format!("no speed win \u{2014} best ratio {:.2}\u{d7} ({})", min_ratio, html_escape(best.1)))
+        (
+            false,
+            format!(
+                "no speed win \u{2014} best ratio {:.2}\u{d7} ({})",
+                min_ratio,
+                html_escape(best.1)
+            ),
+        )
     };
 
     format!(
@@ -681,7 +715,8 @@ fn render_accuracy_rows(accuracy: &[AccuracyRow]) -> String {
         .iter()
         .map(|r| {
             let eps = parse_eps(&r.workload).unwrap_or_else(|| "\u{2014}".to_string());
-            let perfect = r.rust_exact_tie_aware_vs_bruteforce >= 1.0 && r.cpp_exact_tie_aware_vs_bruteforce >= 1.0;
+            let perfect = r.rust_exact_tie_aware_vs_bruteforce >= 1.0
+                && r.cpp_exact_tie_aware_vs_bruteforce >= 1.0;
             let cell_class = if perfect { "good" } else { "" };
             let pill = if r.rust_eq_cpp_bitexact {
                 format!(r#"<span class="pill good">{GOOD_GLYPH}bit-exact</span>"#)
@@ -691,7 +726,12 @@ fn render_accuracy_rows(accuracy: &[AccuracyRow]) -> String {
 
             let evidence_attr = match (r.live_count, r.removed_count) {
                 (Some(live), Some(removed)) => {
-                    let ops = match (r.grow_and_add_count, r.remove_count, r.readd_count, r.tombstone_migrations) {
+                    let ops = match (
+                        r.grow_and_add_count,
+                        r.remove_count,
+                        r.readd_count,
+                        r.tombstone_migrations,
+                    ) {
                         (Some(g), Some(rm), Some(ra), Some(tm)) => format!(
                             " grow_and_add={g} remove={rm} readd={ra} tombstone_migrations={tm}"
                         ),
@@ -739,7 +779,8 @@ fn render_accuracy_rows(accuracy: &[AccuracyRow]) -> String {
 pub fn render(json: &str) -> Result<String, RenderError> {
     let doc: ReportDoc = serde_json::from_str(json)?;
 
-    let machine_line = format!(
+    let machine_line =
+        format!(
         "{} &middot; {} threads &middot; {} &middot; rustc {} &middot; {} &middot; nanoflann {}{}",
         html_escape(doc.meta.cpu_model.as_deref().unwrap_or("unknown")),
         doc.meta.cpu_threads,
@@ -758,7 +799,10 @@ pub fn render(json: &str) -> Result<String, RenderError> {
 
     let html = TEMPLATE
         .replace("{date}", &html_escape(&doc.meta.date))
-        .replace("{git_sha}", &html_escape(doc.meta.git_sha.as_deref().unwrap_or("unknown")))
+        .replace(
+            "{git_sha}",
+            &html_escape(doc.meta.git_sha.as_deref().unwrap_or("unknown")),
+        )
         .replace("{machine_line}", &machine_line)
         .replace("{wsl_caveat}", &wsl_caveat)
         .replace("{tiles}", &render_tiles(&doc.accuracy, &doc.speed))
@@ -766,7 +810,10 @@ pub fn render(json: &str) -> Result<String, RenderError> {
         .replace("{accuracy_rows}", &render_accuracy_rows(&doc.accuracy))
         .replace("{scoring}", &html_escape(&doc.meta.scoring))
         .replace("{gt_methodology}", &html_escape(&doc.meta.gt_methodology))
-        .replace("{speed_methodology}", &html_escape(&doc.meta.speed_methodology));
+        .replace(
+            "{speed_methodology}",
+            &html_escape(&doc.meta.speed_methodology),
+        );
 
     Ok(html)
 }
@@ -874,9 +921,17 @@ fn ratio_pill_py(ratio: f64) -> String {
 /// smaller than its own median is the common case, not the exception.
 fn fmt_py_stat_cell(s: &PyStats) -> String {
     let (median, mean, std) = if s.median_ms.abs() < 1.0 {
-        (format!("{:.6}", s.median_ms), format!("{:.6}", s.mean_ms), format!("{:.6}", s.std_ms))
+        (
+            format!("{:.6}", s.median_ms),
+            format!("{:.6}", s.mean_ms),
+            format!("{:.6}", s.std_ms),
+        )
     } else {
-        (format!("{:.3}", s.median_ms), format!("{:.3}", s.mean_ms), format!("{:.3}", s.std_ms))
+        (
+            format!("{:.3}", s.median_ms),
+            format!("{:.3}", s.mean_ms),
+            format!("{:.3}", s.std_ms),
+        )
     };
     format!("{median}&nbsp;({mean}&plusmn;{std},&nbsp;n={n})", n = s.n)
 }

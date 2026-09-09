@@ -68,32 +68,35 @@
 //! assert_eq!(indices[0], 0); // nearest point is [0.0, 0.0, 0.0]
 //! ```
 
-pub mod scalar;
-pub mod dim;
 pub mod bbox;
-pub mod data_source;
-pub mod metric;
-pub mod result_set;
-pub mod filter;
-pub mod params;
-pub mod tree;
-pub mod dynamic;
-mod node;
 mod build;
-mod search;
 #[cfg(feature = "parallel")]
 mod build_parallel;
+pub mod data_source;
+pub mod dim;
+pub mod dynamic;
+pub mod filter;
+pub mod metric;
+mod node;
+pub mod params;
+pub mod result_set;
+pub mod scalar;
+mod search;
+pub mod tree;
 
-pub use scalar::{Scalar, DistanceValue, IndexType};
-pub use dim::{Dim, ConstDim, DynDim};
 pub use bbox::Interval;
 pub use data_source::{DataSource, FlatSlice, OwnedRows};
-pub use metric::{Distance, L1, L2, L2Simple, SO2, SO3};
-pub use result_set::{ResultItem, ResultSet, TieBreak, KeepInsertionOrder, SmallestIndexWins, KnnResultSet, RknnResultSet, RadiusResultSet};
-pub use filter::{PointFilter, AcceptAll};
-pub use params::{SearchParams, BuildThreads};
-pub use tree::{KdTree, KdTreeBuilder};
+pub use dim::{ConstDim, Dim, DynDim};
 pub use dynamic::{DynamicKdTree, DynamicKdTreeBuilder};
+pub use filter::{AcceptAll, PointFilter};
+pub use metric::{Distance, L2Simple, L1, L2, SO2, SO3};
+pub use params::{BuildThreads, SearchParams};
+pub use result_set::{
+    KeepInsertionOrder, KnnResultSet, RadiusResultSet, ResultItem, ResultSet, RknnResultSet,
+    SmallestIndexWins, TieBreak,
+};
+pub use scalar::{DistanceValue, IndexType, Scalar};
+pub use tree::{KdTree, KdTreeBuilder};
 
 #[cfg(test)]
 mod tests {

@@ -102,7 +102,12 @@ macro_rules! abs_ternary {
 /// this is a best-effort net, not a soundness guarantee. Compiles to
 /// nothing in release (`debug_assert!`).
 #[inline]
-fn debug_check_point_row_contract<T: Scalar, DS: DataSource<T> + ?Sized>(ds: &DS, idx: usize, row: &[T], dim: usize) {
+fn debug_check_point_row_contract<T: Scalar, DS: DataSource<T> + ?Sized>(
+    ds: &DS,
+    idx: usize,
+    row: &[T],
+    dim: usize,
+) {
     if dim == 0 {
         return;
     }
@@ -547,7 +552,10 @@ mod tests {
         // a=3.0, b=-3.0 -> raw diff = b - a = -6.0, wraps to -6.0 + 2*pi.
         let expected = (2.0 * core::f64::consts::PI - 6.0).abs();
         let got = SO2.accum_dist(3.0f64, -3.0, 1);
-        assert!((got - expected).abs() < 1e-12, "got={got} expected={expected}");
+        assert!(
+            (got - expected).abs() < 1e-12,
+            "got={got} expected={expected}"
+        );
     }
 
     #[test]
@@ -555,7 +563,10 @@ mod tests {
         // a=-3.0, b=3.0 -> raw diff = b - a = 6.0, wraps to 6.0 - 2*pi.
         let expected = (6.0 - 2.0 * core::f64::consts::PI).abs();
         let got = SO2.accum_dist(-3.0f64, 3.0, 1);
-        assert!((got - expected).abs() < 1e-12, "got={got} expected={expected}");
+        assert!(
+            (got - expected).abs() < 1e-12,
+            "got={got} expected={expected}"
+        );
     }
 
     #[test]
@@ -674,14 +685,22 @@ mod tests {
     /// multipliers so summation-order differences would actually show up as
     /// rounding differences (unlike small exact integers).
     fn gen_random_ish_f64(dim: usize, salt: f64) -> (Vec<f64>, Vec<f64>) {
-        let q: Vec<f64> = (0..dim).map(|i| ((i as f64) * 0.837421 + salt).sin() * 137.035999).collect();
-        let p: Vec<f64> = (0..dim).map(|i| ((i as f64) * 1.928374 + salt * 1.5).cos() * 271.8281828 + 0.5).collect();
+        let q: Vec<f64> = (0..dim)
+            .map(|i| ((i as f64) * 0.837421 + salt).sin() * 137.035999)
+            .collect();
+        let p: Vec<f64> = (0..dim)
+            .map(|i| ((i as f64) * 1.928374 + salt * 1.5).cos() * 271.8281828 + 0.5)
+            .collect();
         (q, p)
     }
 
     fn gen_random_ish_f32(dim: usize, salt: f32) -> (Vec<f32>, Vec<f32>) {
-        let q: Vec<f32> = (0..dim).map(|i| ((i as f32) * 0.837421 + salt).sin() * 137.036).collect();
-        let p: Vec<f32> = (0..dim).map(|i| ((i as f32) * 1.928374 + salt * 1.5).cos() * 271.828_2 + 0.5).collect();
+        let q: Vec<f32> = (0..dim)
+            .map(|i| ((i as f32) * 0.837421 + salt).sin() * 137.036)
+            .collect();
+        let p: Vec<f32> = (0..dim)
+            .map(|i| ((i as f32) * 1.928374 + salt * 1.5).cos() * 271.828_2 + 0.5)
+            .collect();
         (q, p)
     }
 
@@ -890,7 +909,11 @@ mod tests {
         // land on a diff of EXACTLY -0.0 we supply it as the difference
         // via `a = -0.0, b = 0.0`: -0.0 - 0.0 = -0.0).
         let got = L1.accum_dist(-0.0f64, 0.0, 0);
-        assert!(got.is_sign_negative(), "abs_ternary! must leave -0.0 unchanged, got {got} (bits {:#x})", got.to_bits());
+        assert!(
+            got.is_sign_negative(),
+            "abs_ternary! must leave -0.0 unchanged, got {got} (bits {:#x})",
+            got.to_bits()
+        );
         assert_eq!(got.to_bits(), (-0.0f64).to_bits());
     }
 

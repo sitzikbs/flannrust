@@ -93,8 +93,15 @@ fn radius_search_returns_ascending_points_within_radius_f32() {
     let idx = RefIndexF32::build(&PTS_F32, DIM, Metric::L2, 10, 1);
     let results = idx.radius(&QUERY_F32, 1.0, true, 0.0);
     let indices: Vec<u32> = results.iter().map(|(i, _)| *i).collect();
-    assert_eq!(indices, vec![1, 0], "expected ascending [1, 0] within radius 1.0");
-    assert!(results[0].1 <= results[1].1, "results must be ascending by distance");
+    assert_eq!(
+        indices,
+        vec![1, 0],
+        "expected ascending [1, 0] within radius 1.0"
+    );
+    assert!(
+        results[0].1 <= results[1].1,
+        "results must be ascending by distance"
+    );
 }
 
 #[test]
@@ -175,7 +182,9 @@ fn build_free_loop_1000_points_200_iterations_no_crash() {
     let mut state: u64 = 0x2545F4914F6CDD1D;
     let mut pts = vec![0.0f32; n * dim];
     for v in pts.iter_mut() {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         let bits = (state >> 40) as u32; // 24 usable bits
         *v = (bits as f32) / (1u32 << 24) as f32 * 10.0;
     }
@@ -247,7 +256,13 @@ fn used_memory_is_nonzero_for_nonempty_tree_f32() {
 
 #[test]
 fn every_metric_builds_and_answers_knn_without_crashing_f32() {
-    for metric in [Metric::L1, Metric::L2, Metric::L2Simple, Metric::SO2, Metric::SO3] {
+    for metric in [
+        Metric::L1,
+        Metric::L2,
+        Metric::L2Simple,
+        Metric::SO2,
+        Metric::SO3,
+    ] {
         let idx = RefIndexF32::build(&PTS_F32, DIM, metric, 10, 1);
         assert_eq!(idx.size(), 5);
         let (indices, dists) = idx.knn(&QUERY_F32, 3, 0.0);
@@ -255,7 +270,12 @@ fn every_metric_builds_and_answers_knn_without_crashing_f32() {
         assert_eq!(dists.len(), 3, "metric {:?}", metric);
         // Every returned index must be a valid point index.
         for &i in &indices {
-            assert!(i < 5, "metric {:?} returned out-of-range index {}", metric, i);
+            assert!(
+                i < 5,
+                "metric {:?} returned out-of-range index {}",
+                metric,
+                i
+            );
         }
     }
 }
@@ -294,7 +314,11 @@ fn knn_into_matches_allocating_knn_f32() {
 
     assert_eq!(found, want_idx.len());
     assert_eq!(&got_idx[..found], want_idx.as_slice());
-    assert_eq!(&got_dist[..found], want_dist.as_slice(), "distances must be bit-identical");
+    assert_eq!(
+        &got_dist[..found],
+        want_dist.as_slice(),
+        "distances must be bit-identical"
+    );
 }
 
 #[test]
@@ -305,7 +329,10 @@ fn knn_into_panics_on_wrong_buffer_length() {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         idx.knn_into(&QUERY_F32, 3, 0.0, &mut short_idx, &mut dist)
     }));
-    assert!(result.is_err(), "knn_into must panic when out_idx.len() != k");
+    assert!(
+        result.is_err(),
+        "knn_into must panic when out_idx.len() != k"
+    );
 }
 
 #[test]
@@ -319,7 +346,11 @@ fn knn_into_matches_allocating_knn_f64() {
 
     assert_eq!(found, want_idx.len());
     assert_eq!(&got_idx[..found], want_idx.as_slice());
-    assert_eq!(&got_dist[..found], want_dist.as_slice(), "distances must be bit-identical");
+    assert_eq!(
+        &got_dist[..found],
+        want_dist.as_slice(),
+        "distances must be bit-identical"
+    );
 }
 
 #[test]
@@ -336,7 +367,10 @@ fn radius_into_matches_allocating_radius_f32() {
     assert_eq!(got_dist.len(), want.len());
     for i in 0..want.len() {
         assert_eq!(got_idx[i], want[i].0);
-        assert_eq!(got_dist[i], want[i].1, "distances must be bit-identical at rank {i}");
+        assert_eq!(
+            got_dist[i], want[i].1,
+            "distances must be bit-identical at rank {i}"
+        );
     }
 }
 
@@ -359,7 +393,11 @@ fn radius_into_reuses_and_resizes_buffers_across_calls_with_different_result_siz
 
     let c3 = idx.radius_into(&QUERY_F32, 0.5, true, 0.0, &mut out_idx, &mut out_dist);
     assert_eq!(c3, 1);
-    assert_eq!(out_idx.len(), 1, "buffer must shrink back down, not leave stale entries");
+    assert_eq!(
+        out_idx.len(),
+        1,
+        "buffer must shrink back down, not leave stale entries"
+    );
 }
 
 #[test]
@@ -373,7 +411,11 @@ fn fixed3_knn_into_matches_allocating_knn_f32() {
 
     assert_eq!(found, want_idx.len());
     assert_eq!(&got_idx[..found], want_idx.as_slice());
-    assert_eq!(&got_dist[..found], want_dist.as_slice(), "distances must be bit-identical");
+    assert_eq!(
+        &got_dist[..found],
+        want_dist.as_slice(),
+        "distances must be bit-identical"
+    );
 }
 
 #[test]
@@ -387,5 +429,9 @@ fn fixed3_knn_into_matches_allocating_knn_f64() {
 
     assert_eq!(found, want_idx.len());
     assert_eq!(&got_idx[..found], want_idx.as_slice());
-    assert_eq!(&got_dist[..found], want_dist.as_slice(), "distances must be bit-identical");
+    assert_eq!(
+        &got_dist[..found],
+        want_dist.as_slice(),
+        "distances must be bit-identical"
+    );
 }

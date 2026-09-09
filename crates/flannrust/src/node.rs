@@ -26,13 +26,25 @@ pub(crate) const LEAF: u32 = u32::MAX;
 
 impl<T: Scalar> Node<T> {
     pub(crate) fn leaf(left: u32, right: u32) -> Self {
-        Self { a: left, b: right, divfeat: LEAF, divlow: T::default(), divhigh: T::default() }
+        Self {
+            a: left,
+            b: right,
+            divfeat: LEAF,
+            divlow: T::default(),
+            divhigh: T::default(),
+        }
     }
 
     /// A split node whose children are not yet known (arena build allocates
     /// the parent slot first, then patches). `set_children` completes it.
     pub(crate) fn split(divfeat: u32, divlow: T, divhigh: T) -> Self {
-        Self { a: 0, b: 0, divfeat, divlow, divhigh }
+        Self {
+            a: 0,
+            b: 0,
+            divfeat,
+            divlow,
+            divhigh,
+        }
     }
 
     pub(crate) fn set_children(&mut self, child1: u32, child2: u32) {
@@ -72,7 +84,9 @@ impl<T: Scalar> Node<T> {
 /// (`search_level`).
 impl<T: Scalar> Node<T> {
     #[inline(always)]
-    pub(crate) fn is_leaf(&self) -> bool { self.divfeat == LEAF }
+    pub(crate) fn is_leaf(&self) -> bool {
+        self.divfeat == LEAF
+    }
 
     /// Leaf only: the `[left, right)` range into `vind`.
     #[inline(always)]
@@ -96,16 +110,20 @@ impl<T: Scalar> Node<T> {
     }
 
     #[inline(always)]
-    pub(crate) fn div_low(&self) -> T { self.divlow }
+    pub(crate) fn div_low(&self) -> T {
+        self.divlow
+    }
 
     #[inline(always)]
-    pub(crate) fn div_high(&self) -> T { self.divhigh }
+    pub(crate) fn div_high(&self) -> T {
+        self.divhigh
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::mem::{size_of, align_of};
+    use std::mem::{align_of, size_of};
 
     #[test]
     fn test_node_f32_size_and_alignment() {

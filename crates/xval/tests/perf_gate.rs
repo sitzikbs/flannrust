@@ -34,8 +34,8 @@
 use flannrust::{ConstDim, DynDim, DynamicKdTreeBuilder, KdTreeBuilder, ResultItem, L2};
 use nanoflann_ref::{Metric, RefDynIndexF32, RefIndex3F32, RefIndexF32, RefIndexF64};
 use xval::{
-    build_rust_f32, build_rust_f64, cfg_seed, measure_pair, queries, sample_distinct_indices, to_array3, to_f32,
-    uniform, BuildThreads, GrowableFlat, RoundRobin, TimingStats, XMetric,
+    build_rust_f32, build_rust_f64, cfg_seed, measure_pair, queries, sample_distinct_indices,
+    to_array3, to_f32, uniform, BuildThreads, GrowableFlat, RoundRobin, TimingStats, XMetric,
 };
 
 /// Per-side budget (seconds) for `measure_pair`'s adaptive `n` -- see
@@ -178,8 +178,10 @@ fn perf_gate_knn_dim3_f32_k10() {
     let q32 = to_f32(&q64);
 
     // Build ONCE, outside all timing.
-    let rust_tree =
-        KdTreeBuilder::new(ConstDim::<3>, arr3.as_slice()).with_metric(L2).leaf_max_size(LEAF).build_sequential();
+    let rust_tree = KdTreeBuilder::new(ConstDim::<3>, arr3.as_slice())
+        .with_metric(L2)
+        .leaf_max_size(LEAF)
+        .build_sequential();
     let cpp_tree = RefIndex3F32::build(&data32, LEAF, 1);
 
     let (rust, cpp) = measure_pair(
@@ -285,7 +287,9 @@ fn perf_gate_radius_dim3_f32() {
     // nearest neighbor of the first pooled query).
     let probe = &q[0..DIM];
     let (_idx, dist) = cpp_tree.knn(probe, SELECTIVITY_K, 0.0);
-    let radius = *dist.last().expect("calibration knn must return at least one neighbor");
+    let radius = *dist
+        .last()
+        .expect("calibration knn must return at least one neighbor");
 
     let (rust, cpp) = measure_pair(
         || {
@@ -303,7 +307,8 @@ fn perf_gate_radius_dim3_f32() {
             let mut out_dist: Vec<f32> = Vec::new();
             for _ in 0..N_QUERIES {
                 let query = std::hint::black_box(rr.next());
-                let found = cpp_tree.radius_into(query, radius, true, 0.0, &mut out_idx, &mut out_dist);
+                let found =
+                    cpp_tree.radius_into(query, radius, true, 0.0, &mut out_idx, &mut out_dist);
                 std::hint::black_box(found);
             }
         },
@@ -336,7 +341,11 @@ fn perf_gate_dyn_add_20k_dim3_f32() {
     const BATCH: usize = 1000;
     const BATCHES: usize = 20; // 20 * 1000 = 20k total
 
-    let data = to_f32(&uniform(cfg_seed("perf_gate_dyn_add", &[CAP, DIM]), CAP, DIM));
+    let data = to_f32(&uniform(
+        cfg_seed("perf_gate_dyn_add", &[CAP, DIM]),
+        CAP,
+        DIM,
+    ));
 
     let (rust, cpp) = measure_pair(
         || {
@@ -413,7 +422,11 @@ fn perf_gate_dyn_knn_after_churn_dim3_f32() {
     let data = to_f32(&data64);
     let q64 = queries(cfg_seed("perf_gate_dyn_churn_q", &[N]), &data64, DIM, POOL);
     let q = to_f32(&q64);
-    let remove_idx = sample_distinct_indices(cfg_seed("perf_gate_dyn_churn_idx", &[BASE, REMOVE]), BASE, REMOVE);
+    let remove_idx = sample_distinct_indices(
+        cfg_seed("perf_gate_dyn_churn_idx", &[BASE, REMOVE]),
+        BASE,
+        REMOVE,
+    );
     let readd_idx = &remove_idx[..READD];
 
     // Build ONCE, outside timing; churn (REMOVE removes + READD re-adds,
@@ -422,8 +435,10 @@ fn perf_gate_dyn_knn_after_churn_dim3_f32() {
     // migrations) ONCE, outside timing -- only the knn query loop below is
     // timed.
     let growable = GrowableFlat::new(&data, DIM);
-    let mut rust_tree =
-        DynamicKdTreeBuilder::new(DynDim(DIM), &growable).leaf_max_size(LEAF).maximum_point_count(N).build();
+    let mut rust_tree = DynamicKdTreeBuilder::new(DynDim(DIM), &growable)
+        .leaf_max_size(LEAF)
+        .maximum_point_count(N)
+        .build();
     growable.set_current_n(BASE);
     rust_tree.add_points(0, BASE - 1);
     for &idx in &remove_idx {

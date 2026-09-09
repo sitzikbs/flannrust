@@ -7,11 +7,11 @@
 //! method, a broken assumption about slice lengths) the moment it happens,
 //! instead of only at the next manual `cargo bench` run.
 
-use nanoflann_ref::{Metric, RefDynIndexF32, RefIndex3F32, RefIndex3F64, RefIndexF32, RefIndexF64};
 use flannrust::{ConstDim, DynDim, DynamicKdTreeBuilder, KdTreeBuilder, L2};
+use nanoflann_ref::{Metric, RefDynIndexF32, RefIndex3F32, RefIndex3F64, RefIndexF32, RefIndexF64};
 use xval::{
-    build_rust_f32, build_rust_f64, cfg_seed, queries, sample_distinct_indices, to_array3, to_f32, uniform,
-    BuildThreads, GrowableFlat, RoundRobin, XMetric,
+    build_rust_f32, build_rust_f64, cfg_seed, queries, sample_distinct_indices, to_array3, to_f32,
+    uniform, BuildThreads, GrowableFlat, RoundRobin, XMetric,
 };
 
 const N: usize = 2000;
@@ -38,13 +38,20 @@ fn bench_data_paths_do_not_panic() {
 
     // ---- build_fixed3 path (ConstDim<3> rust vs nfr3_build_f cpp) ----
     let arr3 = to_array3(&data32);
-    let rust3 =
-        KdTreeBuilder::new(ConstDim::<3>, arr3.as_slice()).with_metric(L2).leaf_max_size(LEAF).build_sequential();
+    let rust3 = KdTreeBuilder::new(ConstDim::<3>, arr3.as_slice())
+        .with_metric(L2)
+        .leaf_max_size(LEAF)
+        .build_sequential();
     let cpp3 = RefIndex3F32::build(&data32, LEAF, 1);
     assert_eq!(rust3.size(), N);
 
     // ---- runtime-dim knn path (bench_knn.rs `knn` group), f32 and f64, dim 3 and dim 8 ----
-    let q64 = queries(cfg_seed("bench_sanity_q", &[N, DIM]), &data64, DIM, N_QUERIES_POOL);
+    let q64 = queries(
+        cfg_seed("bench_sanity_q", &[N, DIM]),
+        &data64,
+        DIM,
+        N_QUERIES_POOL,
+    );
     let q32 = to_f32(&q64);
     let mut rr32 = RoundRobin::new(&q32, DIM);
     let probe32 = rr32.next();
@@ -55,9 +62,20 @@ fn bench_data_paths_do_not_panic() {
     assert_eq!(c_dist.len(), c_idx.len());
 
     let data64_dim8 = uniform(cfg_seed("bench_sanity_dim8", &[N, DIM8]), N, DIM8);
-    let rust64_dim8 = build_rust_f64(&data64_dim8, DIM8, XMetric::L2, LEAF, BuildThreads::Sequential);
+    let rust64_dim8 = build_rust_f64(
+        &data64_dim8,
+        DIM8,
+        XMetric::L2,
+        LEAF,
+        BuildThreads::Sequential,
+    );
     let cpp64_dim8 = RefIndexF64::build(&data64_dim8, DIM8, Metric::L2, LEAF, 1);
-    let q64_dim8 = queries(cfg_seed("bench_sanity_q_dim8", &[N, DIM8]), &data64_dim8, DIM8, N_QUERIES_POOL);
+    let q64_dim8 = queries(
+        cfg_seed("bench_sanity_q_dim8", &[N, DIM8]),
+        &data64_dim8,
+        DIM8,
+        N_QUERIES_POOL,
+    );
     let probe64 = &q64_dim8[0..DIM8];
     let (r_idx8, r_dist8) = rust64_dim8.knn(probe64, K, 0.0);
     let (c_idx8, c_dist8) = cpp64_dim8.knn(probe64, K, 0.0);
@@ -75,8 +93,10 @@ fn bench_data_paths_do_not_panic() {
     assert_eq!(c3_dist.len(), c3_idx.len());
 
     let arr3_64 = to_array3(&data64);
-    let rust3_64 =
-        KdTreeBuilder::new(ConstDim::<3>, arr3_64.as_slice()).with_metric(L2).leaf_max_size(LEAF).build_sequential();
+    let rust3_64 = KdTreeBuilder::new(ConstDim::<3>, arr3_64.as_slice())
+        .with_metric(L2)
+        .leaf_max_size(LEAF)
+        .build_sequential();
     let cpp3_64 = RefIndex3F64::build(&data64, LEAF, 1);
     let probe64_dim3 = &q64[0..DIM];
     let mut out_idx64 = vec![0u32; K];
@@ -89,7 +109,9 @@ fn bench_data_paths_do_not_panic() {
 
     // ---- radius calibration + radius_search path (bench_radius.rs) ----
     let (_calib_idx, calib_dist) = cpp_seq.knn(probe32, K, 0.0);
-    let radius = *calib_dist.last().expect("calibration knn must return at least one neighbor");
+    let radius = *calib_dist
+        .last()
+        .expect("calibration knn must return at least one neighbor");
     let rust_radius_out = rust_seq.radius(probe32, radius, true, 0.0);
     let cpp_radius_out = cpp_seq.radius(probe32, radius, true, 0.0);
     assert!(!rust_radius_out.is_empty());
@@ -123,12 +145,18 @@ fn bench_data_paths_do_not_panic_dynamic() {
     const K: usize = 5;
     const N_QUERIES_POOL: usize = 20;
 
-    let data = to_f32(&uniform(cfg_seed("bench_sanity_dyn_add_data", &[CAP, DIM]), CAP, DIM));
+    let data = to_f32(&uniform(
+        cfg_seed("bench_sanity_dyn_add_data", &[CAP, DIM]),
+        CAP,
+        DIM,
+    ));
 
     // ---- dyn_add path (rust) ----
     let growable = GrowableFlat::new(&data, DIM);
-    let mut rust_tree =
-        DynamicKdTreeBuilder::new(DynDim(DIM), &growable).leaf_max_size(LEAF).maximum_point_count(CAP).build();
+    let mut rust_tree = DynamicKdTreeBuilder::new(DynDim(DIM), &growable)
+        .leaf_max_size(LEAF)
+        .maximum_point_count(CAP)
+        .build();
     let mut start = 0usize;
     for _ in 0..BATCHES {
         let end = start + BATCH;
@@ -150,7 +178,11 @@ fn bench_data_paths_do_not_panic_dynamic() {
     assert!(cpp_tree.tree_count() > 0);
 
     // ---- dyn_churn path (both sides already fully built above) ----
-    let churn_idx = sample_distinct_indices(cfg_seed("bench_sanity_dyn_churn_idx", &[CAP, CHURN]), CAP, CHURN);
+    let churn_idx = sample_distinct_indices(
+        cfg_seed("bench_sanity_dyn_churn_idx", &[CAP, CHURN]),
+        CAP,
+        CHURN,
+    );
     for &idx in &churn_idx {
         rust_tree.remove_point(idx);
     }
@@ -185,7 +217,12 @@ fn bench_data_paths_do_not_panic_dynamic() {
         cpp_tree.add_points(idx as u32, idx as u32);
     }
 
-    let q64 = queries(cfg_seed("bench_sanity_dyn_knn_q", &[CAP, DIM]), &to_f32_as_f64(&data), DIM, N_QUERIES_POOL);
+    let q64 = queries(
+        cfg_seed("bench_sanity_dyn_knn_q", &[CAP, DIM]),
+        &to_f32_as_f64(&data),
+        DIM,
+        N_QUERIES_POOL,
+    );
     let q = to_f32(&q64);
     let mut rr = RoundRobin::new(&q, DIM);
     let mut out_idx = vec![0u32; K];

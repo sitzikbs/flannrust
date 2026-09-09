@@ -29,10 +29,8 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use flannrust::{ConstDim, DataSource, Dim, Distance, DynDim, FlatSlice, KdTreeBuilder, L2};
 use nanoflann_ref::{Metric, RefIndex3F32, RefIndexF32, RefIndexF64};
-use flannrust::{
-    ConstDim, DataSource, Dim, Distance, DynDim, FlatSlice, KdTreeBuilder, L2,
-};
 use xval::{
     build_rust_f32, build_rust_f64, cfg_seed, queries, timed_median_ms, to_array3, to_f32, uniform,
     BuildThreads, XMetric,
@@ -232,7 +230,13 @@ fn l2_row_chunks_f64(q: &[f64], row: &[f64], dim: usize) -> f64 {
 /// otherwise identical to (a): separates "bounds-check cost" from
 /// "straight-line-block / vectorization" effects.
 #[inline(always)]
-fn l2_component_unchecked_f32(q: &[f32], data: &[f32], stride: usize, idx: usize, dim: usize) -> f32 {
+fn l2_component_unchecked_f32(
+    q: &[f32],
+    data: &[f32],
+    stride: usize,
+    idx: usize,
+    dim: usize,
+) -> f32 {
     unsafe {
         let mut result = 0.0f32;
         let multof4 = (dim >> 2) << 2;
@@ -368,7 +372,9 @@ fn kernel_probe() {
             // deterministic LCG shuffle
             let mut s: u64 = 0x9E3779B97F4A7C15;
             for i in (1..N).rev() {
-                s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                s = s
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 let j = (s >> 33) as usize % (i + 1);
                 v.swap(i, j);
             }
@@ -387,17 +393,29 @@ fn kernel_probe() {
             assert_eq!(base, l2_row_f32(&q32, row, dim).to_bits());
             assert_eq!(base, l2_row_chunks_f32(&q32, row, dim).to_bits());
             assert_eq!(base, l2_row_arraychunks_f32(&q32, row, dim).to_bits());
-            assert_eq!(base, l2_component_unchecked_f32(&q32, &data32, dim, i, dim).to_bits());
+            assert_eq!(
+                base,
+                l2_component_unchecked_f32(&q32, &data32, dim, i, dim).to_bits()
+            );
             let base64 = L2.eval(&q64, &flat64, i, DynDim(dim)).to_bits();
             let row64 = &data64[i * dim..i * dim + dim];
-            assert_eq!(base64, l2_component_f64(&q64, &data64, dim, i, dim).to_bits());
+            assert_eq!(
+                base64,
+                l2_component_f64(&q64, &data64, dim, i, dim).to_bits()
+            );
             assert_eq!(base64, l2_row_f64(&q64, row64, dim).to_bits());
             assert_eq!(base64, l2_row_chunks_f64(&q64, row64, dim).to_bits());
         }
-        eprintln!("# dim {dim}: all hand-written variants bit-identical to L2::eval on all {N} points");
+        eprintln!(
+            "# dim {dim}: all hand-written variants bit-identical to L2::eval on all {N} points"
+        );
 
         for order in ["seq", "perm"] {
-            let idxs: Vec<usize> = if order == "seq" { (0..N).collect() } else { perm.clone() };
+            let idxs: Vec<usize> = if order == "seq" {
+                (0..N).collect()
+            } else {
+                perm.clone()
+            };
 
             // f32 library eval, DynDim
             let mut acc = 0.0f32;
@@ -479,7 +497,15 @@ fn kernel_probe() {
                 }
                 acc = s;
             });
-            report(dim, "f32", order, "hand_component_unchecked", ms, N, acc as f64);
+            report(
+                dim,
+                "f32",
+                order,
+                "hand_component_unchecked",
+                ms,
+                N,
+                acc as f64,
+            );
 
             // f64 library eval, DynDim
             let mut acc = 0.0f64;
@@ -596,7 +622,17 @@ fn count_probe() {
     println!("# visit counts per query via a delegating CountingL2 metric");
     println!("# eval_calls = points scanned in leaves; accum_calls = interior-node visits + dim (initial dists)");
     println!("dim,leaf,scalar,queries,eval_per_query,interior_per_query,frac_points_scanned");
-    for (dim, leaf) in [(3usize, 10usize), (8, 10), (16, 10), (32, 10), (3, 1), (3, 4), (3, 32), (3, 128), (3, 1024)] {
+    for (dim, leaf) in [
+        (3usize, 10usize),
+        (8, 10),
+        (16, 10),
+        (32, 10),
+        (3, 1),
+        (3, 4),
+        (3, 32),
+        (3, 128),
+        (3, 1024),
+    ] {
         let data64 = uniform(cfg_seed("m25_count", &[dim]), N, dim);
         let data32 = to_f32(&data64);
         let q64 = queries(cfg_seed("m25_count_q", &[dim]), &data64, dim, NQ);
@@ -617,10 +653,7 @@ fn count_probe() {
         }
         let ev = EVAL_COUNT.load(Ordering::Relaxed) as f64 / NQ as f64;
         let ac = ACCUM_COUNT.load(Ordering::Relaxed) as f64 / NQ as f64 - dim as f64;
-        println!(
-            "{dim},{leaf},f32,{NQ},{ev:.1},{ac:.1},{:.4}",
-            ev / N as f64
-        );
+        println!("{dim},{leaf},f32,{NQ},{ev:.1},{ac:.1},{:.4}", ev / N as f64);
     }
 }
 
@@ -744,7 +777,10 @@ fn sweep_probe() {
             }
         });
         let delta_ns = (rust_ms - cpp_ms) * 1e6 / NQ as f64;
-        println!("{leaf},{rust_ms:.3},{cpp_ms:.3},{:.4},{delta_ns:.2}", rust_ms / cpp_ms);
+        println!(
+            "{leaf},{rust_ms:.3},{cpp_ms:.3},{:.4},{delta_ns:.2}",
+            rust_ms / cpp_ms
+        );
     }
 }
 
@@ -755,7 +791,9 @@ fn knn_probe() {
     const NQ: usize = 200;
     const K: usize = 10;
     const LEAF: usize = 10;
-    println!("# gate-style knn (DynDim/FlatSlice vs DIM=-1), n={N}, {NQ} queries, k={K}, leaf={LEAF}");
+    println!(
+        "# gate-style knn (DynDim/FlatSlice vs DIM=-1), n={N}, {NQ} queries, k={K}, leaf={LEAF}"
+    );
     println!("dim,scalar,rust_ms,cpp_ms,ratio");
     for &dim in &[8usize, 16, 32, 64] {
         let data64 = uniform(cfg_seed("m25_knn", &[dim]), N, dim);

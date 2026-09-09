@@ -13,7 +13,10 @@ pub struct SearchParams {
 
 impl Default for SearchParams {
     fn default() -> Self {
-        Self { eps: 0.0, sorted: true }
+        Self {
+            eps: 0.0,
+            sorted: true,
+        }
     }
 }
 

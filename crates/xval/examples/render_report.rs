@@ -38,7 +38,9 @@ use std::io::Read;
 fn read_json_arg(path: &str) -> String {
     if path == "-" {
         let mut buf = String::new();
-        std::io::stdin().read_to_string(&mut buf).expect("failed to read JSON from stdin");
+        std::io::stdin()
+            .read_to_string(&mut buf)
+            .expect("failed to read JSON from stdin");
         buf
     } else {
         std::fs::read_to_string(path).unwrap_or_else(|e| {

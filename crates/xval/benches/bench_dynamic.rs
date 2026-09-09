@@ -64,8 +64,8 @@
 //! why.
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use nanoflann_ref::RefDynIndexF32;
 use flannrust::{DynDim, DynamicKdTreeBuilder};
+use nanoflann_ref::RefDynIndexF32;
 use xval::{cfg_seed, queries, sample_distinct_indices, to_f32, uniform, GrowableFlat, RoundRobin};
 
 const CAP: usize = 100_000;
@@ -85,7 +85,11 @@ fn bench_dyn_add(c: &mut Criterion) {
     let mut group = c.benchmark_group("dyn_add");
     group.sample_size(10);
 
-    let data = to_f32(&uniform(cfg_seed("bench_dyn_add_data", &[CAP, DIM]), CAP, DIM));
+    let data = to_f32(&uniform(
+        cfg_seed("bench_dyn_add_data", &[CAP, DIM]),
+        CAP,
+        DIM,
+    ));
 
     group.bench_function("rust", |b| {
         b.iter(|| {
@@ -131,13 +135,20 @@ fn bench_dyn_churn(c: &mut Criterion) {
     let mut group = c.benchmark_group("dyn_churn");
     group.sample_size(10);
 
-    let data = to_f32(&uniform(cfg_seed("bench_dyn_churn_data", &[CAP, DIM]), CAP, DIM));
-    let churn_idx = sample_distinct_indices(cfg_seed("bench_dyn_churn_idx", &[CAP, CHURN]), CAP, CHURN);
+    let data = to_f32(&uniform(
+        cfg_seed("bench_dyn_churn_data", &[CAP, DIM]),
+        CAP,
+        DIM,
+    ));
+    let churn_idx =
+        sample_distinct_indices(cfg_seed("bench_dyn_churn_idx", &[CAP, CHURN]), CAP, CHURN);
 
     // Rust: build once, add all CAP points -- outside timing.
     let growable = GrowableFlat::new(&data, DIM);
-    let mut rust_tree =
-        DynamicKdTreeBuilder::new(DynDim(DIM), &growable).leaf_max_size(LEAF).maximum_point_count(CAP).build();
+    let mut rust_tree = DynamicKdTreeBuilder::new(DynDim(DIM), &growable)
+        .leaf_max_size(LEAF)
+        .maximum_point_count(CAP)
+        .build();
     growable.set_current_n(CAP);
     rust_tree.add_points(0, CAP - 1);
 
@@ -187,20 +198,34 @@ fn bench_dyn_knn_after_churn(c: &mut Criterion) {
     const KNN_REMOVE: usize = 5_000; // removed from the BASE range
     const KNN_READD: usize = 2_500; // reactivated -- half of KNN_REMOVE
 
-    let data64 = uniform(cfg_seed("bench_dyn_knn_after_churn_data", &[CAP, DIM]), CAP, DIM);
+    let data64 = uniform(
+        cfg_seed("bench_dyn_knn_after_churn_data", &[CAP, DIM]),
+        CAP,
+        DIM,
+    );
     let data = to_f32(&data64);
-    let q64 = queries(cfg_seed("bench_dyn_knn_after_churn_q", &[CAP, DIM]), &data64, DIM, N_QUERIES_POOL);
+    let q64 = queries(
+        cfg_seed("bench_dyn_knn_after_churn_q", &[CAP, DIM]),
+        &data64,
+        DIM,
+        N_QUERIES_POOL,
+    );
     let q = to_f32(&q64);
-    let remove_idx =
-        sample_distinct_indices(cfg_seed("bench_dyn_knn_after_churn_idx", &[BASE, KNN_REMOVE]), BASE, KNN_REMOVE);
+    let remove_idx = sample_distinct_indices(
+        cfg_seed("bench_dyn_knn_after_churn_idx", &[BASE, KNN_REMOVE]),
+        BASE,
+        KNN_REMOVE,
+    );
     let readd_idx = &remove_idx[..KNN_READD];
 
     // Rust: build to BASE, churn (remove REMOVE / re-add READD, leaving
     // live tombstones), then a fresh contiguous GROWTH batch (real merges +
     // tombstone migrations) -- all outside timing.
     let growable = GrowableFlat::new(&data, DIM);
-    let mut rust_tree =
-        DynamicKdTreeBuilder::new(DynDim(DIM), &growable).leaf_max_size(LEAF).maximum_point_count(CAP).build();
+    let mut rust_tree = DynamicKdTreeBuilder::new(DynDim(DIM), &growable)
+        .leaf_max_size(LEAF)
+        .maximum_point_count(CAP)
+        .build();
     growable.set_current_n(BASE);
     rust_tree.add_points(0, BASE - 1);
     for &idx in &remove_idx {
@@ -254,5 +279,10 @@ fn bench_dyn_knn_after_churn(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_dyn_add, bench_dyn_churn, bench_dyn_knn_after_churn);
+criterion_group!(
+    benches,
+    bench_dyn_add,
+    bench_dyn_churn,
+    bench_dyn_knn_after_churn
+);
 criterion_main!(benches);
