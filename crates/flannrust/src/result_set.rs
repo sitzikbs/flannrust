@@ -121,6 +121,7 @@ pub struct KnnResultSet<'a, D, Idx, TB = KeepInsertionOrder> {
     indices: &'a mut [Idx],
     dists: &'a mut [D],
     count: usize,
+    cached_worst: D,
     _tb: PhantomData<TB>,
 }
 
@@ -132,6 +133,7 @@ impl<'a, D: DistanceValue, Idx: Copy + PartialOrd, TB: TieBreak> KnnResultSet<'a
             indices,
             dists,
             count: 0,
+            cached_worst: D::MAX,
             _tb: PhantomData,
         }
     }
@@ -142,18 +144,18 @@ impl<'a, D: DistanceValue, Idx: Copy + PartialOrd, TB: TieBreak> ResultSet<D, Id
 {
     #[inline]
     fn worst_dist(&self) -> D {
-        // C++ (nanoflann.hpp:334-336): max() while not yet full.
-        if self.count < self.dists.len() || self.count == 0 {
-            D::MAX
-        } else {
-            self.dists[self.count - 1]
-        }
+        self.cached_worst
     }
 
     #[inline]
     fn add_point(&mut self, dist: D, index: Idx) -> bool {
         self.count =
             add_point_to_sorted::<D, Idx, TB>(self.indices, self.dists, self.count, dist, index);
+        self.cached_worst = if self.count < self.dists.len() || self.count == 0 {
+            D::MAX
+        } else {
+            self.dists[self.count - 1]
+        };
         true
     }
 
@@ -176,6 +178,7 @@ pub struct RknnResultSet<'a, D, Idx, TB = KeepInsertionOrder> {
     dists: &'a mut [D],
     count: usize,
     max_radius: D,
+    cached_worst: D,
     _tb: PhantomData<TB>,
 }
 
@@ -188,6 +191,7 @@ impl<'a, D: DistanceValue, Idx: Copy + PartialOrd, TB: TieBreak> RknnResultSet<'
             dists,
             count: 0,
             max_radius,
+            cached_worst: max_radius,
             _tb: PhantomData,
         }
     }
@@ -198,21 +202,18 @@ impl<'a, D: DistanceValue, Idx: Copy + PartialOrd, TB: TieBreak> ResultSet<D, Id
 {
     #[inline]
     fn worst_dist(&self) -> D {
-        // C++ (nanoflann.hpp:395-398): the radius while not full — this alone
-        // implements the radius cap; candidates beyond it fail `dist < worstDist()`.
-        // (C++ also seeds dists[capacity-1] in init(); that seeding is vestigial
-        // in 1.12.1 and deliberately not ported.)
-        if self.count < self.dists.len() || self.count == 0 {
-            self.max_radius
-        } else {
-            self.dists[self.count - 1]
-        }
+        self.cached_worst
     }
 
     #[inline]
     fn add_point(&mut self, dist: D, index: Idx) -> bool {
         self.count =
             add_point_to_sorted::<D, Idx, TB>(self.indices, self.dists, self.count, dist, index);
+        self.cached_worst = if self.count < self.dists.len() || self.count == 0 {
+            self.max_radius
+        } else {
+            self.dists[self.count - 1]
+        };
         true
     }
 
