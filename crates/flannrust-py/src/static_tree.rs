@@ -7,8 +7,8 @@ use std::num::NonZeroU32;
 use std::ops::Deref;
 
 use flannrust::{
-    BuildThreads, ConstDim, Distance, DynDim, Interval, KdTree, KdTreeBuilder, L2Simple, OwnedRows,
-    ResultItem, Scalar, SearchParams, L1, L2,
+    BuildThreads, ConstDim, Distance, DynDim, Interval, KdTree, KdTreeBuilder, L2Fma, L2Simple,
+    OwnedRows, ResultItem, Scalar, SearchParams, L1, L2,
 };
 use numpy::{Element, IntoPyArray, PyArray1, PyArrayMethods};
 use pyo3::exceptions::{PyTypeError, PyValueError};
@@ -33,6 +33,8 @@ enum StaticTree {
     F64DynL1(KdTree<f64, DynDim, OwnedRows<f64>, L1>),
     F32DynL2s(KdTree<f32, DynDim, OwnedRows<f32>, L2Simple>),
     F64DynL2s(KdTree<f64, DynDim, OwnedRows<f64>, L2Simple>),
+    F32DynFma(KdTree<f32, DynDim, OwnedRows<f32>, L2Fma>),
+    F64DynFma(KdTree<f64, DynDim, OwnedRows<f64>, L2Fma>),
 }
 
 /// Dispatches `$body` (an expression using `$t: &KdTree<T, D, OwnedRows<T>, M>`,
@@ -54,6 +56,8 @@ macro_rules! for_each_variant {
             StaticTree::F64DynL1($t) => $body,
             StaticTree::F32DynL2s($t) => $body,
             StaticTree::F64DynL2s($t) => $body,
+            StaticTree::F32DynFma($t) => $body,
+            StaticTree::F64DynFma($t) => $body,
         }
     };
 }
@@ -78,8 +82,9 @@ fn parse_metric(metric: &str) -> PyResult<&'static str> {
         "l2" => Ok("l2"),
         "l1" => Ok("l1"),
         "l2_simple" => Ok("l2_simple"),
+        "l2_fma" => Ok("l2_fma"),
         other => Err(PyValueError::new_err(format!(
-            "metric must be one of \"l2\", \"l1\", \"l2_simple\" (got {other:?})"
+            "metric must be one of \"l2\", \"l1\", \"l2_simple\", \"l2_fma\" (got {other:?})"
         ))),
     }
 }
@@ -309,7 +314,10 @@ fn build_f32(
         ("l2_simple", _) => {
             StaticTree::F32DynL2s(build_tree(DynDim(d), data, d, leaf_size, L2Simple, threads))
         }
-        _ => unreachable!("parse_metric only returns l2/l1/l2_simple"),
+        ("l2_fma", _) => {
+            StaticTree::F32DynFma(build_tree(DynDim(d), data, d, leaf_size, L2Fma, threads))
+        }
+        _ => unreachable!("parse_metric validated"),
     }
 }
 
@@ -328,7 +336,10 @@ fn build_f64(
         ("l2_simple", _) => {
             StaticTree::F64DynL2s(build_tree(DynDim(d), data, d, leaf_size, L2Simple, threads))
         }
-        _ => unreachable!("parse_metric only returns l2/l1/l2_simple"),
+        ("l2_fma", _) => {
+            StaticTree::F64DynFma(build_tree(DynDim(d), data, d, leaf_size, L2Fma, threads))
+        }
+        _ => unreachable!("parse_metric validated"),
     }
 }
 

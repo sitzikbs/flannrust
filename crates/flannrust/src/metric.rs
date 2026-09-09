@@ -60,6 +60,14 @@ pub struct L2;
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct L2Simple;
 
+/// **Squared** Euclidean metric using hardware FMA (`mul_add`). Faster than
+/// [`L2`] on FMA-capable hardware (all x86-64-v3+ and aarch64) but **NOT
+/// bit-identical** to `L2` or the C++ oracle — results may differ at the
+/// last bit due to fused multiply-add rounding. Use when throughput matters
+/// more than exact reproducibility.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct L2Fma;
+
 /// Shortest angular distance on the last dimension only, assuming inputs are
 /// already wrapped into `[-pi, pi]` (nanoflann's `SO2_Adaptor`). NOT squared;
 /// the result lies in `[0, pi]`.
@@ -356,6 +364,44 @@ macro_rules! impl_l2_simple {
     };
 }
 
+macro_rules! impl_l2_fma {
+    ($t:ty) => {
+        impl Distance<$t> for L2Fma {
+            type DistanceType = $t;
+
+            fn eval<DS: DataSource<$t> + ?Sized, D: Dim>(
+                &self,
+                query: &[$t],
+                ds: &DS,
+                idx: usize,
+                dim: D,
+            ) -> $t {
+                let dim = dim.dim();
+                let mut result: $t = 0.0;
+                if let Some(row) = ds.point_row(idx) {
+                    if row.len() >= dim && query.len() >= dim {
+                        for (q, p) in query[..dim].iter().zip(&row[..dim]) {
+                            let diff = *q - *p;
+                            result = diff.mul_add(diff, result);
+                        }
+                        return result;
+                    }
+                }
+                for d in 0..dim {
+                    let diff = query[d] - ds.point_component(idx, d);
+                    result = diff.mul_add(diff, result);
+                }
+                result
+            }
+
+            fn accum_dist(&self, a: $t, b: $t, _axis: usize) -> $t {
+                let diff = a - b;
+                diff * diff
+            }
+        }
+    };
+}
+
 macro_rules! impl_so2 {
     ($t:ty, $pi:expr) => {
         impl Distance<$t> for SO2 {
@@ -420,6 +466,9 @@ impl_l2!(f32);
 impl_l2!(f64);
 impl_l2_simple!(f32);
 impl_l2_simple!(f64);
+
+impl_l2_fma!(f32);
+impl_l2_fma!(f64);
 impl_so2!(f32, core::f32::consts::PI);
 impl_so2!(f64, core::f64::consts::PI);
 impl_so3!(f32);
@@ -531,6 +580,42 @@ mod tests {
         // Different summation order (4-way unroll vs plain sequential loop)
         // can produce a tiny floating-point discrepancy on non-exact inputs.
         assert!((l2 - l2s).abs() < 4.0 * f64::EPSILON, "l2={l2} l2s={l2s}");
+    }
+
+    // ---- Test 4b: L2Fma close to L2, uses mul_add ----
+
+    #[test]
+    fn l2_fma_matches_l2_exact_integer_dim8() {
+        let (q, p) = gen_int_points_f64(8);
+        let ds = FlatSlice::new(&p, 8);
+        let l2 = L2.eval(&q, &ds, 0, ConstDim::<8>);
+        let fma = L2Fma.eval(&q, &ds, 0, ConstDim::<8>);
+        assert_eq!(l2, fma);
+    }
+
+    #[test]
+    fn l2_fma_close_to_l2_irrational_dim8() {
+        let dim = 8;
+        let q: Vec<f64> = (0..dim).map(|i| 0.1 * (i as f64)).collect();
+        let p: Vec<f64> = (0..dim).map(|i| 0.1 * ((i as f64) + 1.0)).collect();
+        let ds = FlatSlice::new(&p, dim);
+        let l2 = L2.eval(&q, &ds, 0, DynDim(dim));
+        let fma = L2Fma.eval(&q, &ds, 0, DynDim(dim));
+        assert!((l2 - fma).abs() < 4.0 * f64::EPSILON, "l2={l2} fma={fma}");
+    }
+
+    #[test]
+    fn l2_fma_various_dims() {
+        for &dim in TEST_DIMS {
+            let (q, p) = gen_int_points_f64(dim);
+            let ds = FlatSlice::new(&p, dim);
+            let l2 = L2.eval(&q, &ds, 0, DynDim(dim));
+            let fma = L2Fma.eval(&q, &ds, 0, DynDim(dim));
+            assert!(
+                (l2 - fma).abs() < 4.0 * f64::EPSILON * l2.max(1.0),
+                "dim={dim} l2={l2} fma={fma}"
+            );
+        }
     }
 
     // ---- Test 5: SO2 last-dim-only, UNsquared ----
