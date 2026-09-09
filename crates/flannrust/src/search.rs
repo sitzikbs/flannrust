@@ -430,9 +430,12 @@ where
             if !filter.is_active(accessor) {
                 continue;
             }
-            let dist = ctx.metric.eval(query, ctx.ds, accessor.to_usize(), ctx.dim);
-            if dist < result.worst_dist() && !result.add_point(dist, accessor) {
-                return false;
+            if let Some(dist) = ctx.metric.eval_bounded(
+                query, ctx.ds, accessor.to_usize(), ctx.dim, result.worst_dist(),
+            ) {
+                if !result.add_point(dist, accessor) {
+                    return false;
+                }
             }
         }
         return true;
@@ -593,16 +596,13 @@ where
                     if !filter.is_active(accessor) {
                         continue;
                     }
-                    let dist = ctx.metric.eval(query, ctx.ds, accessor.to_usize(), ctx.dim);
-                    // C++ (nanoflann.hpp ~1259): `result_set.worstDist()` is
-                    // called LIVE, inline in the loop condition, on every
-                    // iteration — NOT hoisted into a local cached before
-                    // the loop. Mirrored exactly, same as before.
-                    if dist < result.worst_dist() && !result.add_point(dist, accessor) {
-                        // Abort: exit paths (i)/(ii) above — propagate
-                        // immediately, no frame's restore runs.
-                        record_max_stack_depth!();
-                        return false;
+                    if let Some(dist) = ctx.metric.eval_bounded(
+                        query, ctx.ds, accessor.to_usize(), ctx.dim, result.worst_dist(),
+                    ) {
+                        if !result.add_point(dist, accessor) {
+                            record_max_stack_depth!();
+                            return false;
+                        }
                     }
                 }
                 break;
