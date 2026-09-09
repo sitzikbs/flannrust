@@ -1,2 +1,6 @@
 [toolchain]
+# Pinned to exactly the MSRV declared as `rust-version` in
+# crates/flannrust/Cargo.toml (and flannrust-py's). This makes CI's test job
+# an implicit MSRV check -- when bumping this channel, bump `rust-version`
+# in both crates (or consciously keep MSRV lower and add a real MSRV CI job).
 channel = "1.98.0"

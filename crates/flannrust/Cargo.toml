@@ -6,6 +6,7 @@ rust-version = "1.98.0"
 license = "BSD-2-Clause"
 description = "Bit-exact Rust port of nanoflann's static kd-tree (KDTreeSingleIndexAdaptor)"
 repository = "https://github.com/sitzikbs/flannrust"
+documentation = "https://docs.rs/flannrust"
 keywords = ["kdtree", "nearest-neighbor", "nanoflann", "spatial", "knn"]
 categories = ["algorithms", "data-structures", "science"]
 readme = "../../README.md"
