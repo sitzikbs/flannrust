@@ -4,3 +4,8 @@
 *.so
 __pycache__/
 *.pyc
+.pytest_cache/
+.ruff_cache/
+.bench-venv/
+.ci-venv/
+*.pyd
