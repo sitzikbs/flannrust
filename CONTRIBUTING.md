@@ -98,5 +98,5 @@ cargo clippy --workspace
 ## Getting Help
 
 - Check `docs/nanoflann-notes.md` for detailed notes on nanoflann's design and implementation
-- Review the design documents in `docs/superpowers/plans/` for architectural context
+- Review the design documents in `docs/agentic-development/plans/` for architectural context
 - See `README.md` for an overview of the project and its capabilities

@@ -23,11 +23,11 @@ Commit: `2b1ee18` — chore: packaging dry-run evidence (crates.io + wheel smoke
    Created a brand-new venv at the scratchpad path given in the brief, installed the
    wheel + numpy into it, and ran the smoke-test one-liner from the brief. Output:
    `(5, 3) (5, 3)`.
-5. Wrote `docs/reports/m-pub/packaging-dryrun.md` with all four steps' evidence
+5. Wrote `docs/agentic-development/reports/m-pub/packaging-dryrun.md` with all four steps' evidence
    pasted verbatim (commands + full output), plus a summary table.
 6. Committed both files in a single commit in the worktree.
 
-Full evidence is in `docs/reports/m-pub/packaging-dryrun.md` in the worktree (see
+Full evidence is in `docs/agentic-development/reports/m-pub/packaging-dryrun.md` in the worktree (see
 commit `2b1ee18`); every number in that file is command output, not paraphrase.
 
 No `cargo publish` was ever run without `--dry-run`. No PyPI upload was performed.
@@ -38,7 +38,7 @@ No `cargo publish` was ever run without `--dry-run`. No PyPI upload was performe
   2-line comment, and the resulting stray blank line was fixed so `[features]` keeps
   a blank line before it, matching the file's original style). No other fields
   touched.
-- `docs/reports/m-pub/packaging-dryrun.md`: new file, evidence only, no code.
+- `docs/agentic-development/reports/m-pub/packaging-dryrun.md`: new file, evidence only, no code.
 - No changes to `crates/flannrust-py/pyproject.toml` -- the dry-runs did not demand
   any, so per the brief's "only if dry-runs demand" instruction it was left alone.
 - `crates/flannrust-py/Cargo.toml` still has `publish = false`, which is correct and

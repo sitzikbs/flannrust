@@ -33,7 +33,7 @@ with every commit (fix round 1 shipped citations that were already stale
 by the time they landed, because the edits that introduced them shifted
 the very lines they pointed at). Every anchor below was verified with
 `grep -c` against the current worktree, one hit per anchor; see fix round
-2's note in `docs/reports/m-pub/task-5-report.md` for the pasted evidence.
+2's note in `docs/agentic-development/reports/m-pub/task-5-report.md` for the pasted evidence.
 
 | # | Claim (file, § heading / quote) | Source run | Verdict |
 |---|---|---|---|

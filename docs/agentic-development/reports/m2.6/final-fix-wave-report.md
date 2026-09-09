@@ -7,18 +7,18 @@ Branch `m2p6-rigor`, base HEAD `6334448`.
 The branch's new doc text cited task reports two ways a repo reader can't follow:
 
 - `docs/ROADMAP.md:109` (was) cited
-  `docs/superpowers/sdd/2026-08-25-flannrust-m2.6-rigor/task-{1..7}-report.md` — that directory
+  `docs/agentic-development/sdd/2026-08-25-flannrust-m2.6-rigor/task-{1..7}-report.md` — that directory
   doesn't exist under `docs/`; the actual files live in the gitignored
   `.superpowers/sdd/2026-08-25-flannrust-m2.6-rigor/`, invisible to anyone who clones the repo.
 - Nine more spots (all new in this branch, verified via `git diff ef8467c..HEAD`) cited the bare
   filename `task-4-report.md` with no path at all: `README.md:828`, `docs/benchmarks.md:858,907,909,1052`,
   `docs/EXPERIMENTS.md:2340,2871`, `docs/ROADMAP.md:126,222`.
 
-Fix, per the house convention already used for M2.5 (`docs/reports/m2.5/`) and M-py
-(`docs/reports/m-py/`):
+Fix, per the house convention already used for M2.5 (`docs/agentic-development/reports/m2.5/`) and M-py
+(`docs/agentic-development/reports/m-py/`):
 
-1. `mkdir -p docs/reports/m2.6 && cp .superpowers/sdd/2026-08-25-flannrust-m2.6-rigor/task-{1,2,3,4,5,6,7}-report.md docs/reports/m2.6/`.
-2. Repointed every one of the ten citations above to `docs/reports/m2.6/task-N-report.md`.
+1. `mkdir -p docs/agentic-development/reports/m2.6 && cp .superpowers/sdd/2026-08-25-flannrust-m2.6-rigor/task-{1,2,3,4,5,6,7}-report.md docs/agentic-development/reports/m2.6/`.
+2. Repointed every one of the ten citations above to `docs/agentic-development/reports/m2.6/task-N-report.md`.
 3. Grepped the seven copied reports for `superpowers/sdd` self-references — none found, no further
    edits needed inside them.
 
@@ -83,5 +83,5 @@ No warnings.
 `docs: final-review fixes — preserve M2.6 task reports in docs/reports, ruff cleanup`
 
 Files touched: `README.md`, `docs/ROADMAP.md`, `docs/benchmarks.md`, `docs/EXPERIMENTS.md`,
-`docs/reports/m2.6/task-{1,2,3,4,5,6,7}-report.md` (new),
+`docs/agentic-development/reports/m2.6/task-{1,2,3,4,5,6,7}-report.md` (new),
 `crates/flannrust-py/python/tests/test_query_radius_box.py`, this report (both copies).

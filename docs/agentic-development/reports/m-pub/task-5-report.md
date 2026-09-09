@@ -61,7 +61,7 @@ Commit: dd94f2a (parent 1dcc34b, which is 1 commit ahead of the merge base 9cac5
 - Modified: README.md (new "How this was built" section)
 - Modified: docs/benchmarks.md (one "Update" paragraph added to the
   "Parallel build" section; nothing else changed)
-- Created: docs/reports/m-pub/claims-audit.md (the full claim-by-claim
+- Created: docs/agentic-development/reports/m-pub/claims-audit.md (the full claim-by-claim
   audit table, verdicts, and what was fixed -- this is the whitelist Task 7
   (blog) should treat as publishable numbers)
 
@@ -103,7 +103,7 @@ No FAILED or error[ lines anywhere in the run.
   "Parallel build 1.75x win (M1)" row is technically now slightly
   out-of-date relative to the new benchmarks.md banner -- flagging this for
   the controller/Task 7 rather than expanding this task's scope.
-  docs/reports/m2.*/ and docs/reports/m-py/ were not touched.
+  docs/agentic-development/reports/m2.*/ and docs/agentic-development/reports/m-py/ were not touched.
 - The 9cac562 figures I cite in the new benchmarks.md paragraph are
   cited as controller-supplied data (not claimed to be pasted verbatim in
   EXPERIMENTS.md) -- phrasing checked to stay honest about that
@@ -149,10 +149,10 @@ substantive claims changed:
 
 Checks re-run: grep -rn "superpowers/sdd" README.md docs/benchmarks.md is
 empty (only files touched this round: README.md and
-docs/reports/m-pub/claims-audit.md -- docs/benchmarks.md was not modified
+docs/agentic-development/reports/m-pub/claims-audit.md -- docs/benchmarks.md was not modified
 this round, so its own grep result is unchanged from the original task).
 cargo test --workspace not re-run: this round is doc-only citation/wording
-fixes touching README.md and docs/reports/m-pub/claims-audit.md, neither
+fixes touching README.md and docs/agentic-development/reports/m-pub/claims-audit.md, neither
 of which affects any test or code path.
 
 Status: DONE. Commit 3b29f50. No new concerns.
@@ -220,10 +220,10 @@ committed. Script used: a small bash file with a `check()` helper running
 sandbox refused as "too complex to verify stays inside the worktree").
 
 Checks re-run: `grep -rn "superpowers/sdd" README.md docs/benchmarks.md`
-still empty (only docs/reports/m-pub/claims-audit.md was touched this
+still empty (only docs/agentic-development/reports/m-pub/claims-audit.md was touched this
 round; that file's own Verification section quotes the grep command
 itself as example text, which is not a dead pointer). cargo test not
 re-run: this round only edits a report/docs file
-(docs/reports/m-pub/claims-audit.md), no test-relevant path touched.
+(docs/agentic-development/reports/m-pub/claims-audit.md), no test-relevant path touched.
 
 Status: DONE. Commit 606e40e. No new concerns.

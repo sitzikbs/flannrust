@@ -235,7 +235,7 @@ not a port-fidelity change.)
 ## 7. Python dim8-f64 vs pynanoflann (T3's 1.233-1.271) — classified
 
 pynanoflann vendors nanoflann **1.5.5** (`NANOFLANN_VERSION 0x155`,
-`docs/reports/m-py/task-3-report.md:86`). Two checks:
+`docs/agentic-development/reports/m-py/task-3-report.md:86`). Two checks:
 
 1. **Source diff** (fetched v1.5.5 upstream): 1.5.5's `L2_Adaptor::evalMetric`
    uses pointer-walk + *sequential-chain* summation

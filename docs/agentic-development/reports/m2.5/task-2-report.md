@@ -861,5 +861,5 @@ $ MIRIFLAGS="-Zmiri-tree-borrows" cargo +nightly miri test ... -- search -> 34/0
   `SEARCH_STACK_INLINE_CAPACITY` doc extended (arbitrary-with-headroom +
   heap-churn).
 - `docs/EXPERIMENTS.md` — new "Miri" reproduction-commands subsection.
-- `docs/reports/m2.5/task-2-report.md` —
+- `docs/agentic-development/reports/m2.5/task-2-report.md` —
   this section.

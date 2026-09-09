@@ -510,5 +510,5 @@ $ cargo test --workspace
   (contaminated-run methodology note).
 - `docs/benchmarks.md` — M2.5 section preamble corrected (post-T3 column
   exception stated explicitly).
-- `docs/reports/m2.5/task-4-report.md` —
+- `docs/agentic-development/reports/m2.5/task-4-report.md` —
   this section.

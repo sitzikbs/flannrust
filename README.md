@@ -24,9 +24,9 @@ copyright notice, reproduced verbatim in `LICENSE`.
 
 Milestones 1 (M1 — static kd-tree) and 2 (M2 — dynamic adaptor) are
 complete. The full design records live in
-[`docs/superpowers/plans/2026-08-22-nanoflann-rs-m1.md`](docs/superpowers/plans/2026-08-22-nanoflann-rs-m1.md)
+[`docs/agentic-development/plans/2026-08-22-nanoflann-rs-m1.md`](docs/agentic-development/plans/2026-08-22-nanoflann-rs-m1.md)
 and
-[`docs/superpowers/plans/2026-08-22-nanoflann-rs-m2-dynamic.md`](docs/superpowers/plans/2026-08-22-nanoflann-rs-m2-dynamic.md);
+[`docs/agentic-development/plans/2026-08-22-nanoflann-rs-m2-dynamic.md`](docs/agentic-development/plans/2026-08-22-nanoflann-rs-m2-dynamic.md);
 verified nanoflann 1.12.1 source notes (class inventory, stale spots, and
 everything M3+ needs to know about the incremental/MT adaptors) live in
 [`docs/nanoflann-notes.md`](docs/nanoflann-notes.md). Reproducible
@@ -40,7 +40,7 @@ reviewed by Itzik Ben-Shabat, who does not write Rust. Every line of Rust,
 C++ FFI, and Python-binding code here is agent-written; the author's role
 was specifying requirements, reviewing the generated code and each task's
 report, and directing dedicated rigor/fidelity-audit passes (see
-`docs/superpowers/plans/` and `docs/reports/`). Because the author cannot
+`docs/agentic-development/plans/` and `docs/agentic-development/reports/`). Because the author cannot
 independently vet Rust idioms or catch subtle logic errors by reading the
 code, correctness here does not rest on the author's Rust expertise — it
 rests on the bit-exact cross-validation suite run against the vendored
@@ -51,7 +51,7 @@ Every performance figure quoted in this README and `docs/benchmarks.md`
 traces to a reproducible, pasted command and run recorded in
 `docs/EXPERIMENTS.md` or, for post-merge confirmation runs, in the
 commit-tagged report data cited alongside the figure; see
-`docs/reports/m-pub/claims-audit.md` for the audit that verified that
+`docs/agentic-development/reports/m-pub/claims-audit.md` for the audit that verified that
 claim against both files' current text.
 
 ## Quickstart
@@ -846,7 +846,7 @@ re-deriving from the C++ source; full tracker:
   identical vectorizable summation on this AVX-512-capable host —
   **REJECTED as a further port-fidelity change**; a `RUSTFLAGS`-level
   512-bit-vector experiment remains a possible toolchain-level lever, still
-  unexplored (`docs/reports/m2.6/task-4-report.md` §6). The fast-math flag and parallel slot
+  unexplored (`docs/agentic-development/reports/m2.6/task-4-report.md` §6). The fast-math flag and parallel slot
   rebuilds remain untaken ideas, unchanged. **Update (M2.6 task 7,
   user-directed idle-host re-measurement):** dim-64 f32 and dim-32 f64
   above are CORRECTED wider — dim-64 f32 **1.082–1.235** (was

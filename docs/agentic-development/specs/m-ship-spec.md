@@ -45,7 +45,7 @@ actually publishing (real publish remains deferred, per M-pub).
    - The "Update (M2.6 task N)" chains, success-criteria bookkeeping, and roadmap prose
      are **cut**, not re-homed — `docs/benchmarks.md`, `docs/EXPERIMENTS.md`, and
      `docs/ROADMAP.md` already contain all of it.
-   - Move `docs/superpowers/` → `docs/agentic-development/` and `docs/reports/` →
+   - Move `docs/agentic-development/` → `docs/agentic-development/` and `docs/agentic-development/reports/` →
      `docs/agentic-development/reports/` (`git mv`), add a short
      `docs/agentic-development/README.md`, fix all cross-references.
 

@@ -154,7 +154,7 @@ proving the order itself was always vectorizable. A bounds-check-free
 chunked row walk (`DataSource::point_row` + `as_chunks::<4>()`, bit-exact
 with the fallback) closed dim-32 f32 from **1.423× → 0.966×** (gate-style
 knn, leaf=10, measured this session) with zero SIMD intrinsics — see
-`docs/reports/m2.5/task-3-report.md`.
+`docs/agentic-development/reports/m2.5/task-3-report.md`.
 Dim-64 improved substantially but not fully (1.918× → 1.228×); further
 dim-64-specific work is out of scope for M2.5-T3, which targeted dim-32.
 
@@ -190,7 +190,7 @@ leaf scan confirms the eval kernel itself is now optimal post-Task-14:
   IDENTICAL summation order so results stay bit-exact) instead of
   `row[d]`-indexing. That closed dim-32 f32 from **1.423× → 0.966×**
   (gate-style knn, leaf=10) without any SIMD intrinsics or reordering — see
-  `docs/reports/m2.5/task-3-report.md` for
+  `docs/agentic-development/reports/m2.5/task-3-report.md` for
   the full A/B. The `point_row` fast path from this Task-14 record and
   M2.5-T3's `point_row` are the same trait method; the fix wasn't "add row
   access", it was "make row access bounds-check-free", which needed the
@@ -515,7 +515,7 @@ fixed-dim-3 residual — at the cost of giving back all of T3's `dim8` win
 and leaving `radius` ~4.4% above its pre-M2.5 range, a deliberate,
 reviewed trade-off, not a free improvement). Full
 task reports:
-`docs/reports/m2.5/task-{2,3,4}-report.md`.
+`docs/agentic-development/reports/m2.5/task-{2,3,4}-report.md`.
 Every number in the "Post-T2/final" columns below was re-measured fresh
 by T4 at commit `2d23db4` (2 runs per workload, pasted in full in
 `docs/EXPERIMENTS.md`'s "M2.5 task 4" subsection). The "Post-T3" column is
@@ -875,7 +875,7 @@ rust 27.976±1.624, cpp 45.830±4.122).
 
 **`build_100k` re-hedge (T2 conclusion (g), corrected).** T2's "reproducibly
 split by configuration" claim (gate dataset ~0.967 vs. report-chain
-dataset ~1.037–1.039) does not hold up: T4 (`docs/reports/m2.6/task-4-report.md` §2)
+dataset ~1.037–1.039) does not hold up: T4 (`docs/agentic-development/reports/m2.6/task-4-report.md` §2)
 independently re-ran the identical unpatched code/seeds and got
 0.9825/0.984 — no trace of the old split. This task's own three fresh
 sessions corroborate that finding a second, independent way: the table
@@ -924,9 +924,9 @@ statistical rigor + a fidelity audit of the losing workloads):**
 |---|---|---|
 | Statistical methodology (n>=10..100 adaptive, mean±std) for the Rust-vs-C++ gates/report chain | **DELIVERED** — `xval::measure_pair`/`TimingStats` (M2.6 task 1) | `docs/EXPERIMENTS.md` "M2.6 task 2" subsection; every six-gate table in this file since |
 | Statistical methodology for the Python bench | **DELIVERED** — `bench_py.py`'s `timed_stats_interleaved` (M2.6 task 3), the same `measure_pair` policy generalized from 2 sides to N interleaved engines | `docs/EXPERIMENTS.md` "M2.6 task 3" subsection |
-| Fidelity audit of every losing/underperforming workload, "no extra tricks, follow flann exactly" | **DELIVERED** — line-by-line audit of `build_100k`, `dyn_add`, `knn_fixed3`, dim-32/64, allocation patterns, and the Python dim8 miss against vendored nanoflann 1.12.1 (diagnosis-only, no commits — task 4) | `docs/reports/m2.6/task-4-report.md`; its two FIDELITY candidates and REJECT rationale are reproduced in `docs/EXPERIMENTS.md`'s "M2.6 task 5" subsection (landed fixes) and this file's "Honest residuals" section (REJECTs) |
+| Fidelity audit of every losing/underperforming workload, "no extra tricks, follow flann exactly" | **DELIVERED** — line-by-line audit of `build_100k`, `dyn_add`, `knn_fixed3`, dim-32/64, allocation patterns, and the Python dim8 miss against vendored nanoflann 1.12.1 (diagnosis-only, no commits — task 4) | `docs/agentic-development/reports/m2.6/task-4-report.md`; its two FIDELITY candidates and REJECT rationale are reproduced in `docs/EXPERIMENTS.md`'s "M2.6 task 5" subsection (landed fixes) and this file's "Honest residuals" section (REJECTs) |
 | Landed fixes for real fidelity gaps found | **DELIVERED, 2 fixes** — dyn merge capacity preservation + 4-wide unrolled `compute_min_max`, `dyn_add` **1.13–1.14 → 1.03–1.04**, confirmed durable on this task's own re-sweep | commits `3d64c8b`, `a68df86`; this section's `dyn_add` row above |
-| Evidence-backed REJECTs for non-fidelity residuals | **DELIVERED** — `build_100k`/`knn_fixed3` (no unported behavior, session-noise/iterative-stack cost), dim-32/64 f64 (LLVM-vs-GCC vector-width codegen, asm-verified), arena pre-reserve (measured worse), `removed`-map hasher (unmeasurable) | `docs/reports/m2.6/task-4-report.md` §3, §5, §6, §8 |
+| Evidence-backed REJECTs for non-fidelity residuals | **DELIVERED** — `build_100k`/`knn_fixed3` (no unported behavior, session-noise/iterative-stack cost), dim-32/64 f64 (LLVM-vs-GCC vector-width codegen, asm-verified), arena pre-reserve (measured worse), `removed`-map hasher (unmeasurable) | `docs/agentic-development/reports/m2.6/task-4-report.md` §3, §5, §6, §8 |
 | Every number traces to a pasted, reproducible run; no chat-log-only claims | **DELIVERED** | every session in `docs/EXPERIMENTS.md`'s M2.6 subsections carries a pasted command + output |
 | Flagged single-session outliers resolved or explicitly re-confirmed, not silently folded in | **DELIVERED** — Python bench `knn_batched_dim3_f32_..._workers1` cell resolved this task (CONFIRMED host-load contamination); `build_100k` re-hedge resolved this task (CONFIRMED no reproducible split) | this section, above |
 
@@ -1069,7 +1069,7 @@ this miss remains open, still an M-pub investigation item.
 `knn_dim8_float64_..._workers1` vs pynanoflann this run: **1.227** — 0.006
 below the old 1.233 low end, essentially at the boundary, still the most
 consistent miss in the matrix, still not root-caused this milestone (see
-`docs/ROADMAP.md`'s M-pub item, which now also carries `docs/reports/m2.6/task-4-report.md`
+`docs/ROADMAP.md`'s M-pub item, which now also carries `docs/agentic-development/reports/m2.6/task-4-report.md`
 §7's finding that pynanoflann's own vendored nanoflann 1.5.5 kernel is
 ~5–6% *slower* than the 1.12.1 oracle this repo bit-matches against on
 this exact workload — refuting the "1.5.5 autovectorizes faster"

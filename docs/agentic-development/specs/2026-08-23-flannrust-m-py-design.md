@@ -1,7 +1,7 @@
 # flannrust — Milestone M-py: Python bindings (design)
 
 Status: approved design (user, 2026-08-23). Implementation plan follows in
-`docs/superpowers/plans/`.
+`docs/agentic-development/plans/`.
 
 ## Goal
 

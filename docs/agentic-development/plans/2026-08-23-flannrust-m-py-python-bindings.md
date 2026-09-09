@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust stable, PyO3 0.29.2 + numpy 0.29.0, maturin (via `uv`), pytest, numpy/scipy/pynanoflann (probe venv verified working on this host).
 
-**Spec:** `docs/superpowers/specs/2026-08-23-flannrust-m-py-design.md` — the plan argues from the spec; read it first. Roadmap context: `docs/ROADMAP.md` §M-py.
+**Spec:** `docs/agentic-development/specs/2026-08-23-flannrust-m-py-design.md` — the plan argues from the spec; read it first. Roadmap context: `docs/ROADMAP.md` §M-py.
 
 ## Global Constraints
 
@@ -30,7 +30,7 @@
 **Files:**
 - Rename: `crates/nanoflann-rs/` → `crates/flannrust/` (`git mv`)
 - Modify: `Cargo.toml` (workspace members + add `default-members`), `crates/flannrust/Cargo.toml` (`name = "flannrust"`), every `use nanoflann_rs::`/`nanoflann_rs::` in `crates/xval/**` and `crates/flannrust/**` (docs/examples included), `README.md` (title/usage), `docs/ROADMAP.md` (name decision recorded)
-- Do NOT rewrite: verbatim pasted run outputs in `docs/EXPERIMENTS.md`/`docs/benchmarks.md`/`docs/reports/` that mention the old crate name — they are historical evidence. Add one note near the top of `docs/EXPERIMENTS.md` §1: "The library crate was renamed `nanoflann-rs` → `flannrust` on 2026-08-23 (M-py T0); pasted outputs earlier than that show the old name/paths."
+- Do NOT rewrite: verbatim pasted run outputs in `docs/EXPERIMENTS.md`/`docs/benchmarks.md`/`docs/agentic-development/reports/` that mention the old crate name — they are historical evidence. Add one note near the top of `docs/EXPERIMENTS.md` §1: "The library crate was renamed `nanoflann-rs` → `flannrust` on 2026-08-23 (M-py T0); pasted outputs earlier than that show the old name/paths."
 
 **Interfaces:**
 - Produces: crate `flannrust` importable as `use flannrust::{KdTreeBuilder, DynamicKdTreeBuilder, ...}`; workspace `default-members = ["crates/flannrust", "crates/nanoflann-ref", "crates/xval"]`.

@@ -222,7 +222,7 @@ size_t nfr_box_fetch_f(const nfr_index_f*, uint32_t* oi, size_t cap);
 
 ## 4. Tasks (dependency order; each: test first → fail → implement → pass → commit)
 
-**T0 — Scaffolding.** `git init`; workspace + empty crates; `rust-toolchain.toml`; vendor `nanoflann.hpp` from the 1.12.1 checkout; copy this plan into `docs/superpowers/plans/`; write `docs/nanoflann-notes.md` (MT/incremental API findings + "stale spots not to port": `size_at_index_build_`, RKNN seeding, forest empty-index true, README `checks` param). Verify `cargo test --workspace` and `cargo build --no-default-features -p nanoflann-rs` pass. Commit.
+**T0 — Scaffolding.** `git init`; workspace + empty crates; `rust-toolchain.toml`; vendor `nanoflann.hpp` from the 1.12.1 checkout; copy this plan into `docs/agentic-development/plans/`; write `docs/nanoflann-notes.md` (MT/incremental API findings + "stale spots not to port": `size_at_index_build_`, RKNN seeding, forest empty-index true, README `checks` param). Verify `cargo test --workspace` and `cargo build --no-default-features -p nanoflann-rs` pass. Commit.
 
 **T1 — scalar.rs + dim.rs.** Tests: `ConstDim::<3>.filled(0.0f32)` is `[f32;3]`; `DynDim(5)` yields len-5 Vec; `dim()` values.
 

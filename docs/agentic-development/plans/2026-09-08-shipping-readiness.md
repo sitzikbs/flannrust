@@ -8,7 +8,7 @@
 
 **Tech Stack:** cargo (workspace, package, fmt, doc), maturin/pyproject (PEP 621/639), GitHub Actions, git mv.
 
-**Spec:** docs/superpowers/specs/m-ship-spec.md
+**Spec:** docs/agentic-development/specs/m-ship-spec.md
 
 ## Global Constraints
 
@@ -346,8 +346,8 @@ grep -c "^## \|^### " docs/semantics.md docs/testing.md
 Move process/agent documentation under `docs/agentic-development/` with `git mv` (history-preserving), add its README, fix every cross-reference. Note this moves the current plan and spec files themselves — that is expected; the sed below fixes their internal references too.
 
 **Files:**
-- Move: `docs/superpowers/` → `docs/agentic-development/` (contains `plans/`, `specs/`)
-- Move: `docs/reports/` → `docs/agentic-development/reports/`
+- Move: `docs/agentic-development/` → `docs/agentic-development/` (contains `plans/`, `specs/`)
+- Move: `docs/agentic-development/reports/` → `docs/agentic-development/reports/`
 - Create: `docs/agentic-development/README.md`
 - Modify (path references only): `README.md`, `CONTRIBUTING.md`, `docs/ROADMAP.md`, `docs/benchmarks.md`, `docs/EXPERIMENTS.md`, and the moved plans/specs/reports themselves
 
@@ -400,7 +400,7 @@ Move process/agent documentation under `docs/agentic-development/` with `git mv`
   ```bash
   cd /home/sitzikbs/dev/flannrust
   grep -rl "docs/superpowers\|docs/reports" --include="*.md" . | grep -v ".claude/worktrees" | \
-    xargs sed -i 's|docs/reports/|docs/agentic-development/reports/|g; s|docs/superpowers/|docs/agentic-development/|g'
+    xargs sed -i 's|docs/agentic-development/reports/|docs/agentic-development/reports/|g; s|docs/agentic-development/|docs/agentic-development/|g'
   ```
 
 - [ ] `grep -rn "docs/superpowers\|docs/reports" . --include="*.md" | grep -v ".claude/worktrees"` must return nothing. Also check non-md references: `grep -rn "docs/superpowers\|docs/reports" --include="*.toml" --include="*.yml" --include="*.rs" . | grep -v ".claude/worktrees"` (expected: none today).

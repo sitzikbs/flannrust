@@ -63,7 +63,7 @@
 
 **Files:**
 - Modify (only if dry-runs demand): `crates/flannrust/Cargo.toml`, `crates/flannrust-py/pyproject.toml`
-- Create: `docs/reports/m-pub/packaging-dryrun.md` (pasted outputs)
+- Create: `docs/agentic-development/reports/m-pub/packaging-dryrun.md` (pasted outputs)
 
 **Interfaces:**
 - Consumes: Task 1 metadata.
@@ -72,7 +72,7 @@
 - [ ] **Step 1:** `cargo publish --dry-run -p flannrust --allow-dirty` — must succeed. Paste tail of output into the report. Fix metadata if it rejects.
 - [ ] **Step 2: Name availability.** `curl -s https://crates.io/api/v1/crates/flannrust | head -c 200` (expect not-found) and `curl -s https://pypi.org/pypi/flannrust/json | head -c 200` (expect 404). Paste both.
 - [ ] **Step 3: Local wheel.** `cd crates/flannrust-py && .venv/bin/maturin build --release` (install maturin into venv if absent). Then fresh venv smoke test: `python3 -m venv /tmp/claude-1000/-home-sitzikbs-dev-flannrust/f431bc5b-728e-4e37-bb64-07067ac0e803/scratchpad/wheeltest-venv`, pip install the built wheel + numpy, run `python -c "import flannrust, numpy as np; t=flannrust.KDTree(np.random.rand(100,3).astype(np.float32)); d,i=t.query(np.random.rand(5,3).astype(np.float32), k=3); print(d.shape, i.shape)"`. Paste output.
-- [ ] **Step 4:** Write `docs/reports/m-pub/packaging-dryrun.md` with all pasted evidence. Commit `chore: packaging dry-run evidence (crates.io + wheel smoke test)`.
+- [ ] **Step 4:** Write `docs/agentic-development/reports/m-pub/packaging-dryrun.md` with all pasted evidence. Commit `chore: packaging dry-run evidence (crates.io + wheel smoke test)`.
 
 ### Task 4: Portable bench kit
 
@@ -178,13 +178,13 @@ if __name__ == "__main__":
 
 **Files:**
 - Modify: `README.md`, `docs/benchmarks.md` (only where stale/untraceable)
-- Create: `docs/reports/m-pub/claims-audit.md`
+- Create: `docs/agentic-development/reports/m-pub/claims-audit.md`
 
 **Interfaces:**
 - Consumes: fresh post-merge report (git sha 9cac562 run exists; regenerate if needed).
 - Produces: audit report Task 7 (blog) treats as the whitelist of publishable numbers.
 
-- [ ] **Step 1: Enumerate.** Grep README.md + docs/benchmarks.md for every performance number (ratios, ms, ×, %). Build a table in `docs/reports/m-pub/claims-audit.md`: claim | file:line | source run | verdict (TRACED / STALE / UNTRACEABLE).
+- [ ] **Step 1: Enumerate.** Grep README.md + docs/benchmarks.md for every performance number (ratios, ms, ×, %). Build a table in `docs/agentic-development/reports/m-pub/claims-audit.md`: claim | file:line | source run | verdict (TRACED / STALE / UNTRACEABLE).
 - [ ] **Step 2: Fix.** STALE numbers: update from the latest statistical baseline (docs/EXPERIMENTS.md M2.6 sections are the source of truth) or delete. UNTRACEABLE: delete or re-measure. Every kept number must carry (or sit near) its host + conditions disclosure.
 - [ ] **Step 3: Provenance note.** Add a short "How this was built" section to README.md: this codebase was implemented by an AI agent (Claude Code) directed and reviewed by Itzik Ben-Shabat, who does not write Rust; correctness rests on the bit-exact cross-validation suite against vendored nanoflann 1.12.1, not on the author's Rust expertise. Honest, plain, no marketing gloss.
 - [ ] **Step 4: Verify** no dead links / dead doc pointers introduced (`grep -rn "superpowers/sdd" README.md docs/benchmarks.md` must stay empty). `cargo test --workspace` untouched-green. Commit `docs: claims audit — every published number traced; provenance note`.
@@ -200,7 +200,7 @@ if __name__ == "__main__":
 - [ ] **Step 1:** `gh repo create sitzikbs/flannrust --private --source . --push` (pushes main). Confirm with user before this step ONLY if anything about the repo name/visibility changed.
 - [ ] **Step 2:** `gh run watch` the triggered workflows; on failure, diagnose, fix, push, repeat (fix rounds ≤ 5, then stop and report).
 - [ ] **Step 3:** Trigger `wheels.yml` via `gh workflow run wheels.yml`; verify all three OS wheels build and upload. Download the linux artifact and re-run the Task 3 fresh-venv smoke test against it.
-- [ ] **Step 4:** Record run URLs in `docs/reports/m-pub/ci-green.md`, commit, push.
+- [ ] **Step 4:** Record run URLs in `docs/agentic-development/reports/m-pub/ci-green.md`, commit, push.
 
 ### Task 7: Blog post for itzikbs.com
 

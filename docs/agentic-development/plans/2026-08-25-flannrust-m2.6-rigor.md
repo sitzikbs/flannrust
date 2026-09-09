@@ -6,7 +6,7 @@
 
 **User directives (2026-08-25, binding):** "it shouldnt be just 1. it should be 10 (at least) and if its fast enough it should be 100 and we can get a clear mean and std"; "no extra tricks, follow flann exactly but see if we missed something in the rust implementation of it".
 
-**Spec:** no separate spec — this plan + the M1 plan's parity constraints (`docs/superpowers/plans/2026-08-22-nanoflann-rs-m1.md`) are the authority. Binding constraints carried over from M2.5 verbatim: default-build bit-exactness (full xval suite green after every change), measure-first discipline, provenance rules (every number traces to a pasted run).
+**Spec:** no separate spec — this plan + the M1 plan's parity constraints (`docs/agentic-development/plans/2026-08-22-nanoflann-rs-m1.md`) are the authority. Binding constraints carried over from M2.5 verbatim: default-build bit-exactness (full xval suite green after every change), measure-first discipline, provenance rules (every number traces to a pasted run).
 
 ## Global Constraints
 

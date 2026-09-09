@@ -24,14 +24,14 @@ Commit: `a5f5aac` on branch `m-py` (was already checked out; no branch creation 
    precondition note, dynamic.rs pointer), plus the `cargo doc -p nanoflann-rs
    --no-deps` hygiene-criterion command, all renamed to `flannrust`.
    Left unchanged: the two links to
-   `docs/superpowers/plans/2026-08-22-nanoflann-rs-{m1,m2-dynamic}.md` —
+   `docs/agentic-development/plans/2026-08-22-nanoflann-rs-{m1,m2-dynamic}.md` —
    those are literal filenames of real, un-renamed historical plan documents
    (out of T0's scope), so renaming the link text would break them.
 7. **docs/ROADMAP.md**: title (`# flannrust Roadmap`), the M-py goal sentence
    ("make flannrust usable from Python..."), the `point_row` source pointer
    (now `crates/flannrust/src/data_source.rs`), and the miri reproduction
    command (`cargo +nightly miri test -p flannrust --lib -- search`) all
-   renamed. Left unchanged: the two `docs/superpowers/plans/2026-08-2{2,3}-nanoflann-rs-*.md`
+   renamed. Left unchanged: the two `docs/agentic-development/plans/2026-08-2{2,3}-nanoflann-rs-*.md`
    plan-filename references (same reasoning as README).
 8. **docs/EXPERIMENTS.md**: added the required rename note at the top of §1
    ("Environment"):
@@ -53,7 +53,7 @@ Commit: `a5f5aac` on branch `m-py` (was already checked out; no branch creation 
   result paragraphs). Explicitly named in the brief's "Do NOT rewrite" list;
   no override context was given for this file the way EXPERIMENTS.md got
   the reproduction-command carve-out.
-- **`docs/reports/m2.5/*.md`** — left entirely untouched (explicitly named
+- **`docs/agentic-development/reports/m2.5/*.md`** — left entirely untouched (explicitly named
   "Do NOT rewrite", historical task reports).
 - **`docs/EXPERIMENTS.md`** — left unchanged beyond the two items above:
   - Lines describing/tied to specific past measured results or a specific
@@ -84,7 +84,7 @@ Commit: `a5f5aac` on branch `m-py` (was already checked out; no branch creation 
   the brief's verification bullet only asks to confirm nanoflann/Blanco-Claraco
   attribution is intact (it is — see below), not to rename LICENSE's own
   self-references. Flagging as a possible housekeeping follow-up.
-- **`docs/superpowers/plans/2026-08-2{2,3}-nanoflann-rs-*.md`** — the actual
+- **`docs/agentic-development/plans/2026-08-2{2,3}-nanoflann-rs-*.md`** — the actual
   plan filenames were not renamed (not in scope); every reference to them
   elsewhere (README, ROADMAP) necessarily still spells the old name since
   it's a real path on disk.
