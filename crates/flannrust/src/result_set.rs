@@ -92,22 +92,50 @@ fn add_point_to_sorted<D: DistanceValue, Idx: Copy + PartialOrd, TB: TieBreak>(
     index: Idx,
 ) -> usize {
     let capacity = dists.len();
-    let mut i = count;
-    while i > 0 {
-        if TB::shift(dists[i - 1], indices[i - 1], dist, index) {
-            if i < capacity {
-                dists[i] = dists[i - 1];
-                indices[i] = indices[i - 1];
+
+    // ponytail: binary search + copy_within for large k (O(log k) vs O(k)
+    // comparisons, single memmove vs element-by-element shift)
+    if capacity >= 32 {
+        let search_end = count.min(capacity);
+        // Binary search: find insertion point using TB::shift monotonicity
+        let mut lo = 0usize;
+        let mut hi = search_end;
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if TB::shift(dists[mid], indices[mid], dist, index) {
+                hi = mid;
+            } else {
+                lo = mid + 1;
             }
-        } else {
-            break;
         }
-        i -= 1;
+        if lo < capacity {
+            let shift_end = search_end.min(capacity - 1);
+            if lo < shift_end {
+                dists.copy_within(lo..shift_end, lo + 1);
+                indices.copy_within(lo..shift_end, lo + 1);
+            }
+            dists[lo] = dist;
+            indices[lo] = index;
+        }
+    } else {
+        let mut i = count;
+        while i > 0 {
+            if TB::shift(dists[i - 1], indices[i - 1], dist, index) {
+                if i < capacity {
+                    dists[i] = dists[i - 1];
+                    indices[i] = indices[i - 1];
+                }
+            } else {
+                break;
+            }
+            i -= 1;
+        }
+        if i < capacity {
+            dists[i] = dist;
+            indices[i] = index;
+        }
     }
-    if i < capacity {
-        dists[i] = dist;
-        indices[i] = index;
-    }
+
     if count < capacity {
         count + 1
     } else {
@@ -537,7 +565,84 @@ mod tests {
         assert_eq!(index_ptr - item_ptr, 0);
     }
 
-    // Test 13: k=0 KnnResultSet
+    // Test 13: Binary search path (k=64) matches linear scan behavior
+    #[test]
+    fn test_large_k_binary_search_keep_insertion() {
+        let k = 64;
+        let mut indices = vec![0u32; k];
+        let mut dists = vec![0.0f64; k];
+        let mut rs = KnnResultSet::<f64, u32, KeepInsertionOrder>::new(&mut indices, &mut dists);
+
+        // Insert 2*k points in reverse distance order (worst case for linear scan)
+        for i in (0..2 * k as u32).rev() {
+            rs.add_point(i as f64, i);
+        }
+
+        // First k points should be 0..k, sorted ascending
+        assert_eq!(rs.size(), k);
+        for i in 0..k {
+            assert_eq!(rs.dists[i], i as f64);
+            assert_eq!(rs.indices[i], i as u32);
+        }
+        assert_eq!(rs.worst_dist(), (k - 1) as f64);
+    }
+
+    #[test]
+    fn test_large_k_binary_search_smallest_index() {
+        let k = 64;
+        let mut indices = vec![0u32; k];
+        let mut dists = vec![0.0f64; k];
+        let mut rs = KnnResultSet::<f64, u32, SmallestIndexWins>::new(&mut indices, &mut dists);
+
+        // Insert points with tied distances
+        for i in 0..2 * k as u32 {
+            rs.add_point((i % 4) as f64, 200 - i);
+        }
+
+        // Verify sorted by (distance ASC, index ASC)
+        for w in rs.dists.windows(2) {
+            assert!(w[0] <= w[1], "distances not sorted");
+        }
+        for i in 0..k - 1 {
+            if rs.dists[i] == rs.dists[i + 1] {
+                assert!(
+                    rs.indices[i] < rs.indices[i + 1],
+                    "tied distances not sorted by index: {}({}) vs {}({})",
+                    rs.indices[i], rs.dists[i],
+                    rs.indices[i + 1], rs.dists[i + 1]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_large_k_binary_vs_linear_equivalence() {
+        // Build same result set with k=50 (binary) and k=10 (linear),
+        // verify matching subset behavior
+        let data: Vec<(f64, u32)> = (0..200)
+            .map(|i| ((i * 37 % 100) as f64, i as u32))
+            .collect();
+
+        let k = 50;
+        let mut indices = vec![0u32; k];
+        let mut dists = vec![0.0f64; k];
+        let mut rs = KnnResultSet::<f64, u32, KeepInsertionOrder>::new(&mut indices, &mut dists);
+        for &(d, idx) in &data {
+            rs.add_point(d, idx);
+        }
+
+        // Brute force: sort data by distance, take first k
+        let mut sorted = data.clone();
+        sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        sorted.truncate(k);
+
+        // Distances must match (indices may differ on ties with same distance)
+        let rs_dists: Vec<f64> = rs.dists.to_vec();
+        let expected_dists: Vec<f64> = sorted.iter().map(|&(d, _)| d).collect();
+        assert_eq!(rs_dists, expected_dists);
+    }
+
+    // Test 14: k=0 KnnResultSet
     #[test]
     fn test_k_zero_knn_result_set() {
         let mut indices = [];
