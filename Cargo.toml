@@ -1,7 +1,10 @@
 [workspace]
 resolver = "2"
 members = ["crates/flannrust", "crates/nanoflann-ref", "crates/xval", "crates/flannrust-py"]
-default-members = ["crates/flannrust", "crates/nanoflann-ref", "crates/xval"]
+# Bare `cargo build`/`cargo test` in a fresh clone builds only the pure-Rust
+# library -- no C++17 compiler needed. Cross-validation against the vendored
+# C++ oracle: `cargo test --workspace` (what CI runs), or `cargo test -p xval`.
+default-members = ["crates/flannrust"]
 
 # The C++ oracle (nanoflann-ref) is always compiled as one translation unit at
 # -O3 (see crates/nanoflann-ref/build.rs). Rust's default 16 codegen units

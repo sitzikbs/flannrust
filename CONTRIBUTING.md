@@ -34,6 +34,10 @@ maturin develop
 
 ### Running Rust Tests
 
+Note: bare `cargo test` builds/tests only the pure-Rust `flannrust` crate.
+Cross-validation against the vendored C++ oracle needs a C++17 compiler:
+`cargo test --workspace`.
+
 Test the entire workspace:
 
 ```bash
