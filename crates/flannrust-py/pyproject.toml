@@ -7,13 +7,13 @@ name = "flannrust"
 version = "0.1.0"
 description = "Bit-exact Rust port of nanoflann's kd-tree, Python bindings"
 requires-python = ">=3.9"
-license = { text = "BSD-2-Clause" }
+license = "BSD-2-Clause"
+license-files = ["LICENSE"]
 authors = [{name = "Itzik Ben-Shabat"}]
 readme = "../../README.md"
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: BSD License",
     "Topic :: Scientific/Engineering",
     "Operating System :: OS Independent",
 ]
