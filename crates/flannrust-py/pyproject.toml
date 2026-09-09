@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "flannrust"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Bit-exact Rust port of nanoflann's kd-tree, Python bindings"
 requires-python = ">=3.9"
 license = "BSD-2-Clause"
@@ -12,8 +12,14 @@ license-files = ["LICENSE"]
 authors = [{name = "Itzik Ben-Shabat"}]
 readme = "../../README.md"
 classifiers = [
+    "Development Status :: 4 - Beta",
     "Programming Language :: Rust",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering",
     "Operating System :: OS Independent",
 ]

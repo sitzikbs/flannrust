@@ -30,3 +30,22 @@ jobs:
         with:
           name: wheels-${{ matrix.os }}
           path: target/wheels/*.whl
+
+  sdist:
+    name: sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # maturin bundles local path dependencies (the flannrust crate) into
+      # the sdist, so `pip install flannrust-<ver>.tar.gz` works from a
+      # machine with only a Rust toolchain.
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: -m crates/flannrust-py/Cargo.toml
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: target/wheels/*.tar.gz
