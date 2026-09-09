@@ -297,6 +297,14 @@ macro_rules! impl_l2 {
                 if let Some(row) = ds.point_row(idx) {
                     if row.len() >= dim && query.len() >= dim {
                         debug_check_point_row_contract(ds, idx, row, dim);
+                        #[cfg(target_arch = "x86_64")]
+                        {
+                            if let Some(d) =
+                                <$t as crate::simd::L2Simd>::dispatch(query, row, dim)
+                            {
+                                return d;
+                            }
+                        }
                         return l2_eval_row(query, row, dim);
                     }
                 }
@@ -1140,6 +1148,58 @@ mod tests {
             let q32 = vec![1.0f32; dim];
             let r32 = vec![2.0f32; dim];
             assert!(f32::dispatch(&q32, &r32, dim).is_none(), "dim={dim}");
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn l2_simd_bit_exact_vs_scalar_all_dims_f64() {
+        use crate::simd::L2Simd;
+        for &dim in BIT_EQ_DIMS {
+            for &salt in SALTS_F64 {
+                let (q, p) = gen_random_ish_f64(dim, salt);
+                let scalar = l2_eval_row(&q, &p[..dim], dim);
+                if let Some(simd) = <f64 as L2Simd>::dispatch(&q, &p[..dim], dim) {
+                    assert_eq!(
+                        simd.to_bits(),
+                        scalar.to_bits(),
+                        "f64 dim={dim} salt={salt}: simd={simd} scalar={scalar}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn l2_simd_bit_exact_vs_scalar_all_dims_f32() {
+        use crate::simd::L2Simd;
+        for &dim in BIT_EQ_DIMS {
+            for &salt in SALTS_F32 {
+                let (q, p) = gen_random_ish_f32(dim, salt);
+                let scalar = l2_eval_row(&q, &p[..dim], dim);
+                if let Some(simd) = <f32 as L2Simd>::dispatch(&q, &p[..dim], dim) {
+                    assert_eq!(
+                        simd.to_bits(),
+                        scalar.to_bits(),
+                        "f32 dim={dim} salt={salt}: simd={simd} scalar={scalar}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn l2_simd_returns_none_below_dim8() {
+        use crate::simd::L2Simd;
+        for dim in 0..8 {
+            let q = vec![1.0f64; dim];
+            let r = vec![2.0f64; dim];
+            assert!(<f64 as L2Simd>::dispatch(&q, &r, dim).is_none(), "dim={dim}");
+            let q32 = vec![1.0f32; dim];
+            let r32 = vec![2.0f32; dim];
+            assert!(<f32 as L2Simd>::dispatch(&q32, &r32, dim).is_none(), "dim={dim}");
         }
     }
 }

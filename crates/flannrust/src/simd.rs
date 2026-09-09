@@ -1,11 +1,53 @@
-//! SIMD-accelerated L2 FMA distance kernels for x86_64.
+//! SIMD-accelerated L2 distance kernels for x86_64.
 //!
-//! AVX2+FMA and AVX-512F kernels computing squared Euclidean distance via
-//! fused multiply-add. Results are within FMA tolerance of the scalar
-//! `mul_add` loop (not bit-exact by contract).
+//! Two families:
+//! - **L2 (bit-exact):** AVX2 kernels using `mul + add` with per-chunk
+//!   horizontal reduction matching the scalar `(d0²+d1²)+(d2²+d3²)` order.
+//! - **L2Fma:** AVX2+FMA and AVX-512F kernels using fused multiply-add.
+//!   Results are within FMA tolerance of the scalar `mul_add` loop.
 
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
+
+/// Bit-exact L2 SIMD dispatch. Per-chunk horizontal reduction preserves
+/// the scalar `l2_eval_row` accumulation order.
+pub(crate) trait L2Simd: Sized {
+    fn dispatch(q: &[Self], r: &[Self], dim: usize) -> Option<Self>;
+}
+
+#[cfg(target_arch = "x86_64")]
+impl L2Simd for f64 {
+    #[inline]
+    fn dispatch(q: &[f64], r: &[f64], dim: usize) -> Option<f64> {
+        if dim < 8 {
+            return None;
+        }
+        if cfg!(target_feature = "avx2") {
+            return Some(unsafe { l2_f64_avx2(q, r, dim) });
+        }
+        if is_x86_feature_detected!("avx2") {
+            return Some(unsafe { l2_f64_avx2(q, r, dim) });
+        }
+        None
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl L2Simd for f32 {
+    #[inline]
+    fn dispatch(q: &[f32], r: &[f32], dim: usize) -> Option<f32> {
+        if dim < 8 {
+            return None;
+        }
+        if cfg!(target_feature = "avx2") {
+            return Some(unsafe { l2_f32_avx2(q, r, dim) });
+        }
+        if is_x86_feature_detected!("avx2") {
+            return Some(unsafe { l2_f32_avx2(q, r, dim) });
+        }
+        None
+    }
+}
 
 /// Trait for type-generic SIMD dispatch, so the `impl_l2_fma!` macro can
 /// call the right kernel for both f32 and f64 without `paste!`.
@@ -252,4 +294,101 @@ unsafe fn l2fma_f32_avx512(q: &[f32], r: &[f32], dim: usize) -> f32 {
     let sum1 = _mm_add_ps(sum128, shuf1);
     let shuf2 = _mm_movehl_ps(sum1, sum1);
     _mm_cvtss_f32(_mm_add_ss(sum1, shuf2))
+}
+
+// ---- Bit-exact L2 AVX2 kernels ----
+//
+// Per-chunk horizontal reduction: each 4-wide vector is reduced to a scalar
+// matching `(d0²+d1²)+(d2²+d3²)` before accumulating into `result`. This
+// preserves the exact FP order of `l2_eval_row`'s scalar path.
+
+/// Bit-exact squared L2 via AVX2 over 4-wide f64. Per-chunk horizontal sum
+/// matches the scalar `(d0²+d1²)+(d2²+d3²)` parenthesization.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn l2_f64_avx2(q: &[f64], r: &[f64], dim: usize) -> f64 {
+    let qp = q.as_ptr();
+    let rp = r.as_ptr();
+    let mut result = 0.0f64;
+    let mut i = 0usize;
+    while i + 4 <= dim {
+        let d = _mm256_sub_pd(_mm256_loadu_pd(qp.add(i)), _mm256_loadu_pd(rp.add(i)));
+        let d2 = _mm256_mul_pd(d, d);
+        // (d0²+d1²)+(d2²+d3²): swap adjacent pairs, add, then cross-lane add
+        let shuf = _mm256_permute_pd(d2, 0b0101);
+        let pair_sums = _mm256_add_pd(d2, shuf);
+        let hi128 = _mm256_extractf128_pd(pair_sums, 1);
+        let lo128 = _mm256_castpd256_pd128(pair_sums);
+        result = result + _mm_cvtsd_f64(_mm_add_sd(lo128, hi128));
+        i += 4;
+    }
+    // Scalar tail: 0-3 elements in descending order (matches l2_eval_row)
+    let rem = dim - i;
+    if rem >= 3 {
+        let d = *q.get_unchecked(i + 2) - *r.get_unchecked(i + 2);
+        result = result + d * d;
+    }
+    if rem >= 2 {
+        let d = *q.get_unchecked(i + 1) - *r.get_unchecked(i + 1);
+        result = result + d * d;
+    }
+    if rem >= 1 {
+        let d = *q.get_unchecked(i) - *r.get_unchecked(i);
+        result = result + d * d;
+    }
+    result
+}
+
+/// Bit-exact squared L2 via AVX2 over 8-wide f32. Each vector covers two
+/// scalar chunks; each half is reduced independently to preserve order.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn l2_f32_avx2(q: &[f32], r: &[f32], dim: usize) -> f32 {
+    let qp = q.as_ptr();
+    let rp = r.as_ptr();
+    let mut result = 0.0f32;
+    let mut i = 0usize;
+    // Main loop: 8 f32s = 2 scalar chunks per iteration
+    while i + 8 <= dim {
+        let d = _mm256_sub_ps(_mm256_loadu_ps(qp.add(i)), _mm256_loadu_ps(rp.add(i)));
+        let d2 = _mm256_mul_ps(d, d);
+        let lo = _mm256_castps256_ps128(d2);
+        let hi = _mm256_extractf128_ps(d2, 1);
+        // Reduce lo 4 lanes: (d0²+d1²)+(d2²+d3²)
+        let lo_shuf = _mm_movehdup_ps(lo);
+        let lo_pairs = _mm_add_ps(lo, lo_shuf);
+        let lo_high = _mm_movehl_ps(lo_pairs, lo_pairs);
+        result = result + _mm_cvtss_f32(_mm_add_ss(lo_pairs, lo_high));
+        // Reduce hi 4 lanes: (d4²+d5²)+(d6²+d7²)
+        let hi_shuf = _mm_movehdup_ps(hi);
+        let hi_pairs = _mm_add_ps(hi, hi_shuf);
+        let hi_high = _mm_movehl_ps(hi_pairs, hi_pairs);
+        result = result + _mm_cvtss_f32(_mm_add_ss(hi_pairs, hi_high));
+        i += 8;
+    }
+    // 4-wide remainder (one scalar chunk)
+    if i + 4 <= dim {
+        let d = _mm_sub_ps(_mm_loadu_ps(qp.add(i)), _mm_loadu_ps(rp.add(i)));
+        let d2 = _mm_mul_ps(d, d);
+        let shuf = _mm_movehdup_ps(d2);
+        let pairs = _mm_add_ps(d2, shuf);
+        let high = _mm_movehl_ps(pairs, pairs);
+        result = result + _mm_cvtss_f32(_mm_add_ss(pairs, high));
+        i += 4;
+    }
+    // Scalar tail: 0-3 elements in descending order
+    let rem = dim - i;
+    if rem >= 3 {
+        let d = *q.get_unchecked(i + 2) - *r.get_unchecked(i + 2);
+        result = result + d * d;
+    }
+    if rem >= 2 {
+        let d = *q.get_unchecked(i + 1) - *r.get_unchecked(i + 1);
+        result = result + d * d;
+    }
+    if rem >= 1 {
+        let d = *q.get_unchecked(i) - *r.get_unchecked(i);
+        result = result + d * d;
+    }
+    result
 }
