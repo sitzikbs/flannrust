@@ -40,27 +40,6 @@ pub trait Distance<T: Scalar>: Send + Sync {
         d: D,
     ) -> Self::DistanceType;
 
-    /// Early-exit distance: returns `Some(dist)` if `dist < worst_dist`,
-    /// `None` if a partial sum already exceeds `worst_dist`. Default calls
-    /// `eval` then checks. Override for chunked kernels (L2/L1) to prune
-    /// mid-loop at high dim.
-    #[inline]
-    fn eval_bounded<DS: DataSource<T> + ?Sized, D: Dim>(
-        &self,
-        query: &[T],
-        ds: &DS,
-        idx: usize,
-        d: D,
-        worst_dist: Self::DistanceType,
-    ) -> Option<Self::DistanceType> {
-        let dist = self.eval(query, ds, idx, d);
-        if dist < worst_dist {
-            Some(dist)
-        } else {
-            None
-        }
-    }
-
     /// Per-axis component distance between two coordinate values on `axis`
     /// — the tree uses this for split-plane bound checks, so every metric
     /// MUST be per-axis decomposable.
@@ -302,48 +281,6 @@ fn l2_eval_row<T: Scalar>(query: &[T], row: &[T], dim: usize) -> T {
     result
 }
 
-/// Like `l2_eval_row` but returns `None` early if the partial sum exceeds
-/// `worst`. Check fires after each 4-wide chunk — at dim>=32 most rejected
-/// points bail after 2-3 chunks, skipping 75-87% of work.
-#[inline(always)]
-fn l2_eval_row_bounded<T: Scalar>(query: &[T], row: &[T], dim: usize, worst: T) -> Option<T> {
-    let mut result: T = T::default();
-    let multof4 = (dim >> 2) << 2;
-    let (qc, _) = query[..multof4].as_chunks::<4>();
-    let (rc, _) = row[..multof4].as_chunks::<4>();
-    for (a, b) in qc.iter().zip(rc.iter()) {
-        let diff0 = a[0] - b[0];
-        let diff1 = a[1] - b[1];
-        let diff2 = a[2] - b[2];
-        let diff3 = a[3] - b[3];
-        result = result + ((diff0 * diff0 + diff1 * diff1) + (diff2 * diff2 + diff3 * diff3));
-        if result >= worst {
-            return None;
-        }
-    }
-    let d = multof4;
-    let rem = dim - multof4;
-    let qt = &query[d..d + rem];
-    let rt = &row[d..d + rem];
-    if rem >= 3 {
-        let diff = qt[2] - rt[2];
-        result = result + diff * diff;
-    }
-    if rem >= 2 {
-        let diff = qt[1] - rt[1];
-        result = result + diff * diff;
-    }
-    if rem >= 1 {
-        let diff = qt[0] - rt[0];
-        result = result + diff * diff;
-    }
-    if result < worst {
-        Some(result)
-    } else {
-        None
-    }
-}
-
 macro_rules! impl_l2 {
     ($t:ty) => {
         impl Distance<$t> for L2 {
@@ -400,26 +337,6 @@ macro_rules! impl_l2 {
                     result += diff * diff;
                 }
                 result
-            }
-
-            #[inline]
-            fn eval_bounded<DS: DataSource<$t> + ?Sized, D: Dim>(
-                &self,
-                query: &[$t],
-                ds: &DS,
-                idx: usize,
-                dim: D,
-                worst_dist: $t,
-            ) -> Option<$t> {
-                let dim = dim.dim();
-                if let Some(row) = ds.point_row(idx) {
-                    if row.len() >= dim && query.len() >= dim {
-                        return l2_eval_row_bounded(query, row, dim, worst_dist);
-                    }
-                }
-                // Fallback: compute full then check
-                let dist = self.eval(query, ds, idx, crate::DynDim(dim));
-                if dist < worst_dist { Some(dist) } else { None }
             }
 
             fn accum_dist(&self, a: $t, b: $t, _axis: usize) -> $t {
