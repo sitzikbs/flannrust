@@ -319,22 +319,22 @@ unsafe fn l2_f64_avx2(q: &[f64], r: &[f64], dim: usize) -> f64 {
         let pair_sums = _mm256_add_pd(d2, shuf);
         let hi128 = _mm256_extractf128_pd(pair_sums, 1);
         let lo128 = _mm256_castpd256_pd128(pair_sums);
-        result = result + _mm_cvtsd_f64(_mm_add_sd(lo128, hi128));
+        result += _mm_cvtsd_f64(_mm_add_sd(lo128, hi128));
         i += 4;
     }
     // Scalar tail: 0-3 elements in descending order (matches l2_eval_row)
     let rem = dim - i;
     if rem >= 3 {
         let d = *q.get_unchecked(i + 2) - *r.get_unchecked(i + 2);
-        result = result + d * d;
+        result += d * d;
     }
     if rem >= 2 {
         let d = *q.get_unchecked(i + 1) - *r.get_unchecked(i + 1);
-        result = result + d * d;
+        result += d * d;
     }
     if rem >= 1 {
         let d = *q.get_unchecked(i) - *r.get_unchecked(i);
-        result = result + d * d;
+        result += d * d;
     }
     result
 }
@@ -358,12 +358,12 @@ unsafe fn l2_f32_avx2(q: &[f32], r: &[f32], dim: usize) -> f32 {
         let lo_shuf = _mm_movehdup_ps(lo);
         let lo_pairs = _mm_add_ps(lo, lo_shuf);
         let lo_high = _mm_movehl_ps(lo_pairs, lo_pairs);
-        result = result + _mm_cvtss_f32(_mm_add_ss(lo_pairs, lo_high));
+        result += _mm_cvtss_f32(_mm_add_ss(lo_pairs, lo_high));
         // Reduce hi 4 lanes: (d4²+d5²)+(d6²+d7²)
         let hi_shuf = _mm_movehdup_ps(hi);
         let hi_pairs = _mm_add_ps(hi, hi_shuf);
         let hi_high = _mm_movehl_ps(hi_pairs, hi_pairs);
-        result = result + _mm_cvtss_f32(_mm_add_ss(hi_pairs, hi_high));
+        result += _mm_cvtss_f32(_mm_add_ss(hi_pairs, hi_high));
         i += 8;
     }
     // 4-wide remainder (one scalar chunk)
@@ -373,22 +373,22 @@ unsafe fn l2_f32_avx2(q: &[f32], r: &[f32], dim: usize) -> f32 {
         let shuf = _mm_movehdup_ps(d2);
         let pairs = _mm_add_ps(d2, shuf);
         let high = _mm_movehl_ps(pairs, pairs);
-        result = result + _mm_cvtss_f32(_mm_add_ss(pairs, high));
+        result += _mm_cvtss_f32(_mm_add_ss(pairs, high));
         i += 4;
     }
     // Scalar tail: 0-3 elements in descending order
     let rem = dim - i;
     if rem >= 3 {
         let d = *q.get_unchecked(i + 2) - *r.get_unchecked(i + 2);
-        result = result + d * d;
+        result += d * d;
     }
     if rem >= 2 {
         let d = *q.get_unchecked(i + 1) - *r.get_unchecked(i + 1);
-        result = result + d * d;
+        result += d * d;
     }
     if rem >= 1 {
         let d = *q.get_unchecked(i) - *r.get_unchecked(i);
-        result = result + d * d;
+        result += d * d;
     }
     result
 }

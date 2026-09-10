@@ -2725,7 +2725,7 @@ mod tests {
             HYBRID_RECURSION_DEPTH_LIMIT as usize + SEARCH_STACK_INLINE_CAPACITY + 1;
         // n=250 gives tree depth ~240 (spine peels ~1 point per level with
         // leaf_max_size=10), explicit-stack portion ~144, crossing 128.
-        const _: () = assert!(240 > MIN_TREE_DEPTH as usize);
+        const _: () = assert!(240 > MIN_TREE_DEPTH);
 
         let n = 250usize;
         let pts = spill_boundary_points(n);
