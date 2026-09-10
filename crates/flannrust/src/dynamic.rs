@@ -542,8 +542,19 @@ where
     /// oracle therefore depends on replicating this exact rebuild
     /// SCHEDULE, not just tracking final slot membership.
     pub fn add_points(&mut self, start: usize, end_inclusive: usize) {
-        let dim_n = self.dim.dim();
-        let leaf_max_size = self.leaf_max_size;
+        let max_index = self.add_points_bookkeeping(start, end_inclusive);
+        self.rebuild_slots_sequential(max_index);
+    }
+
+    /// The per-index bookkeeping loop (nanoflann.hpp:2629-2669) -- everything
+    /// `add_points` does BEFORE the rebuild pass. Factored out so
+    /// [`Self::add_points`] (sequential rebuild) and, under the "parallel"
+    /// feature, `add_points_parallel` (parallel rebuild) share one true
+    /// bookkeeping implementation instead of two copies that could drift.
+    /// Returns `max_index`, the highest slot touched this call -- see
+    /// `add_points`'s doc comment for why the rebuild pass always covers
+    /// `0..=max_index` regardless of what changed.
+    fn add_points_bookkeeping(&mut self, start: usize, end_inclusive: usize) -> usize {
         let mut max_index: usize = 0;
 
         for idx in start..=end_inclusive {
@@ -605,6 +616,17 @@ where
             self.slots[pos].vind.push(Idx::from_usize(idx));
             self.point_count += 1;
         }
+
+        max_index
+    }
+
+    /// The rebuild pass (nanoflann.hpp:2670-2675), one slot at a time on the
+    /// calling thread -- C++-parity (see [`DynamicKdTreeBuilder`]'s doc
+    /// comment) and the only rebuild path available without the "parallel"
+    /// feature, or for a non-`Sync` dataset (no `Sync` bound needed here).
+    fn rebuild_slots_sequential(&mut self, max_index: usize) {
+        let dim_n = self.dim.dim();
+        let leaf_max_size = self.leaf_max_size;
 
         for i in 0..=max_index {
             self.slots[i].nodes.clear();
@@ -827,6 +849,76 @@ where
         let mut rs = RadiusResultSet::new(radius, out);
         self.find_neighbors(&mut rs, query, params);
         rs.size()
+    }
+}
+
+/// Parallel slot rebuilds (feature "parallel" only, requires `DS: Sync`).
+///
+/// DEVIATION from C++: nanoflann's dynamic forest has no parallel
+/// slot-rebuild path at all -- every observed call site rebuilds slots one
+/// at a time on the calling thread (see [`DynamicKdTreeBuilder`]'s doc
+/// comment). [`DynamicKdTree::add_points_parallel`] is a Rust-only,
+/// opt-in-by-name addition: it exists alongside (not instead of)
+/// [`DynamicKdTree::add_points`], which stays the always-available,
+/// C++-parity, `Sync`-free sequential path -- including for
+/// [`DynamicKdTreeBuilder::build`]'s ctor auto-add, which always goes
+/// through plain `add_points` so a non-`Sync` dataset can still build a
+/// forest.
+#[cfg(feature = "parallel")]
+impl<T, D, DS, M, Idx, TB> DynamicKdTree<T, D, DS, M, Idx, TB>
+where
+    T: Scalar,
+    D: Dim,
+    DS: DataSource<T> + Sync,
+    M: Distance<T>,
+    Idx: IndexType,
+    TB: TieBreak,
+{
+    /// Same bookkeeping/contract as [`Self::add_points`] (see its doc
+    /// comment for the contiguous-append contract and rebuild schedule), but
+    /// the rebuild pass runs every touched slot (`0..=max_index`)
+    /// CONCURRENTLY via `rayon::scope` instead of one at a time. Slots are
+    /// independent -- each owns its own disjoint `vind`/`nodes`/`root_bbox`,
+    /// never aliased across the spawned tasks (`self.slots[0..=max_index]`
+    /// is sliced ONCE up front, then each task gets its own `&mut Slot` from
+    /// `iter_mut()`) -- so this is safe with no locking beyond what the
+    /// borrow checker already proves. Each slot rebuild also goes through
+    /// [`crate::build_parallel::build_tree_parallel`] (the same builder
+    /// [`crate::tree::KdTreeBuilder::build`]'s `BuildThreads::Auto` uses),
+    /// bit-identical to the sequential `SubtreeBuilder` per that module's own
+    /// guarantee -- so a single huge slot can itself split across workers
+    /// too, and slot contents match [`Self::add_points`]'s exactly for the
+    /// same operation sequence (see `add_points_parallel_matches_sequential_slot_contents`).
+    pub fn add_points_parallel(&mut self, start: usize, end_inclusive: usize) {
+        let max_index = self.add_points_bookkeeping(start, end_inclusive);
+
+        let dim = self.dim;
+        let dim_n = dim.dim();
+        let leaf_max_size = self.leaf_max_size;
+        let dataset = &self.dataset;
+        let slots = &mut self.slots[0..=max_index];
+
+        rayon::scope(|scope| {
+            for slot in slots.iter_mut() {
+                scope.spawn(move |_| {
+                    slot.nodes.clear();
+                    if slot.vind.is_empty() {
+                        return;
+                    }
+
+                    let mut bbox = dim.filled(Interval::default());
+                    compute_bounding_box_over_indices(dataset, dim_n, &slot.vind, bbox.as_mut());
+                    slot.nodes = crate::build_parallel::build_tree_parallel(
+                        dataset,
+                        dim_n,
+                        leaf_max_size,
+                        &mut slot.vind,
+                        bbox.as_mut(),
+                    );
+                    slot.root_bbox = bbox;
+                });
+            }
+        });
     }
 }
 
@@ -1431,6 +1523,66 @@ mod tests {
             .collect();
         union.sort_unstable();
         assert_eq!(union, (0u32..8).collect::<Vec<u32>>());
+    }
+
+    // ---------------------------------------------------------------
+    // Parallel slot rebuilds (feature "parallel"): must match the
+    // sequential path exactly, both in bookkeeping and in slot CONTENTS --
+    // `build_parallel.rs` already guarantees its arena/vind are
+    // bit-identical to `SubtreeBuilder`'s, so a real (non-single-leaf,
+    // multi-slot) op sequence run through both entry points must land on
+    // identical slot vind, tree_index and removed state.
+    // ---------------------------------------------------------------
+
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn add_points_parallel_matches_sequential_slot_contents() {
+        let pts: Vec<[f64; 2]> = (0..64)
+            .map(|i| [i as f64 * 1.7, (i * i) as f64 * 0.3])
+            .collect();
+
+        let run_seq = || -> (Vec<Vec<u32>>, Vec<i32>) {
+            let ds = Ungated(pts.clone());
+            let mut tree = DynamicKdTreeBuilder::new(ConstDim::<2>, ds)
+                .maximum_point_count(1000)
+                .build();
+            tree.add_points(0, 31);
+            assert!(tree.remove_point(3));
+            assert!(tree.remove_point(9));
+            tree.add_points(32, 47);
+            tree.add_points(3, 3); // reactivate
+            tree.add_points(48, 63);
+            let slots: Vec<Vec<u32>> = (0..tree.tree_count())
+                .map(|s| tree.point_indices_of_slot(s).to_vec())
+                .collect();
+            (slots, tree.tree_index().to_vec())
+        };
+
+        let run_par = || -> (Vec<Vec<u32>>, Vec<i32>) {
+            let ds = Ungated(pts.clone());
+            let mut tree = DynamicKdTreeBuilder::new(ConstDim::<2>, ds)
+                .maximum_point_count(1000)
+                .build();
+            tree.add_points_parallel(0, 31);
+            assert!(tree.remove_point(3));
+            assert!(tree.remove_point(9));
+            tree.add_points_parallel(32, 47);
+            tree.add_points_parallel(3, 3); // reactivate
+            tree.add_points_parallel(48, 63);
+            let slots: Vec<Vec<u32>> = (0..tree.tree_count())
+                .map(|s| tree.point_indices_of_slot(s).to_vec())
+                .collect();
+            (slots, tree.tree_index().to_vec())
+        };
+
+        let (seq_slots, seq_ti) = run_seq();
+        let (par_slots, par_ti) = run_par();
+
+        assert_eq!(
+            seq_slots, par_slots,
+            "parallel rebuild must produce byte-identical slot vind to the sequential path"
+        );
+        assert_eq!(seq_ti, par_ti);
     }
 
     // ---------------------------------------------------------------
