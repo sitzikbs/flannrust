@@ -299,8 +299,7 @@ macro_rules! impl_l2 {
                         debug_check_point_row_contract(ds, idx, row, dim);
                         #[cfg(target_arch = "x86_64")]
                         {
-                            if let Some(d) =
-                                <$t as crate::simd::L2Simd>::dispatch(query, row, dim)
+                            if let Some(d) = <$t as crate::simd::L2Simd>::dispatch(query, row, dim)
                             {
                                 return d;
                             }
@@ -1196,10 +1195,16 @@ mod tests {
         for dim in 0..8 {
             let q = vec![1.0f64; dim];
             let r = vec![2.0f64; dim];
-            assert!(<f64 as L2Simd>::dispatch(&q, &r, dim).is_none(), "dim={dim}");
+            assert!(
+                <f64 as L2Simd>::dispatch(&q, &r, dim).is_none(),
+                "dim={dim}"
+            );
             let q32 = vec![1.0f32; dim];
             let r32 = vec![2.0f32; dim];
-            assert!(<f32 as L2Simd>::dispatch(&q32, &r32, dim).is_none(), "dim={dim}");
+            assert!(
+                <f32 as L2Simd>::dispatch(&q32, &r32, dim).is_none(),
+                "dim={dim}"
+            );
         }
     }
 }

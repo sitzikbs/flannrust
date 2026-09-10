@@ -608,8 +608,10 @@ mod tests {
                 assert!(
                     rs.indices[i] < rs.indices[i + 1],
                     "tied distances not sorted by index: {}({}) vs {}({})",
-                    rs.indices[i], rs.dists[i],
-                    rs.indices[i + 1], rs.dists[i + 1]
+                    rs.indices[i],
+                    rs.dists[i],
+                    rs.indices[i + 1],
+                    rs.dists[i + 1]
                 );
             }
         }

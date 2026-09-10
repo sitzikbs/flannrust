@@ -439,7 +439,9 @@ where
     }
 
     if depth >= HYBRID_RECURSION_DEPTH_LIMIT {
-        return search_level_explicit(ctx, result, query, node_idx, mindist, dists, eps_error, filter);
+        return search_level_explicit(
+            ctx, result, query, node_idx, mindist, dists, eps_error, filter,
+        );
     }
 
     let idx = node.split_dim();
@@ -455,7 +457,17 @@ where
         (c2, c1, ctx.metric.accum_dist(val, node.div_low(), idx))
     };
 
-    if !search_level_hybrid(ctx, result, query, best_child, mindist, dists, eps_error, filter, depth + 1) {
+    if !search_level_hybrid(
+        ctx,
+        result,
+        query,
+        best_child,
+        mindist,
+        dists,
+        eps_error,
+        filter,
+        depth + 1,
+    ) {
         return false;
     }
 
@@ -464,7 +476,17 @@ where
     dists[idx] = cut_dist;
 
     if new_mindist * eps_error <= result.worst_dist()
-        && !search_level_hybrid(ctx, result, query, other_child, new_mindist, dists, eps_error, filter, depth + 1)
+        && !search_level_hybrid(
+            ctx,
+            result,
+            query,
+            other_child,
+            new_mindist,
+            dists,
+            eps_error,
+            filter,
+            depth + 1,
+        )
     {
         return false;
     }
