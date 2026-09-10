@@ -82,6 +82,8 @@ pub mod params;
 pub mod result_set;
 pub mod scalar;
 mod search;
+#[cfg(target_arch = "x86_64")]
+mod simd;
 pub mod tree;
 
 pub use bbox::Interval;
@@ -89,7 +91,7 @@ pub use data_source::{DataSource, FlatSlice, OwnedRows};
 pub use dim::{ConstDim, Dim, DynDim};
 pub use dynamic::{DynamicKdTree, DynamicKdTreeBuilder};
 pub use filter::{AcceptAll, PointFilter};
-pub use metric::{Distance, L2Simple, L1, L2, SO2, SO3};
+pub use metric::{Distance, L2Fma, L2Simple, L1, L2, SO2, SO3};
 pub use params::{BuildThreads, SearchParams};
 pub use result_set::{
     KeepInsertionOrder, KnnResultSet, RadiusResultSet, ResultItem, ResultSet, RknnResultSet,

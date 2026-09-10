@@ -60,6 +60,14 @@ pub struct L2;
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct L2Simple;
 
+/// **Squared** Euclidean metric using hardware FMA (`mul_add`). Faster than
+/// [`L2`] on FMA-capable hardware (all x86-64-v3+ and aarch64) but **NOT
+/// bit-identical** to `L2` or the C++ oracle — results may differ at the
+/// last bit due to fused multiply-add rounding. Use when throughput matters
+/// more than exact reproducibility.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct L2Fma;
+
 /// Shortest angular distance on the last dimension only, assuming inputs are
 /// already wrapped into `[-pi, pi]` (nanoflann's `SO2_Adaptor`). NOT squared;
 /// the result lies in `[0, pi]`.
@@ -135,7 +143,7 @@ fn debug_check_point_row_contract<T: Scalar, DS: DataSource<T> + ?Sized>(
 /// is bit-identical to `-v` here because this arm is only reached when `v`
 /// is strictly negative (never `-0.0`/`+0.0`), so there is no zero-sign
 /// ambiguity between the two spellings.
-#[inline]
+#[inline(always)]
 fn l1_eval_row<T: Scalar>(query: &[T], row: &[T], dim: usize) -> T {
     let zero = T::default();
     #[inline]
@@ -159,14 +167,16 @@ fn l1_eval_row<T: Scalar>(query: &[T], row: &[T], dim: usize) -> T {
     }
     let d = multof4;
     let rem = dim - multof4;
+    let qt = &query[d..d + rem];
+    let rt = &row[d..d + rem];
     if rem >= 3 {
-        result = result + abs_t(query[d + 2] - row[d + 2], zero);
+        result = result + abs_t(qt[2] - rt[2], zero);
     }
     if rem >= 2 {
-        result = result + abs_t(query[d + 1] - row[d + 1], zero);
+        result = result + abs_t(qt[1] - rt[1], zero);
     }
     if rem >= 1 {
-        result = result + abs_t(query[d] - row[d], zero);
+        result = result + abs_t(qt[0] - rt[0], zero);
     }
     result
 }
@@ -234,7 +244,7 @@ macro_rules! impl_l1 {
 /// only the *loads* move (row-indexed rather than `point_component`-indexed).
 /// Row-vs-fallback bit-equality is asserted by
 /// `metric::tests::l2_eval_row_path_bit_equals_fallback_path_all_dims_{f32,f64}`.
-#[inline]
+#[inline(always)]
 fn l2_eval_row<T: Scalar>(query: &[T], row: &[T], dim: usize) -> T {
     let mut result: T = T::default(); // zero, per Scalar's contract
     let multof4 = (dim >> 2) << 2; // largest multiple of 4
@@ -254,16 +264,18 @@ fn l2_eval_row<T: Scalar>(query: &[T], row: &[T], dim: usize) -> T {
     // d+0.
     let d = multof4;
     let rem = dim - multof4;
+    let qt = &query[d..d + rem];
+    let rt = &row[d..d + rem];
     if rem >= 3 {
-        let diff = query[d + 2] - row[d + 2];
+        let diff = qt[2] - rt[2];
         result = result + diff * diff;
     }
     if rem >= 2 {
-        let diff = query[d + 1] - row[d + 1];
+        let diff = qt[1] - rt[1];
         result = result + diff * diff;
     }
     if rem >= 1 {
-        let diff = query[d] - row[d];
+        let diff = qt[0] - rt[0];
         result = result + diff * diff;
     }
     result
@@ -285,6 +297,14 @@ macro_rules! impl_l2 {
                 if let Some(row) = ds.point_row(idx) {
                     if row.len() >= dim && query.len() >= dim {
                         debug_check_point_row_contract(ds, idx, row, dim);
+                        #[cfg(target_arch = "x86_64")]
+                        {
+                            if let Some(d) =
+                                <$t as crate::simd::L2Simd>::dispatch(query, row, dim)
+                            {
+                                return d;
+                            }
+                        }
                         return l2_eval_row(query, row, dim);
                     }
                 }
@@ -344,6 +364,52 @@ macro_rules! impl_l2_simple {
                 for d in 0..dim {
                     let diff = query[d] - ds.point_component(idx, d);
                     result += diff * diff;
+                }
+                result
+            }
+
+            fn accum_dist(&self, a: $t, b: $t, _axis: usize) -> $t {
+                let diff = a - b;
+                diff * diff
+            }
+        }
+    };
+}
+
+macro_rules! impl_l2_fma {
+    ($t:ty) => {
+        impl Distance<$t> for L2Fma {
+            type DistanceType = $t;
+
+            fn eval<DS: DataSource<$t> + ?Sized, D: Dim>(
+                &self,
+                query: &[$t],
+                ds: &DS,
+                idx: usize,
+                dim: D,
+            ) -> $t {
+                let dim = dim.dim();
+                let mut result: $t = 0.0;
+                if let Some(row) = ds.point_row(idx) {
+                    if row.len() >= dim && query.len() >= dim {
+                        #[cfg(target_arch = "x86_64")]
+                        {
+                            if let Some(d) =
+                                <$t as crate::simd::L2FmaSimd>::dispatch(query, row, dim)
+                            {
+                                return d;
+                            }
+                        }
+                        for (q, p) in query[..dim].iter().zip(&row[..dim]) {
+                            let diff = *q - *p;
+                            result = diff.mul_add(diff, result);
+                        }
+                        return result;
+                    }
+                }
+                for d in 0..dim {
+                    let diff = query[d] - ds.point_component(idx, d);
+                    result = diff.mul_add(diff, result);
                 }
                 result
             }
@@ -420,6 +486,9 @@ impl_l2!(f32);
 impl_l2!(f64);
 impl_l2_simple!(f32);
 impl_l2_simple!(f64);
+
+impl_l2_fma!(f32);
+impl_l2_fma!(f64);
 impl_so2!(f32, core::f32::consts::PI);
 impl_so2!(f64, core::f64::consts::PI);
 impl_so3!(f32);
@@ -531,6 +600,42 @@ mod tests {
         // Different summation order (4-way unroll vs plain sequential loop)
         // can produce a tiny floating-point discrepancy on non-exact inputs.
         assert!((l2 - l2s).abs() < 4.0 * f64::EPSILON, "l2={l2} l2s={l2s}");
+    }
+
+    // ---- Test 4b: L2Fma close to L2, uses mul_add ----
+
+    #[test]
+    fn l2_fma_matches_l2_exact_integer_dim8() {
+        let (q, p) = gen_int_points_f64(8);
+        let ds = FlatSlice::new(&p, 8);
+        let l2 = L2.eval(&q, &ds, 0, ConstDim::<8>);
+        let fma = L2Fma.eval(&q, &ds, 0, ConstDim::<8>);
+        assert_eq!(l2, fma);
+    }
+
+    #[test]
+    fn l2_fma_close_to_l2_irrational_dim8() {
+        let dim = 8;
+        let q: Vec<f64> = (0..dim).map(|i| 0.1 * (i as f64)).collect();
+        let p: Vec<f64> = (0..dim).map(|i| 0.1 * ((i as f64) + 1.0)).collect();
+        let ds = FlatSlice::new(&p, dim);
+        let l2 = L2.eval(&q, &ds, 0, DynDim(dim));
+        let fma = L2Fma.eval(&q, &ds, 0, DynDim(dim));
+        assert!((l2 - fma).abs() < 4.0 * f64::EPSILON, "l2={l2} fma={fma}");
+    }
+
+    #[test]
+    fn l2_fma_various_dims() {
+        for &dim in TEST_DIMS {
+            let (q, p) = gen_int_points_f64(dim);
+            let ds = FlatSlice::new(&p, dim);
+            let l2 = L2.eval(&q, &ds, 0, DynDim(dim));
+            let fma = L2Fma.eval(&q, &ds, 0, DynDim(dim));
+            assert!(
+                (l2 - fma).abs() < 4.0 * f64::EPSILON * l2.max(1.0),
+                "dim={dim} l2={l2} fma={fma}"
+            );
+        }
     }
 
     // ---- Test 5: SO2 last-dim-only, UNsquared ----
@@ -966,5 +1071,135 @@ mod tests {
         let acc = metric.accum_dist(0.0, 2.0, 1);
         // weight[1] * (0-2)^2 = 4 * 4 = 16
         assert_eq!(acc, 16.0);
+    }
+
+    // ---- SIMD L2Fma property tests: SIMD dispatch vs scalar mul_add loop
+    // within 4*EPS*max(1, |result|) over BIT_EQ_DIMS x SALTS. ----
+
+    /// Scalar reference: plain sequential mul_add loop (same as the
+    /// `impl_l2_fma!` fallback).
+    fn scalar_l2fma_f64(q: &[f64], r: &[f64], dim: usize) -> f64 {
+        let mut result = 0.0f64;
+        for i in 0..dim {
+            let d = q[i] - r[i];
+            result = d.mul_add(d, result);
+        }
+        result
+    }
+
+    fn scalar_l2fma_f32(q: &[f32], r: &[f32], dim: usize) -> f32 {
+        let mut result = 0.0f32;
+        for i in 0..dim {
+            let d = q[i] - r[i];
+            result = d.mul_add(d, result);
+        }
+        result
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn l2fma_simd_matches_scalar_all_dims_f64() {
+        use crate::simd::L2FmaSimd;
+        for &dim in BIT_EQ_DIMS {
+            for &salt in SALTS_F64 {
+                let (q, p) = gen_random_ish_f64(dim, salt);
+                let scalar = scalar_l2fma_f64(&q, &p, dim);
+                if let Some(simd) = f64::dispatch(&q, &p, dim) {
+                    let tol = 4.0 * f64::EPSILON * scalar.abs().max(1.0);
+                    assert!(
+                        (simd - scalar).abs() <= tol,
+                        "f64 dim={dim} salt={salt}: simd={simd} scalar={scalar} diff={} tol={tol}",
+                        (simd - scalar).abs()
+                    );
+                }
+            }
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn l2fma_simd_matches_scalar_all_dims_f32() {
+        use crate::simd::L2FmaSimd;
+        for &dim in BIT_EQ_DIMS {
+            for &salt in SALTS_F32 {
+                let (q, p) = gen_random_ish_f32(dim, salt);
+                let scalar = scalar_l2fma_f32(&q, &p, dim);
+                if let Some(simd) = f32::dispatch(&q, &p, dim) {
+                    let tol = 4.0 * f32::EPSILON * scalar.abs().max(1.0);
+                    assert!(
+                        (simd - scalar).abs() <= tol,
+                        "f32 dim={dim} salt={salt}: simd={simd} scalar={scalar} diff={} tol={tol}",
+                        (simd - scalar).abs()
+                    );
+                }
+            }
+        }
+    }
+
+    /// Verify dispatch returns None for dim < 8 (the dim-gate).
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn l2fma_simd_returns_none_below_dim8() {
+        use crate::simd::L2FmaSimd;
+        for dim in 0..8 {
+            let q = vec![1.0f64; dim];
+            let r = vec![2.0f64; dim];
+            assert!(f64::dispatch(&q, &r, dim).is_none(), "dim={dim}");
+            let q32 = vec![1.0f32; dim];
+            let r32 = vec![2.0f32; dim];
+            assert!(f32::dispatch(&q32, &r32, dim).is_none(), "dim={dim}");
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn l2_simd_bit_exact_vs_scalar_all_dims_f64() {
+        use crate::simd::L2Simd;
+        for &dim in BIT_EQ_DIMS {
+            for &salt in SALTS_F64 {
+                let (q, p) = gen_random_ish_f64(dim, salt);
+                let scalar = l2_eval_row(&q, &p[..dim], dim);
+                if let Some(simd) = <f64 as L2Simd>::dispatch(&q, &p[..dim], dim) {
+                    assert_eq!(
+                        simd.to_bits(),
+                        scalar.to_bits(),
+                        "f64 dim={dim} salt={salt}: simd={simd} scalar={scalar}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn l2_simd_bit_exact_vs_scalar_all_dims_f32() {
+        use crate::simd::L2Simd;
+        for &dim in BIT_EQ_DIMS {
+            for &salt in SALTS_F32 {
+                let (q, p) = gen_random_ish_f32(dim, salt);
+                let scalar = l2_eval_row(&q, &p[..dim], dim);
+                if let Some(simd) = <f32 as L2Simd>::dispatch(&q, &p[..dim], dim) {
+                    assert_eq!(
+                        simd.to_bits(),
+                        scalar.to_bits(),
+                        "f32 dim={dim} salt={salt}: simd={simd} scalar={scalar}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn l2_simd_returns_none_below_dim8() {
+        use crate::simd::L2Simd;
+        for dim in 0..8 {
+            let q = vec![1.0f64; dim];
+            let r = vec![2.0f64; dim];
+            assert!(<f64 as L2Simd>::dispatch(&q, &r, dim).is_none(), "dim={dim}");
+            let q32 = vec![1.0f32; dim];
+            let r32 = vec![2.0f32; dim];
+            assert!(<f32 as L2Simd>::dispatch(&q32, &r32, dim).is_none(), "dim={dim}");
+        }
     }
 }
