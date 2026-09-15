@@ -93,47 +93,24 @@ fn add_point_to_sorted<D: DistanceValue, Idx: Copy + PartialOrd, TB: TieBreak>(
 ) -> usize {
     let capacity = dists.len();
 
-    // ponytail: binary search + copy_within for large k (O(log k) vs O(k)
-    // comparisons, single memmove vs element-by-element shift)
-    if capacity >= 32 {
-        let search_end = count.min(capacity);
-        // Binary search: find insertion point using TB::shift monotonicity
-        let mut lo = 0usize;
-        let mut hi = search_end;
-        while lo < hi {
-            let mid = lo + (hi - lo) / 2;
-            if TB::shift(dists[mid], indices[mid], dist, index) {
-                hi = mid;
-            } else {
-                lo = mid + 1;
+    // Linear scan from the tail (= C++'s addPointToSortedResultSet).
+    // For kd-tree access patterns, candidates that beat worst_dist land
+    // near the tail, so this terminates in ~1-3 well-predicted iterations.
+    let mut i = count;
+    while i > 0 {
+        if TB::shift(dists[i - 1], indices[i - 1], dist, index) {
+            if i < capacity {
+                dists[i] = dists[i - 1];
+                indices[i] = indices[i - 1];
             }
+        } else {
+            break;
         }
-        if lo < capacity {
-            let shift_end = search_end.min(capacity - 1);
-            if lo < shift_end {
-                dists.copy_within(lo..shift_end, lo + 1);
-                indices.copy_within(lo..shift_end, lo + 1);
-            }
-            dists[lo] = dist;
-            indices[lo] = index;
-        }
-    } else {
-        let mut i = count;
-        while i > 0 {
-            if TB::shift(dists[i - 1], indices[i - 1], dist, index) {
-                if i < capacity {
-                    dists[i] = dists[i - 1];
-                    indices[i] = indices[i - 1];
-                }
-            } else {
-                break;
-            }
-            i -= 1;
-        }
-        if i < capacity {
-            dists[i] = dist;
-            indices[i] = index;
-        }
+        i -= 1;
+    }
+    if i < capacity {
+        dists[i] = dist;
+        indices[i] = index;
     }
 
     if count < capacity {

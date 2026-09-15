@@ -286,6 +286,9 @@ macro_rules! impl_l2 {
         impl Distance<$t> for L2 {
             type DistanceType = $t;
 
+            // Force inlining so DynDim leaf loops avoid a call through
+            // the SIMD dispatch; ConstDim already inlines (dispatch folds away).
+            #[inline(always)]
             fn eval<DS: DataSource<$t> + ?Sized, D: Dim>(
                 &self,
                 query: &[$t],

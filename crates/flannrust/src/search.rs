@@ -452,6 +452,12 @@ where
 
     let (c1, c2) = node.children();
     let (best_child, other_child, cut_dist) = if (diff1 + diff2) < T::default() {
+        // Prevent LLVM from if-converting this into cmov/masked-move: the
+        // selected child is the next pointer in the descent chain, so a
+        // branch (predicted ~90%) lets the CPU speculate ahead, while cmov
+        // serialises every level.  black_box is a no-op barrier that makes
+        // the arm opaque enough to block SimplifyCFG merging.
+        core::hint::black_box(());
         (c1, c2, ctx.metric.accum_dist(val, node.div_high(), idx))
     } else {
         (c2, c1, ctx.metric.accum_dist(val, node.div_low(), idx))
@@ -639,6 +645,8 @@ where
 
             let (c1, c2) = node.children();
             let (best_child, other_child, cut_dist) = if (diff1 + diff2) < T::default() {
+                // See the identical comment in search_level_hybrid.
+                core::hint::black_box(());
                 (c1, c2, ctx.metric.accum_dist(val, node.div_high(), idx))
             } else {
                 (c2, c1, ctx.metric.accum_dist(val, node.div_low(), idx))
