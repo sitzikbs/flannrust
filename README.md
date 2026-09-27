@@ -2,7 +2,9 @@
 
 [![CI](https://github.com/sitzikbs/flannrust/actions/workflows/ci.yml/badge.svg)](https://github.com/sitzikbs/flannrust/actions/workflows/ci.yml)
 [![License: BSD-2-Clause](https://img.shields.io/badge/license-BSD--2--Clause-blue.svg)](LICENSE)
-<!-- At publish time, add: crates.io, docs.rs, and PyPI version badges. -->
+[![crates.io](https://img.shields.io/crates/v/flannrust.svg)](https://crates.io/crates/flannrust)
+[![docs.rs](https://docs.rs/flannrust/badge.svg)](https://docs.rs/flannrust)
+[![PyPI](https://img.shields.io/pypi/v/flannrust.svg)](https://pypi.org/project/flannrust/)
 
 A Rust port of [nanoflann](https://github.com/jlblancoc/nanoflann) (the C++
 kd-tree library), targeting bit-exact result parity with the C++ reference
