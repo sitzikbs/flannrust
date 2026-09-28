@@ -1,0 +1,344 @@
+{
+  "schema_version": 2,
+  "meta": {
+    "python": "3.12.11",
+    "numpy": "2.5.2",
+    "scipy": "1.18.1",
+    "pynanoflann": "0.10.0",
+    "cpu": "AMD Ryzen 7 9800X3D 8-Core Processor",
+    "threads": 8,
+    "date": "2026-09-27T17:53:11Z",
+    "git_sha": "ce3523d",
+    "loadavg_start": "0.23 0.25 0.50 3/1071 128411",
+    "rustflags": "",
+    "wheel_profile": "release (.venv/bin/maturin develop --release); RUSTFLAGS=\"-C target-cpu=native\" REQUIRED at build time for parity with the repo's Rust-vs-C++ xval methodology -- see meta.rustflags for what THIS run's process environment actually had set",
+    "budget_s": 30.0,
+    "warmup_reps": 2,
+    "rep_policy": "n = clamp(10, 100, floor(budget_s*1000 / t_est_ms)); t_est_ms = mean of WARMUP_REPS (2) untimed warmup reps, slowest engine in the interleaved group -- mirrors xval::measure_pair (M2.6 Task 1), generalized to N engines. Ratios are median-based; mean/std(sample, n-1)/min/max/n published per engine alongside.",
+    "loadavg_end": "1.20 1.10 1.00 1/1065 131599"
+  },
+  "workloads": [
+    {
+      "name": "build_100k_dim3_f32_threads1",
+      "flannrust_stats": {
+        "mean_ms": 9.009080129835638,
+        "std_ms": 0.2524460430817812,
+        "median_ms": 8.90588100082823,
+        "min_ms": 8.661801999551244,
+        "max_ms": 10.133839001355227,
+        "n": 100
+      },
+      "ckdtree_stats": {
+        "mean_ms": 11.111232779876445,
+        "std_ms": 0.24174650759333,
+        "median_ms": 11.014801504643401,
+        "min_ms": 10.816153000632767,
+        "max_ms": 11.874919997353572,
+        "n": 100
+      },
+      "pynanoflann_stats": {
+        "mean_ms": 17.589115679365932,
+        "std_ms": 0.3211137964031195,
+        "median_ms": 17.46418349648593,
+        "min_ms": 17.10784200258786,
+        "max_ms": 18.623887001012918,
+        "n": 100
+      },
+      "ratio_ckdtree": 0.808537584365353,
+      "ratio_pynanoflann": 0.5099511810913023
+    },
+    {
+      "name": "build_100k_dim3_f32_threadsNone_parallel_build",
+      "flannrust_stats": {
+        "mean_ms": 2.7737037701444933,
+        "std_ms": 0.13421998080992323,
+        "median_ms": 2.773804502794519,
+        "min_ms": 2.466011996148154,
+        "max_ms": 3.151878001517616,
+        "n": 100
+      },
+      "ckdtree_stats": {
+        "mean_ms": 11.111232779876445,
+        "std_ms": 0.24174650759333,
+        "median_ms": 11.014801504643401,
+        "min_ms": 10.816153000632767,
+        "max_ms": 11.874919997353572,
+        "n": 100
+      },
+      "pynanoflann_stats": {
+        "mean_ms": 17.589115679365932,
+        "std_ms": 0.3211137964031195,
+        "median_ms": 17.46418349648593,
+        "min_ms": 17.10784200258786,
+        "max_ms": 18.623887001012918,
+        "n": 100
+      },
+      "ratio_ckdtree": 0.2518251919133716,
+      "ratio_pynanoflann": 0.15882818130905763,
+      "note": "flannrust threads=None (parallel build) vs cKDTree/pynanoflann single-thread build -- neither offers a parallel-build option, so this row reuses the sibling threads1 row's cKDTree/pynanoflann numbers. Labelled honestly, not a same-config parity claim."
+    },
+    {
+      "name": "build_1M_dim3_f32_threads1",
+      "flannrust_stats": {
+        "mean_ms": 118.02033760985069,
+        "std_ms": 1.2243670713864052,
+        "median_ms": 117.99078599869972,
+        "min_ms": 115.59133799892152,
+        "max_ms": 123.04056900029536,
+        "n": 100
+      },
+      "ckdtree_stats": {
+        "mean_ms": 135.1718184791389,
+        "std_ms": 10.200719360623792,
+        "median_ms": 130.2131289994577,
+        "min_ms": 125.76224399526836,
+        "max_ms": 168.45258499961346,
+        "n": 100
+      },
+      "pynanoflann_stats": {
+        "mean_ms": 232.5649243600492,
+        "std_ms": 2.734263890067848,
+        "median_ms": 232.24974300319445,
+        "min_ms": 225.00289599702228,
+        "max_ms": 244.6481400038465,
+        "n": 100
+      },
+      "ratio_ckdtree": 0.9061358628375417,
+      "ratio_pynanoflann": 0.5080340863803532
+    },
+    {
+      "name": "build_1M_dim3_f32_threadsNone_parallel_build",
+      "flannrust_stats": {
+        "mean_ms": 26.75508856016677,
+        "std_ms": 0.772601401870445,
+        "median_ms": 26.51027200045064,
+        "min_ms": 25.649219001934398,
+        "max_ms": 29.47610899718711,
+        "n": 100
+      },
+      "ckdtree_stats": {
+        "mean_ms": 135.1718184791389,
+        "std_ms": 10.200719360623792,
+        "median_ms": 130.2131289994577,
+        "min_ms": 125.76224399526836,
+        "max_ms": 168.45258499961346,
+        "n": 100
+      },
+      "pynanoflann_stats": {
+        "mean_ms": 232.5649243600492,
+        "std_ms": 2.734263890067848,
+        "median_ms": 232.24974300319445,
+        "min_ms": 225.00289599702228,
+        "max_ms": 244.6481400038465,
+        "n": 100
+      },
+      "ratio_ckdtree": 0.20359139054680922,
+      "ratio_pynanoflann": 0.11414553858122464,
+      "note": "flannrust threads=None (parallel build) vs cKDTree/pynanoflann single-thread build -- neither offers a parallel-build option, so this row reuses the sibling threads1 row's cKDTree/pynanoflann numbers. Labelled honestly, not a same-config parity claim."
+    },
+    {
+      "name": "knn_batched_dim3_f32_k10_q200k_workers1",
+      "flannrust_stats": {
+        "mean_ms": 275.49367476894986,
+        "std_ms": 3.3063754539250714,
+        "median_ms": 275.3139420019579,
+        "min_ms": 269.12979900225764,
+        "max_ms": 289.42629400262376,
+        "n": 65
+      },
+      "ckdtree_stats": {
+        "mean_ms": 404.6968706300294,
+        "std_ms": 8.769181055002601,
+        "median_ms": 403.5725139983697,
+        "min_ms": 394.0339709952241,
+        "max_ms": 462.0094549973146,
+        "n": 65
+      },
+      "pynanoflann_stats": {
+        "mean_ms": 280.2144187078319,
+        "std_ms": 5.877746999972893,
+        "median_ms": 279.6452590046101,
+        "min_ms": 272.17528899927856,
+        "max_ms": 306.63641600403935,
+        "n": 65
+      },
+      "ratio_ckdtree": 0.6821920037970428,
+      "ratio_pynanoflann": 0.9845113876842775
+    },
+    {
+      "name": "knn_batched_dim3_f32_k10_q200k_workersNeg1",
+      "flannrust_stats": {
+        "mean_ms": 39.798558019829215,
+        "std_ms": 7.655769383480656,
+        "median_ms": 38.42967750460957,
+        "min_ms": 35.49546899739653,
+        "max_ms": 107.1107129973825,
+        "n": 100
+      },
+      "ckdtree_stats": {
+        "mean_ms": 61.10393284994643,
+        "std_ms": 14.790175119914592,
+        "median_ms": 58.434355498320656,
+        "min_ms": 53.42184699838981,
+        "max_ms": 197.25257699610665,
+        "n": 100
+      },
+      "pynanoflann_stats": {
+        "mean_ms": 51.7273965003551,
+        "std_ms": 8.060053638637218,
+        "median_ms": 54.05417150177527,
+        "min_ms": 39.03471300145611,
+        "max_ms": 98.79250100493664,
+        "n": 100
+      },
+      "ratio_ckdtree": 0.6576555380287201,
+      "ratio_pynanoflann": 0.7109474891007708
+    },
+    {
+      "name": "knn_dim8_float64_k10_workers1",
+      "flannrust_stats": {
+        "mean_ms": 297.03130001644985,
+        "std_ms": 9.519690928914248,
+        "median_ms": 295.6545979977818,
+        "min_ms": 290.9146329984651,
+        "max_ms": 367.0046889965306,
+        "n": 61
+      },
+      "ckdtree_stats": {
+        "mean_ms": 495.5464677542131,
+        "std_ms": 7.227487344082213,
+        "median_ms": 493.7590879999334,
+        "min_ms": 486.17465999996057,
+        "max_ms": 526.0807480008225,
+        "n": 61
+      },
+      "pynanoflann_stats": {
+        "mean_ms": 305.65250127840613,
+        "std_ms": 3.879915047161304,
+        "median_ms": 304.94314700627,
+        "min_ms": 298.95614000270143,
+        "max_ms": 320.1115409974591,
+        "n": 61
+      },
+      "ratio_ckdtree": 0.5987831012799945,
+      "ratio_pynanoflann": 0.9695400631243003
+    },
+    {
+      "name": "knn_dim32_float32_k10_workers1",
+      "flannrust_stats": {
+        "mean_ms": 12043.100151999533,
+        "std_ms": 59.86260699943327,
+        "median_ms": 12024.990640999022,
+        "min_ms": 11980.082157999277,
+        "max_ms": 12178.832972000237,
+        "n": 10
+      },
+      "ckdtree_stats": {
+        "mean_ms": 41328.14619529963,
+        "std_ms": 117.3854089800936,
+        "median_ms": 41288.983906000794,
+        "min_ms": 41219.87732699927,
+        "max_ms": 41539.97443700064,
+        "n": 10
+      },
+      "pynanoflann_stats": {
+        "mean_ms": 23900.755714299157,
+        "std_ms": 40.287994050825255,
+        "median_ms": 23895.721299999423,
+        "min_ms": 23847.53139100212,
+        "max_ms": 23969.530300004408,
+        "n": 10
+      },
+      "ratio_ckdtree": 0.29123968437623265,
+      "ratio_pynanoflann": 0.5032277741287229
+    },
+    {
+      "name": "radius_dim3_f32_sel10",
+      "flannrust_stats": {
+        "mean_ms": 2.436211859676405,
+        "std_ms": 0.12885859233191513,
+        "median_ms": 2.39567449898459,
+        "min_ms": 2.3222449963213876,
+        "max_ms": 2.9826800018781796,
+        "n": 100
+      },
+      "ckdtree_stats": {
+        "mean_ms": 4.111132390244165,
+        "std_ms": 0.18231221268812542,
+        "median_ms": 4.045131998282159,
+        "min_ms": 3.9561439989483915,
+        "max_ms": 4.756853995786514,
+        "n": 100
+      },
+      "pynanoflann_stats": {
+        "mean_ms": 4.344556990108686,
+        "std_ms": 0.1920644290778291,
+        "median_ms": 4.27380700057256,
+        "min_ms": 4.187730002740864,
+        "max_ms": 5.34334999974817,
+        "n": 100
+      },
+      "ratio_ckdtree": 0.5922364214571881,
+      "ratio_pynanoflann": 0.5605481245792434
+    },
+    {
+      "name": "radius_dim3_f32_sel1000",
+      "flannrust_stats": {
+        "mean_ms": 60.38700350036379,
+        "std_ms": 0.8191100764977288,
+        "median_ms": 60.33922449933016,
+        "min_ms": 58.639543000026606,
+        "max_ms": 62.614323003799655,
+        "n": 100
+      },
+      "ckdtree_stats": {
+        "mean_ms": 120.55877485006931,
+        "std_ms": 4.085279239526473,
+        "median_ms": 118.50605649669887,
+        "min_ms": 115.22035700181732,
+        "max_ms": 130.18090100376867,
+        "n": 100
+      },
+      "pynanoflann_stats": {
+        "mean_ms": 225.80643331013562,
+        "std_ms": 4.928657139426906,
+        "median_ms": 225.00598699843977,
+        "min_ms": 217.81718499551062,
+        "max_ms": 243.42750199866714,
+        "n": 100
+      },
+      "ratio_ckdtree": 0.5091657446301994,
+      "ratio_pynanoflann": 0.26816719547888546
+    },
+    {
+      "name": "single_query_loop_dim3_f32_k10_percall_ms",
+      "flannrust_stats": {
+        "mean_ms": 0.0017535222897276982,
+        "std_ms": 0.00011119641763190762,
+        "median_ms": 0.0017258715015486814,
+        "min_ms": 0.001657571003306657,
+        "max_ms": 0.0023403049999615178,
+        "n": 100
+      },
+      "ckdtree_stats": {
+        "mean_ms": 0.007217612610256765,
+        "std_ms": 0.00022277775634617345,
+        "median_ms": 0.007163299502281006,
+        "min_ms": 0.00697578200197313,
+        "max_ms": 0.008171223998942878,
+        "n": 100
+      },
+      "pynanoflann_stats": {
+        "mean_ms": 0.002279607579839649,
+        "std_ms": 0.00012952442015594438,
+        "median_ms": 0.0022399890003725886,
+        "min_ms": 0.002178312999603804,
+        "max_ms": 0.002870338998036459,
+        "n": 100
+      },
+      "ratio_ckdtree": 0.24093247825239095,
+      "ratio_pynanoflann": 0.7704821323951182,
+      "note": "overhead-bound (see docs/EXPERIMENTS.md): per-call Python/pybind11 binding overhead dominates at n_calls=1 scale, not tree-traversal cost. Each stats object here is PER-CALL (the loop's own 2-warmup/adaptive-n TOTAL loop time per rep, divided by n_calls=1000), not total loop time."
+    }
+  ]
+}

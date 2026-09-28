@@ -1,0 +1,444 @@
+{
+  "schema_version": 2,
+  "meta": {
+    "python": "3.12.11",
+    "numpy": "2.5.2",
+    "scipy": "1.18.1",
+    "pynanoflann": "0.10.0",
+    "scikit-learn": "1.9.1",
+    "cpu": "AMD Ryzen 7 9800X3D 8-Core Processor",
+    "threads": 8,
+    "date": "2026-09-27T20:07:21Z",
+    "git_sha": "ce3523d",
+    "loadavg_start": "0.28 0.62 0.53 1/1070 274889",
+    "rustflags": "",
+    "wheel_profile": "release (.venv/bin/maturin develop --release); RUSTFLAGS=\"-C target-cpu=native\" REQUIRED at build time for parity with the repo's Rust-vs-C++ xval methodology -- see meta.rustflags for what THIS run's process environment actually had set",
+    "budget_s": 30.0,
+    "warmup_reps": 2,
+    "rep_policy": "n = clamp(10, 100, floor(budget_s*1000 / t_est_ms)); t_est_ms = mean of WARMUP_REPS (2) untimed warmup reps, slowest engine in the interleaved group -- mirrors xval::measure_pair (M2.6 Task 1), generalized to N engines. Ratios are median-based; mean/std(sample, n-1)/min/max/n published per engine alongside.",
+    "loadavg_end": "1.15 1.13 1.09 1/1078 309424"
+  },
+  "workloads": [
+    {
+      "name": "build_100k_dim3_f32_threads1",
+      "flannrust_stats": {
+        "mean_ms": 8.980538349787821,
+        "std_ms": 0.20935531131338997,
+        "median_ms": 8.932317501603393,
+        "min_ms": 8.715158997802064,
+        "max_ms": 9.748133001266979,
+        "n": 100
+      },
+      "ckdtree_stats": {
+        "mean_ms": 10.92177555001399,
+        "std_ms": 0.21912468115620962,
+        "median_ms": 10.882632002903847,
+        "min_ms": 10.667271999409422,
+        "max_ms": 11.783794994698837,
+        "n": 100
+      },
+      "pynanoflann_stats": {
+        "mean_ms": 17.540363769658143,
+        "std_ms": 0.3517167342686615,
+        "median_ms": 17.474518994276877,
+        "min_ms": 17.163912998512387,
+        "max_ms": 19.39418399706483,
+        "n": 100
+      },
+      "ratio_ckdtree": 0.820786506354341,
+      "ratio_pynanoflann": 0.5111624248157467,
+      "sklearn_stats": {
+        "mean_ms": 32.349657239974476,
+        "std_ms": 0.49874168606096453,
+        "median_ms": 32.3095595013001,
+        "min_ms": 31.509512002230622,
+        "max_ms": 33.99237700068625,
+        "n": 100
+      },
+      "ratio_sklearn": 0.27646051631387814
+    },
+    {
+      "name": "build_100k_dim3_f32_threadsNone_parallel_build",
+      "flannrust_stats": {
+        "mean_ms": 2.8229999198083533,
+        "std_ms": 0.1345386774200022,
+        "median_ms": 2.833214501151815,
+        "min_ms": 2.464361001329962,
+        "max_ms": 3.2052020033006556,
+        "n": 100
+      },
+      "ckdtree_stats": {
+        "mean_ms": 10.92177555001399,
+        "std_ms": 0.21912468115620962,
+        "median_ms": 10.882632002903847,
+        "min_ms": 10.667271999409422,
+        "max_ms": 11.783794994698837,
+        "n": 100
+      },
+      "pynanoflann_stats": {
+        "mean_ms": 17.540363769658143,
+        "std_ms": 0.3517167342686615,
+        "median_ms": 17.474518994276877,
+        "min_ms": 17.163912998512387,
+        "max_ms": 19.39418399706483,
+        "n": 100
+      },
+      "ratio_ckdtree": 0.26034276454407534,
+      "ratio_pynanoflann": 0.16213404798608352,
+      "sklearn_stats": {
+        "mean_ms": 32.349657239974476,
+        "std_ms": 0.49874168606096453,
+        "median_ms": 32.3095595013001,
+        "min_ms": 31.509512002230622,
+        "max_ms": 33.99237700068625,
+        "n": 100
+      },
+      "ratio_sklearn": 0.08768966661516416,
+      "note": "flannrust threads=None (parallel build) vs cKDTree/pynanoflann/sklearn single-thread build -- none of them offer a parallel-build option, so this row reuses the sibling threads1 row's cKDTree/pynanoflann/sklearn numbers. Labelled honestly, not a same-config parity claim."
+    },
+    {
+      "name": "build_1M_dim3_f32_threads1",
+      "flannrust_stats": {
+        "mean_ms": 118.3326096029572,
+        "std_ms": 8.509461710960043,
+        "median_ms": 117.61452749851742,
+        "min_ms": 113.28642100124853,
+        "max_ms": 185.821187995316,
+        "n": 68
+      },
+      "ckdtree_stats": {
+        "mean_ms": 131.68948401471425,
+        "std_ms": 25.296609020735833,
+        "median_ms": 128.73830350145,
+        "min_ms": 123.96547199750785,
+        "max_ms": 336.61614599986933,
+        "n": 68
+      },
+      "pynanoflann_stats": {
+        "mean_ms": 232.06392629360968,
+        "std_ms": 8.613159615603177,
+        "median_ms": 231.53718749745167,
+        "min_ms": 223.54883299703943,
+        "max_ms": 297.8953290003119,
+        "n": 68
+      },
+      "ratio_ckdtree": 0.9135938900825481,
+      "ratio_pynanoflann": 0.5079725152134013,
+      "sklearn_stats": {
+        "mean_ms": 401.6541469270177,
+        "std_ms": 6.406577185199901,
+        "median_ms": 400.40644600230735,
+        "min_ms": 385.5937899934361,
+        "max_ms": 425.38395400333684,
+        "n": 68
+      },
+      "ratio_sklearn": 0.29373784731187785
+    },
+    {
+      "name": "build_1M_dim3_f32_threadsNone_parallel_build",
+      "flannrust_stats": {
+        "mean_ms": 27.255150150231202,
+        "std_ms": 0.8928091413560408,
+        "median_ms": 27.216794002015376,
+        "min_ms": 25.538080000842456,
+        "max_ms": 30.254025004978757,
+        "n": 100
+      },
+      "ckdtree_stats": {
+        "mean_ms": 131.68948401471425,
+        "std_ms": 25.296609020735833,
+        "median_ms": 128.73830350145,
+        "min_ms": 123.96547199750785,
+        "max_ms": 336.61614599986933,
+        "n": 68
+      },
+      "pynanoflann_stats": {
+        "mean_ms": 232.06392629360968,
+        "std_ms": 8.613159615603177,
+        "median_ms": 231.53718749745167,
+        "min_ms": 223.54883299703943,
+        "max_ms": 297.8953290003119,
+        "n": 68
+      },
+      "ratio_ckdtree": 0.2114117808124513,
+      "ratio_pynanoflann": 0.11754826210072596,
+      "sklearn_stats": {
+        "mean_ms": 401.6541469270177,
+        "std_ms": 6.406577185199901,
+        "median_ms": 400.40644600230735,
+        "min_ms": 385.5937899934361,
+        "max_ms": 425.38395400333684,
+        "n": 68
+      },
+      "ratio_sklearn": 0.06797291670438926,
+      "note": "flannrust threads=None (parallel build) vs cKDTree/pynanoflann/sklearn single-thread build -- none of them offer a parallel-build option, so this row reuses the sibling threads1 row's cKDTree/pynanoflann/sklearn numbers. Labelled honestly, not a same-config parity claim."
+    },
+    {
+      "name": "knn_batched_dim3_f32_k10_q200k_workers1",
+      "flannrust_stats": {
+        "mean_ms": 276.04368453017634,
+        "std_ms": 9.36865804090996,
+        "median_ms": 274.0841575032391,
+        "min_ms": 263.8560229970608,
+        "max_ms": 323.32462400518125,
+        "n": 34
+      },
+      "ckdtree_stats": {
+        "mean_ms": 441.7411879116758,
+        "std_ms": 13.765283551039625,
+        "median_ms": 439.07274549928843,
+        "min_ms": 417.3835309993592,
+        "max_ms": 479.4354530022247,
+        "n": 34
+      },
+      "pynanoflann_stats": {
+        "mean_ms": 291.2419511770114,
+        "std_ms": 3.980765236314639,
+        "median_ms": 291.2072095023177,
+        "min_ms": 279.1300009994302,
+        "max_ms": 298.22864899324486,
+        "n": 34
+      },
+      "ratio_ckdtree": 0.6242340484868089,
+      "ratio_pynanoflann": 0.9411997662134037,
+      "sklearn_stats": {
+        "mean_ms": 623.4671835295825,
+        "std_ms": 67.33042629693765,
+        "median_ms": 612.0503034981084,
+        "min_ms": 570.1933500022278,
+        "max_ms": 987.6005670012091,
+        "n": 34
+      },
+      "ratio_sklearn": 0.4478131224455576
+    },
+    {
+      "name": "knn_batched_dim3_f32_k10_q200k_workersNeg1",
+      "flannrust_stats": {
+        "mean_ms": 41.13269821591173,
+        "std_ms": 2.193165708199474,
+        "median_ms": 40.70108700398123,
+        "min_ms": 37.21898500225507,
+        "max_ms": 47.30649200064363,
+        "n": 51
+      },
+      "ckdtree_stats": {
+        "mean_ms": 67.35701497995714,
+        "std_ms": 6.199995612450513,
+        "median_ms": 65.74508699850412,
+        "min_ms": 55.68534600024577,
+        "max_ms": 85.48092099954374,
+        "n": 51
+      },
+      "pynanoflann_stats": {
+        "mean_ms": 51.76476733322488,
+        "std_ms": 6.693284897679179,
+        "median_ms": 55.16807199455798,
+        "min_ms": 40.305330003320705,
+        "max_ms": 64.6909040005994,
+        "n": 51
+      },
+      "ratio_ckdtree": 0.6190741979686982,
+      "ratio_pynanoflann": 0.7377652604571021,
+      "sklearn_stats": {
+        "mean_ms": 604.843782372864,
+        "std_ms": 18.47428796465306,
+        "median_ms": 601.9837880012346,
+        "min_ms": 575.4873120022239,
+        "max_ms": 673.1285369969555,
+        "n": 51
+      },
+      "ratio_sklearn": 0.0676115998723503
+    },
+    {
+      "name": "knn_dim8_float64_k10_workers1",
+      "flannrust_stats": {
+        "mean_ms": 302.7288470772104,
+        "std_ms": 4.300967908926647,
+        "median_ms": 303.95664099705755,
+        "min_ms": 294.1231329969014,
+        "max_ms": 311.9358399999328,
+        "n": 26
+      },
+      "ckdtree_stats": {
+        "mean_ms": 496.61998088497336,
+        "std_ms": 6.434643678996489,
+        "median_ms": 498.8424199982546,
+        "min_ms": 481.17676899710204,
+        "max_ms": 506.1198070034152,
+        "n": 26
+      },
+      "pynanoflann_stats": {
+        "mean_ms": 305.1056361924006,
+        "std_ms": 3.7927682927170334,
+        "median_ms": 305.7782895011769,
+        "min_ms": 296.4207670011092,
+        "max_ms": 310.57482000323944,
+        "n": 26
+      },
+      "ratio_ckdtree": 0.6093239644658147,
+      "ratio_pynanoflann": 0.9940425839025685,
+      "sklearn_stats": {
+        "mean_ms": 1126.6269858455275,
+        "std_ms": 30.557575621214333,
+        "median_ms": 1125.2856654973584,
+        "min_ms": 1089.3236880001496,
+        "max_ms": 1261.600029996771,
+        "n": 26
+      },
+      "ratio_sklearn": 0.270115091942199
+    },
+    {
+      "name": "knn_dim32_float32_k10_workers1",
+      "flannrust_stats": {
+        "mean_ms": 12790.012961901812,
+        "std_ms": 145.03529162536628,
+        "median_ms": 12797.847641500994,
+        "min_ms": 12621.944590006024,
+        "max_ms": 13079.201095002645,
+        "n": 10
+      },
+      "ckdtree_stats": {
+        "mean_ms": 42857.41116149875,
+        "std_ms": 153.72387044839502,
+        "median_ms": 42791.73541649652,
+        "min_ms": 42694.71513199824,
+        "max_ms": 43082.27958500356,
+        "n": 10
+      },
+      "pynanoflann_stats": {
+        "mean_ms": 24178.179885798454,
+        "std_ms": 156.50486075975385,
+        "median_ms": 24108.646482996846,
+        "min_ms": 24057.016876999114,
+        "max_ms": 24564.89458699798,
+        "n": 10
+      },
+      "ratio_ckdtree": 0.2990728821100191,
+      "ratio_pynanoflann": 0.5308405700223344,
+      "sklearn_stats": {
+        "mean_ms": 98358.77805680138,
+        "std_ms": 349.43870753817396,
+        "median_ms": 98326.17255000514,
+        "min_ms": 97769.49959500053,
+        "max_ms": 98869.52833399846,
+        "n": 10
+      },
+      "ratio_sklearn": 0.13015708137111176
+    },
+    {
+      "name": "radius_dim3_f32_sel10",
+      "flannrust_stats": {
+        "mean_ms": 2.468107069944381,
+        "std_ms": 0.19339571308604747,
+        "median_ms": 2.4094225045701023,
+        "min_ms": 2.327597998373676,
+        "max_ms": 3.31843200547155,
+        "n": 100
+      },
+      "ckdtree_stats": {
+        "mean_ms": 4.3084874601481715,
+        "std_ms": 0.36280565273464027,
+        "median_ms": 4.183450499112951,
+        "min_ms": 4.036318998259958,
+        "max_ms": 5.9440529948915355,
+        "n": 100
+      },
+      "pynanoflann_stats": {
+        "mean_ms": 4.549509770367877,
+        "std_ms": 0.19368876583768063,
+        "median_ms": 4.475422501855064,
+        "min_ms": 4.34603399480693,
+        "max_ms": 5.179621999559458,
+        "n": 100
+      },
+      "ratio_ckdtree": 0.5759414399862006,
+      "ratio_pynanoflann": 0.538367607431789,
+      "sklearn_stats": {
+        "mean_ms": 8.715832260204479,
+        "std_ms": 0.2661993204973511,
+        "median_ms": 8.619555497716647,
+        "min_ms": 8.486254002491478,
+        "max_ms": 10.246074001770467,
+        "n": 100
+      },
+      "ratio_sklearn": 0.2795297861018898
+    },
+    {
+      "name": "radius_dim3_f32_sel1000",
+      "flannrust_stats": {
+        "mean_ms": 60.21714303999033,
+        "std_ms": 1.4139332097759925,
+        "median_ms": 60.025535502063576,
+        "min_ms": 57.23134700383525,
+        "max_ms": 64.4947239998146,
+        "n": 100
+      },
+      "ckdtree_stats": {
+        "mean_ms": 121.47859524986416,
+        "std_ms": 4.038941851430508,
+        "median_ms": 120.89654200099176,
+        "min_ms": 114.02281200571451,
+        "max_ms": 132.85745400207816,
+        "n": 100
+      },
+      "pynanoflann_stats": {
+        "mean_ms": 225.54421722983534,
+        "std_ms": 4.046890991363677,
+        "median_ms": 225.72057149591274,
+        "min_ms": 215.55714999703923,
+        "max_ms": 236.94014699867694,
+        "n": 100
+      },
+      "ratio_ckdtree": 0.4965033284539368,
+      "ratio_pynanoflann": 0.26592851109784865,
+      "sklearn_stats": {
+        "mean_ms": 80.08801573952951,
+        "std_ms": 1.7443933385915884,
+        "median_ms": 80.16777349985205,
+        "min_ms": 76.44302099652123,
+        "max_ms": 89.94191500096349,
+        "n": 100
+      },
+      "ratio_sklearn": 0.7487489408967353
+    },
+    {
+      "name": "single_query_loop_dim3_f32_k10_percall_ms",
+      "flannrust_stats": {
+        "mean_ms": 0.0017019020698353416,
+        "std_ms": 7.226042269289371e-05,
+        "median_ms": 0.0016803759972390253,
+        "min_ms": 0.0016206669970415533,
+        "max_ms": 0.002069575995847117,
+        "n": 100
+      },
+      "ckdtree_stats": {
+        "mean_ms": 0.007180861689703306,
+        "std_ms": 0.00026880650594229215,
+        "median_ms": 0.007102621002559317,
+        "min_ms": 0.006919856001331937,
+        "max_ms": 0.008538272995792795,
+        "n": 100
+      },
+      "pynanoflann_stats": {
+        "mean_ms": 0.0032024321099743246,
+        "std_ms": 0.0001881058728575135,
+        "median_ms": 0.0031435014971066266,
+        "min_ms": 0.003042306998395361,
+        "max_ms": 0.004305062000639737,
+        "n": 100
+      },
+      "ratio_ckdtree": 0.23658533893805236,
+      "ratio_pynanoflann": 0.5345554944973603,
+      "sklearn_stats": {
+        "mean_ms": 0.020948990640245028,
+        "std_ms": 0.0005024520398402283,
+        "median_ms": 0.020885849997284822,
+        "min_ms": 0.019965046994911972,
+        "max_ms": 0.02241331299592275,
+        "n": 100
+      },
+      "ratio_sklearn": 0.08045523631824779,
+      "note": "overhead-bound (see docs/EXPERIMENTS.md): per-call Python/pybind11 binding overhead dominates at n_calls=1 scale, not tree-traversal cost. Each stats object here is PER-CALL (the loop's own 2-warmup/adaptive-n TOTAL loop time per rep, divided by n_calls=1000), not total loop time."
+    }
+  ]
+}
