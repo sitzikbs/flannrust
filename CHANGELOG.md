@@ -7,7 +7,7 @@ they version in lockstep) are documented here. Format:
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-09-29
+## [0.1.0] - 2026-09-28
 
 Initial release.
 

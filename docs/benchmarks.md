@@ -1,5 +1,30 @@
 # nanoflann-rs benchmarks
 
+## Summary
+
+Rust vs. C++ (nanoflann 1.12.1) — ratio = Rust time / C++ time:
+
+| Workload | Ratio |
+|---|---|
+| build 100k, sequential | 0.99–1.01 |
+| knn, dim 3, f32, k=10 | 1.01–1.04 |
+| knn, dim 8, f64, k=10 | 0.93–0.94 |
+| radius, dim 3, f32 | 0.83–0.87 |
+| dynamic add 20k | 1.03–1.04 |
+| dynamic knn after churn | 0.93–0.96 |
+
+Python bindings vs. scipy / pynanoflann / sklearn — see the
+[README's Python table](../README.md#python-bindings-vs-scipy--pynanoflann--scikit-learn)
+or run the benchmark yourself:
+[`crates/flannrust-py/python/bench/bench_py.py`](../crates/flannrust-py/python/bench/bench_py.py).
+
+All measurements: WSL2, AMD Ryzen 7 9800X3D, 100 reps, idle host.
+Methodology: [`docs/EXPERIMENTS.md`](EXPERIMENTS.md).
+
+---
+
+## Detailed record
+
 Combined benchmark record for the crate: M1's static kd-tree pass and M2's
 dynamic (Bentley–Saxe forest) pass. This is a straight relocation of M1's
 original `docs/benchmarks-m1.md` (renamed here) plus M2's new dynamic

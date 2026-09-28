@@ -27,20 +27,24 @@ and equal-or-better speed. Static and dynamic indexes, with Python bindings.
 
 ## Installation
 
-Not yet published to crates.io / PyPI — until then, use git / build from source.
-
-Rust:
+Rust (from [crates.io](https://crates.io/crates/flannrust)):
 
 ```toml
 [dependencies]
-flannrust = { git = "https://github.com/sitzikbs/flannrust" }
+flannrust = "0.1"
 ```
 
-Python (from a clone, inside a virtualenv):
+Python (from [PyPI](https://pypi.org/project/flannrust/)):
+
+```bash
+pip install flannrust
+```
+
+To build from source (e.g. with `target-cpu=native` for SIMD):
 
 ```bash
 pip install maturin numpy
-maturin develop -m crates/flannrust-py/Cargo.toml --release
+RUSTFLAGS="-C target-cpu=native" maturin develop -m crates/flannrust-py/Cargo.toml --release
 ```
 
 MSRV: Rust 1.98.0 (pinned in `rust-toolchain.toml`).
@@ -107,8 +111,22 @@ time (lower is better for Rust). Latest idle-host re-measurement (M2.6,
 | dynamic knn after churn, dim 3, f32 | 0.93–0.96 |
 
 Measured on WSL2, AMD Ryzen 7 9800X3D, `rustc 1.98.0`, `-C target-cpu=native`
-vs. C++ `-O3 -march=native -ffp-contract=off`. Full methodology, history,
-honest residuals, and a portable repro kit:
+vs. C++ `-O3 -march=native -ffp-contract=off`.
+
+### Python bindings vs. SciPy / pynanoflann / scikit-learn
+
+| Workload | flannrust | scipy cKDTree | pynanoflann | sklearn KDTree |
+|---|---|---|---|---|
+| build 100k (1 thread) | **9.07 ms** | 11.0 ms | 17.8 ms | 32.9 ms |
+| build 1M (parallel) | **28.0 ms** | 134 ms | 242 ms | 458 ms |
+| batched knn 200k (all cores) | **42.1 ms** | 66.8 ms | 56.6 ms | 626 ms |
+| knn dim 8, f64 (1 worker) | **15.8 µs** | 25.4 µs | 15.7 µs | 56.6 µs |
+| radius ~1000 hits | **32.0 µs** | 63.4 µs | 118 µs | 41.5 µs |
+
+100 repetitions per workload, interleaved, idle host. Benchmark script:
+[`crates/flannrust-py/python/bench/bench_py.py`](crates/flannrust-py/python/bench/bench_py.py).
+
+Full methodology, history, honest residuals, and a portable repro kit:
 [docs/benchmarks.md](docs/benchmarks.md),
 [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md),
 [docs/benchkit.md](docs/benchkit.md).

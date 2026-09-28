@@ -9,9 +9,13 @@ whose `schema_version` isn't `2` (a pre-M2.6-task-3 JSON, `flannrust_ms`
 flat fields instead of `flannrust_stats` objects, is rejected loudly
 rather than silently mis-rendered).
 
+Dependencies (beyond flannrust itself): scipy, pynanoflann, scikit-learn,
+pytest (needed at import time for conftest.py's make_points helper).
+
 Re-run with (from the repo root):
 
     cd crates/flannrust-py
+    pip install scipy pynanoflann scikit-learn pytest
     RUSTFLAGS="-C target-cpu=native" .venv/bin/maturin develop --release
     .venv/bin/python python/bench/bench_py.py > /tmp/report_py.json
 
