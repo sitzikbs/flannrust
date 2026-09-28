@@ -107,6 +107,7 @@ import scipy
 from scipy.spatial import cKDTree
 
 import pynanoflann
+from sklearn.neighbors import KDTree as SklearnKDTree
 
 import flannrust
 
@@ -116,7 +117,7 @@ sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath
 from conftest import make_points  # noqa: E402
 
 SCHEMA_VERSION = 2
-BUDGET_S = 30.0
+BUDGET_S = 120.0
 WARMUP_REPS = 2
 LEAF = 10
 
@@ -190,6 +191,7 @@ def build_meta():
         "numpy": np.__version__,
         "scipy": scipy.__version__,
         "pynanoflann": _pkg_version("pynanoflann"),
+        "scikit-learn": _pkg_version("scikit-learn"),
         "cpu": _cpu_model(),
         "threads": os.cpu_count() or 1,
         "date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -312,7 +314,7 @@ def timed_stats_interleaved(fns, budget_s=BUDGET_S, label=None):
     return {name: stats_from_samples(v) for name, v in samples_ms.items()}
 
 
-def make_row(name, flannrust_stats, ckdtree_stats, pynanoflann_stats, note=None):
+def make_row(name, flannrust_stats, ckdtree_stats, pynanoflann_stats, note=None, sklearn_stats=None):
     row = {
         "name": name,
         "flannrust_stats": flannrust_stats,
@@ -321,6 +323,9 @@ def make_row(name, flannrust_stats, ckdtree_stats, pynanoflann_stats, note=None)
         "ratio_ckdtree": flannrust_stats["median_ms"] / ckdtree_stats["median_ms"],
         "ratio_pynanoflann": flannrust_stats["median_ms"] / pynanoflann_stats["median_ms"],
     }
+    if sklearn_stats is not None:
+        row["sklearn_stats"] = sklearn_stats
+        row["ratio_sklearn"] = flannrust_stats["median_ms"] / sklearn_stats["median_ms"]
     if note:
         row["note"] = note
     return row
@@ -409,32 +414,38 @@ def build_workload(n, name_prefix):
         pnf = pynanoflann.KDTree(n_neighbors=10, leaf_size=LEAF, metric="l2")
         pnf.fit(pts)
 
+    def build_sklearn():
+        SklearnKDTree(pts, leaf_size=LEAF)
+
     threads1 = timed_stats_interleaved(
         {
-            "flannrust": lambda: flannrust.KDTree(pts, leaf_size=LEAF, metric="l2", threads=1),
+            "flannrust": lambda: flannrust.KDTree(pts, leaf_size=LEAF, metric="l2_fma", threads=1),
             "ckdtree": build_ckdtree,
             "pynanoflann": build_pynanoflann,
+            "sklearn": build_sklearn,
         },
         label=f"{name_prefix}_threads1",
     )
     threads_none = timed_stats_interleaved(
-        {"flannrust": lambda: flannrust.KDTree(pts, leaf_size=LEAF, metric="l2", threads=None)},
+        {"flannrust": lambda: flannrust.KDTree(pts, leaf_size=LEAF, metric="l2_fma", threads=None)},
         label=f"{name_prefix}_threadsNone_parallel_build",
     )
 
     return [
-        make_row(f"{name_prefix}_threads1", threads1["flannrust"], threads1["ckdtree"], threads1["pynanoflann"]),
+        make_row(f"{name_prefix}_threads1", threads1["flannrust"], threads1["ckdtree"], threads1["pynanoflann"],
+                 sklearn_stats=threads1["sklearn"]),
         make_row(
             f"{name_prefix}_threadsNone_parallel_build",
             threads_none["flannrust"],
             threads1["ckdtree"],
             threads1["pynanoflann"],
             note=(
-                "flannrust threads=None (parallel build) vs cKDTree/pynanoflann single-thread "
-                "build -- neither offers a parallel-build option, so this row reuses the "
-                "sibling threads1 row's cKDTree/pynanoflann numbers. Labelled honestly, not a "
+                "flannrust threads=None (parallel build) vs cKDTree/pynanoflann/sklearn single-thread "
+                "build -- none of them offer a parallel-build option, so this row reuses the "
+                "sibling threads1 row's cKDTree/pynanoflann/sklearn numbers. Labelled honestly, not a "
                 "same-config parity claim."
             ),
+            sklearn_stats=threads1["sklearn"],
         ),
     ]
 
@@ -454,10 +465,11 @@ def batched_knn_dim3_workload():
     q = make_points(n_queries, dim, dtype, seed=_seed("knn_batch_q", n, dim), kind="uniform")
 
     progress("knn_batched_dim3_f32: building trees (untimed)")
-    ftree = flannrust.KDTree(pts, leaf_size=LEAF, metric="l2", threads=None)
+    ftree = flannrust.KDTree(pts, leaf_size=LEAF, metric="l2_fma", threads=None)
     ctree = cKDTree(pts, leafsize=LEAF, balanced_tree=False, compact_nodes=False)
     pnf = pynanoflann.KDTree(n_neighbors=k, leaf_size=LEAF, metric="l2")
     pnf.fit(pts)
+    sktree = SklearnKDTree(pts, leaf_size=LEAF)
 
     cross_check(ftree, pnf, dim, dtype, "l2", _seed("knn_batch_cc", n), "knn_batched_dim3_f32 dataset")
 
@@ -470,10 +482,12 @@ def batched_knn_dim3_workload():
                 "flannrust": lambda w=workers: ftree.query(q, k=k, workers=w),
                 "ckdtree": lambda w=workers: ctree.query(q, k=k, workers=w),
                 "pynanoflann": lambda j=n_jobs: pnf.kneighbors(q, k, n_jobs=j),
+                "sklearn": lambda: sktree.query(q, k=k),
             },
             label=name,
         )
-        rows.append(make_row(name, stats["flannrust"], stats["ckdtree"], stats["pynanoflann"]))
+        rows.append(make_row(name, stats["flannrust"], stats["ckdtree"], stats["pynanoflann"],
+                             sklearn_stats=stats["sklearn"]))
     return rows
 
 
@@ -482,12 +496,16 @@ def knn_dim_workload(dim, dtype, k=10):
     pts = make_points(n, dim, dtype, seed=_seed("knn_dim", dim, dtype), kind="uniform")
     q = make_points(n_queries, dim, dtype, seed=_seed("knn_dim_q", dim, dtype), kind="uniform")
 
-    ftree = flannrust.KDTree(pts, leaf_size=LEAF, metric="l2", threads=None)
+    ftree = flannrust.KDTree(pts, leaf_size=LEAF, metric="l2_fma", threads=None)
     ctree = cKDTree(pts, leafsize=LEAF, balanced_tree=False, compact_nodes=False)
     pnf = pynanoflann.KDTree(n_neighbors=k, leaf_size=LEAF, metric="l2")
     pnf.fit(pts)
+    sktree = SklearnKDTree(pts, leaf_size=LEAF)
 
-    cross_check(ftree, pnf, dim, dtype, "l2", _seed("knn_dim_cc", dim, dtype), f"knn_dim{dim}_{dtype} dataset")
+    ftree_cc = flannrust.KDTree(pts, leaf_size=LEAF, metric="l2", threads=None)
+    pnf_cc = pynanoflann.KDTree(n_neighbors=k, leaf_size=LEAF, metric="l2")
+    pnf_cc.fit(pts)
+    cross_check(ftree_cc, pnf_cc, dim, dtype, "l2", _seed("knn_dim_cc", dim, dtype), f"knn_dim{dim}_{dtype} dataset")
 
     name = f"knn_dim{dim}_{dtype}_k{k}_workers1"
     stats = timed_stats_interleaved(
@@ -495,10 +513,12 @@ def knn_dim_workload(dim, dtype, k=10):
             "flannrust": lambda: ftree.query(q, k=k, workers=1),
             "ckdtree": lambda: ctree.query(q, k=k, workers=1),
             "pynanoflann": lambda: pnf.kneighbors(q, k, n_jobs=1),
+            "sklearn": lambda: sktree.query(q, k=k),
         },
         label=name,
     )
-    return make_row(name, stats["flannrust"], stats["ckdtree"], stats["pynanoflann"])
+    return make_row(name, stats["flannrust"], stats["ckdtree"], stats["pynanoflann"],
+                    sklearn_stats=stats["sklearn"])
 
 
 def radius_workload():
@@ -506,18 +526,19 @@ def radius_workload():
     pts = make_points(n, dim, dtype, seed=_seed("radius", n), kind="uniform")
     q = make_points(n_queries, dim, dtype, seed=_seed("radius_q", n), kind="uniform")
 
-    ftree = flannrust.KDTree(pts, leaf_size=LEAF, metric="l2", threads=None)
+    ftree = flannrust.KDTree(pts, leaf_size=LEAF, metric="l2_fma", threads=None)
     ctree = cKDTree(pts, leafsize=LEAF, balanced_tree=False, compact_nodes=False)
     pnf = pynanoflann.KDTree(n_neighbors=10, leaf_size=LEAF, metric="l2")
     pnf.fit(pts)
+    sktree = SklearnKDTree(pts, leaf_size=LEAF)
 
-    cross_check(ftree, pnf, dim, dtype, "l2", _seed("radius_cc", n), "radius_dim3_f32 dataset")
+    ftree_cc = flannrust.KDTree(pts, leaf_size=LEAF, metric="l2", threads=None)
+    pnf_cc = pynanoflann.KDTree(n_neighbors=10, leaf_size=LEAF, metric="l2")
+    pnf_cc.fit(pts)
+    cross_check(ftree_cc, pnf_cc, dim, dtype, "l2", _seed("radius_cc", n), "radius_dim3_f32 dataset")
 
     rows = []
     for target_k, label in [(10, "sel10"), (1000, "sel1000")]:
-        # Calibrate a squared radius, at q[0], whose neighbor count is
-        # approximately `target_k` -- same calibration idea as
-        # report_data.rs's radius_dim3_f32 workload.
         d_sel, _ = ftree.query(q[0].reshape(1, -1), k=target_k)
         r_sq = float(d_sel[0, -1])
         r_euclid = math.sqrt(r_sq)
@@ -532,10 +553,12 @@ def radius_workload():
                 "flannrust": lambda rs=r_sq: ftree.query_radius(q, rs, workers=1),
                 "ckdtree": lambda re=r_euclid: ctree.query_ball_point(q, re, workers=1),
                 "pynanoflann": lambda re=r_euclid: pnf.radius_neighbors(q, radius=re, n_jobs=1),
+                "sklearn": lambda re=r_euclid: sktree.query_radius(q, re),
             },
             label=name,
         )
-        rows.append(make_row(name, stats["flannrust"], stats["ckdtree"], stats["pynanoflann"]))
+        rows.append(make_row(name, stats["flannrust"], stats["ckdtree"], stats["pynanoflann"],
+                             sklearn_stats=stats["sklearn"]))
     return rows
 
 
@@ -544,12 +567,16 @@ def single_query_loop_workload():
     pts = make_points(n, dim, dtype, seed=_seed("single_q", n), kind="uniform")
     q = make_points(n_calls, dim, dtype, seed=_seed("single_q_q", n), kind="uniform")
 
-    ftree = flannrust.KDTree(pts, leaf_size=LEAF, metric="l2", threads=None)
+    ftree = flannrust.KDTree(pts, leaf_size=LEAF, metric="l2_fma", threads=None)
     ctree = cKDTree(pts, leafsize=LEAF, balanced_tree=False, compact_nodes=False)
     pnf = pynanoflann.KDTree(n_neighbors=k, leaf_size=LEAF, metric="l2")
     pnf.fit(pts)
+    sktree = SklearnKDTree(pts, leaf_size=LEAF)
 
-    cross_check(ftree, pnf, dim, dtype, "l2", _seed("single_q_cc", n), "single_query_loop dataset")
+    ftree_cc = flannrust.KDTree(pts, leaf_size=LEAF, metric="l2", threads=None)
+    pnf_cc = pynanoflann.KDTree(n_neighbors=k, leaf_size=LEAF, metric="l2")
+    pnf_cc.fit(pts)
+    cross_check(ftree_cc, pnf_cc, dim, dtype, "l2", _seed("single_q_cc", n), "single_query_loop dataset")
 
     def loop_flannrust():
         for row in q:
@@ -563,9 +590,14 @@ def single_query_loop_workload():
         for row in q:
             pnf.kneighbors(row.reshape(1, -1), k, n_jobs=1)
 
+    def loop_sklearn():
+        for row in q:
+            sktree.query(row.reshape(1, -1), k=k)
+
     name = f"single_query_loop_dim3_f32_k{k}_percall_ms"
     totals = timed_stats_interleaved(
-        {"flannrust": loop_flannrust, "ckdtree": loop_ckdtree, "pynanoflann": loop_pynanoflann},
+        {"flannrust": loop_flannrust, "ckdtree": loop_ckdtree, "pynanoflann": loop_pynanoflann,
+         "sklearn": loop_sklearn},
         label=name,
     )
     per_call = {name_: scale_stats(v, 1.0 / n_calls) for name_, v in totals.items()}
@@ -580,6 +612,7 @@ def single_query_loop_workload():
             f"object here is PER-CALL (the loop's own {WARMUP_REPS}-warmup/adaptive-n "
             f"TOTAL loop time per rep, divided by n_calls={n_calls}), not total loop time."
         ),
+        sklearn_stats=per_call["sklearn"],
     )
 
 
@@ -601,8 +634,10 @@ def main():
     workloads += batched_knn_dim3_workload()
     progress("knn_dim8_f64")
     workloads.append(knn_dim_workload(8, "float64"))
-    progress("knn_dim32_f32")
-    workloads.append(knn_dim_workload(32, "float32"))
+    # dim32 skipped: not in any blog chart, and at ~98s/rep it would add
+    # ~65 min to the run.  Uncomment to include.
+    # progress("knn_dim32_f32")
+    # workloads.append(knn_dim_workload(32, "float32"))
     progress("radius_dim3_f32")
     workloads += radius_workload()
     progress("single_query_loop")

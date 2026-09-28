@@ -212,6 +212,59 @@ fn speed_rows() -> Vec<SpeedRow> {
         });
     }
 
+    // ---- knn_dim3_f32_k50 (higher k -- more distance comparisons per query,
+    // probes whether SIMD advantage grows with k) ----
+    progress("speed: knn_dim3_f32_k50");
+    {
+        const N: usize = 100_000;
+        const DIM: usize = 3;
+        const LEAF: usize = 10;
+        const K: usize = 50;
+        const N_QUERIES: usize = 10_000;
+        const POOL: usize = 1000;
+
+        let data64 = uniform(cfg_seed("report_knn_fixed3_k50", &[N]), N, DIM);
+        let data32 = to_f32(&data64);
+        let arr3 = to_array3(&data32);
+        let q64 = queries(cfg_seed("report_knn_fixed3_k50_q", &[N]), &data64, DIM, POOL);
+        let q32 = to_f32(&q64);
+
+        let rust_tree = KdTreeBuilder::new(ConstDim::<3>, arr3.as_slice())
+            .with_metric(L2)
+            .leaf_max_size(LEAF)
+            .build_sequential();
+        let cpp_tree = RefIndex3F32::build(&data32, LEAF, 1);
+
+        let (rust, cpp) = measure_pair(
+            || {
+                let mut rr = RoundRobin::new(&q32, DIM);
+                let mut out_idx = vec![0u32; K];
+                let mut out_dist = vec![0.0f32; K];
+                for _ in 0..N_QUERIES {
+                    let query = std::hint::black_box(rr.next());
+                    let found = rust_tree.knn_search(query, &mut out_idx, &mut out_dist);
+                    std::hint::black_box(found);
+                }
+            },
+            || {
+                let mut rr = RoundRobin::new(&q32, DIM);
+                let mut out_idx = vec![0u32; K];
+                let mut out_dist = vec![0.0f32; K];
+                for _ in 0..N_QUERIES {
+                    let query = std::hint::black_box(rr.next());
+                    let found = cpp_tree.knn_into(query, K, &mut out_idx, &mut out_dist);
+                    std::hint::black_box(found);
+                }
+            },
+            BUDGET_S,
+        );
+        rows.push(SpeedRow {
+            workload: "knn_dim3_f32_k50",
+            rust,
+            cpp,
+        });
+    }
+
     // ---- perf_gate_knn_dyn_dim8_f64_k10 ----
     progress("speed: knn_dyn_dim8_f64_k10");
     {
