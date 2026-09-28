@@ -226,7 +226,12 @@ fn speed_rows() -> Vec<SpeedRow> {
         let data64 = uniform(cfg_seed("report_knn_fixed3_k50", &[N]), N, DIM);
         let data32 = to_f32(&data64);
         let arr3 = to_array3(&data32);
-        let q64 = queries(cfg_seed("report_knn_fixed3_k50_q", &[N]), &data64, DIM, POOL);
+        let q64 = queries(
+            cfg_seed("report_knn_fixed3_k50_q", &[N]),
+            &data64,
+            DIM,
+            POOL,
+        );
         let q32 = to_f32(&q64);
 
         let rust_tree = KdTreeBuilder::new(ConstDim::<3>, arr3.as_slice())
